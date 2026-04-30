@@ -1,4 +1,4 @@
-FROM python:3.9-slim as builder
+FROM python:3.8 as builder
 WORKDIR /pity
 COPY ./requirements.txt ./requirements.txt
 RUN python -m venv /pity/venv  \
@@ -11,7 +11,7 @@ RUN python -m venv /pity/venv  \
     && wget https://github.com/vishnubob/wait-for-it/raw/master/wait-for-it.sh
 
 
-FROM python:3.9-slim
+FROM python:3.8
 ENV PYTHONUNBUFFERED=1
 WORKDIR /pity
 COPY . .
