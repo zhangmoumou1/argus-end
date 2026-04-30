@@ -83,7 +83,9 @@ def error_map(error_type: str, field: str, msg: str = None):
         return f"参数: {field} 类型不正确"
     if "type_error" in error_type:
         return f"参数: {field} 类型不合法"
-
+    if "value_error" in error_type:
+        return msg if msg else f"参数: {field} 值不合法"
+    return msg if msg else f"参数错误: {field}"
 
 @pity.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -231,3 +233,4 @@ def init_logging():
         ]
     )
     return logger
+

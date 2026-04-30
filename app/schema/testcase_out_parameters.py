@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel, field_validator
 
 from app.schema.base import PityModel
@@ -7,8 +9,8 @@ class PityTestCaseOutParametersForm(BaseModel):
     id: int = None
     # case_id = None
     name: str
-    expression: str = None
-    match_index: str = None
+    expression: Optional[str] = None
+    match_index: Optional[str] = None
     source: int
 
     @field_validator("name", "source")

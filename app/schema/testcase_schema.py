@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, validator
 
@@ -26,12 +26,12 @@ class TestCaseForm(BaseModel):
     url: str = ""
     name: str = ""
     case_type: int = 0
-    base_path: str = None
-    tag: str = None
-    body: str = None
+    base_path: Optional[str] = None
+    tag: Optional[str] = None
+    body: Optional[str] = None
     body_type: int = 0
-    request_headers: str = None
-    request_method: str = None
+    request_headers: Optional[str] = None
+    request_method: Optional[str] = None
     status: int
     out_parameters: List[PityTestCaseOutParametersForm] = []
     directory_id: int
