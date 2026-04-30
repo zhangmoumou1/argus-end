@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import redis; print\\(redis.__version__\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import redis; print\\(redis.__version__\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"from redis.cluster import RedisCluster; print\\('ok'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import redis.cluster; print\\(dir\\(redis.cluster\\)\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import redis; print\\(redis.__file__\\)\")",
+      "Bash(.venv/Scripts/python.exe -m pip install \"redis>=4.1.0\")",
+      "Bash(.venv/Scripts/python.exe -c \"from redis.cluster import RedisCluster; print\\('导入成功, redis版本:', end=' '\\); import redis; print\\(redis.__version__\\)\")"
+    ]
+  }
+}
