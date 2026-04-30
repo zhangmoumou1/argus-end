@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+import asyncio
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
@@ -303,7 +304,7 @@ def parse_case_data(case_text, source='database'):
         return None
 
 
-async def rebuild_functional_case_items(session, model, operator_user_id: int):
+async def rebuild_functional_case_items(session, model, operator_user_id: int, case_items=None):
     now_deleted = int(datetime.now().timestamp())
     now_dt = datetime.now()
 
@@ -321,8 +322,9 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int):
         },
     )
 
-    case_data = parse_case_data(getattr(model, "case_data", None), source="database")
-    case_items = extract_case_items(case_data)
+    if case_items is None:
+        case_data = parse_case_data(getattr(model, "case_data", None), source="database")
+        case_items = extract_case_items(case_data)
     if not case_items:
         return
 
@@ -350,6 +352,64 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int):
         })
 
     await session.execute(insert_sql, rows)
+
+
+async def update_functional_case_item_meta(session, model, operator_user_id: int):
+    await session.execute(
+        text(
+            "UPDATE pity_functional_case_item "
+            "SET project_id=:project_id, directory_id=:directory_id, file_title=:file_title, "
+            "update_user=:update_user, updated_at=:updated_at "
+            "WHERE file_id=:file_id AND deleted_at=0"
+        ),
+        {
+            "project_id": model.project_id,
+            "directory_id": model.directory_id,
+            "file_title": model.title,
+            "update_user": operator_user_id,
+            "updated_at": datetime.now(),
+            "file_id": model.id,
+        },
+    )
+
+
+async def fetch_case_stats_by_file_id(session, file_id: int):
+    result = await session.execute(
+        text(
+            "SELECT COUNT(1) AS case_count, COALESCE(SUM(case_pass), 0) AS pass_count "
+            "FROM pity_functional_case_item WHERE file_id=:file_id AND deleted_at=0"
+        ),
+        {"file_id": file_id},
+    )
+    row = result.mappings().first()
+    if row is None:
+        return {"case_count": 0, "pass_count": 0}
+    return {
+        "case_count": int(row.get("case_count") or 0),
+        "pass_count": int(row.get("pass_count") or 0),
+    }
+
+
+async def sync_functional_case_items_async(file_id: int, operator_user_id: int, case_items=None, rebuild=False):
+    try:
+        async with async_session() as session:
+            await ensure_functional_case_schema(session)
+            result = await session.execute(
+                select(PityFunctionalCaseFile).where(
+                    PityFunctionalCaseFile.id == file_id,
+                    PityFunctionalCaseFile.deleted_at == 0,
+                )
+            )
+            model = result.scalars().first()
+            if model is None:
+                return
+            if rebuild:
+                await rebuild_functional_case_items(session, model, operator_user_id, case_items=case_items)
+            else:
+                await update_functional_case_item_meta(session, model, operator_user_id)
+            await session.commit()
+    except Exception as exc:
+        logger.warning(f"sync functional case items async failed, file_id={file_id}, error={exc}")
 
 
 def analyze_case_data(data):
@@ -890,7 +950,13 @@ async def query_file(id: int, project_id: int = None, _=Depends(Permission())):
         user = user_result.scalars().first()
         data = serialize_model(model)
         case_data = read_case_payload(model)
-        stats = analyze_case_data(case_data)
+        stats = await fetch_case_stats_by_file_id(session, model.id)
+        if stats["case_count"] == 0 and case_data:
+            fallback_stats = analyze_case_data(case_data)
+            stats = {
+                "case_count": int(fallback_stats.get("case_count") or 0),
+                "pass_count": int(fallback_stats.get("pass_count") or 0),
+            }
         data["data"] = case_data
         data["case_count"] = int(stats["case_count"] or 0)
         data["pass_count"] = int(stats.get("pass_count") or 0)
@@ -903,6 +969,7 @@ async def query_file(id: int, project_id: int = None, _=Depends(Permission())):
 @router.post("/file/insert")
 async def insert_file(form: FunctionalCaseFileForm, user_info=Depends(Permission())):
     stats = analyze_case_data(form.data)
+    case_items = extract_case_items(form.data)
     if stats["conflicts"]:
         return PityResponse.failed(f"{'、'.join(stats['conflicts'])}用例冲突")
     async with async_session() as session:
@@ -928,10 +995,19 @@ async def insert_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
         session.add(model)
         await session.flush()
         await session.refresh(model)
-        await rebuild_functional_case_items(session, model, user_info["id"])
         await session.commit()
         user_result = await session.execute(select(User).where(User.id == model.create_user))
         user = user_result.scalars().first()
+
+    asyncio.create_task(
+        sync_functional_case_items_async(
+            file_id=model.id,
+            operator_user_id=user_info["id"],
+            case_items=case_items,
+            rebuild=True,
+        )
+    )
+
     data = serialize_model(model)
     data["data"] = form.data
     data["case_count"] = int(stats["case_count"] or 0)
@@ -947,6 +1023,7 @@ async def update_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
     if not form.id:
         return PityResponse.failed("id不能为空")
     stats = analyze_case_data(form.data)
+    case_items = extract_case_items(form.data)
     if stats["conflicts"]:
         return PityResponse.failed(f"{'、'.join(stats['conflicts'])}用例冲突")
     async with async_session() as session:
@@ -970,18 +1047,51 @@ async def update_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
         )
         if directory_result.scalars().first() is None:
             return PityResponse.failed("目录不存在")
+        dumped_case_data = dump_case_data(form.data)
+        old_case_data = str(model.case_data or "")
+        new_case_data = str(dumped_case_data or "")
+        case_data_changed = old_case_data != new_case_data
+
+        old_title = model.title
+        old_project_id = model.project_id
+        old_directory_id = model.directory_id
+
         model.title = form.title
         model.project_id = form.project_id
         model.directory_id = form.directory_id
-        model.case_data = dump_case_data(form.data)
+        model.case_data = dumped_case_data
         model.sort_index = form.sort_index
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
-        await rebuild_functional_case_items(session, model, user_info["id"])
+
+        file_meta_changed = (
+            old_title != model.title
+            or old_project_id != model.project_id
+            or old_directory_id != model.directory_id
+        )
         await session.commit()
         await session.refresh(model)
         user_result = await session.execute(select(User).where(User.id == model.create_user))
         user = user_result.scalars().first()
+
+    if case_data_changed:
+        asyncio.create_task(
+            sync_functional_case_items_async(
+                file_id=model.id,
+                operator_user_id=user_info["id"],
+                case_items=case_items,
+                rebuild=True,
+            )
+        )
+    elif file_meta_changed:
+        asyncio.create_task(
+            sync_functional_case_items_async(
+                file_id=model.id,
+                operator_user_id=user_info["id"],
+                rebuild=False,
+            )
+        )
+
     data = serialize_model(model)
     data["data"] = form.data
     data["case_count"] = int(stats["case_count"] or 0)
