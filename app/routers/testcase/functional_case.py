@@ -3,6 +3,7 @@ import os
 import re
 import time
 import asyncio
+import hashlib
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
@@ -205,17 +206,29 @@ async def ensure_functional_case_schema(session):
                 "project_id INT NOT NULL DEFAULT 0,"
                 "directory_id INT NOT NULL DEFAULT 0,"
                 "file_id INT NOT NULL DEFAULT 0,"
+                "case_uid VARCHAR(64) NOT NULL,"
                 "file_title VARCHAR(128) NOT NULL,"
                 "case_name VARCHAR(512) NOT NULL,"
                 "case_path TEXT NULL,"
                 "case_priority VARCHAR(32) NULL,"
                 "case_pass INT NOT NULL DEFAULT 0,"
                 "KEY idx_fc_item_file_deleted (file_id, deleted_at),"
+                "KEY idx_fc_item_file_uid_deleted (file_id, case_uid, deleted_at),"
                 "KEY idx_fc_item_project_created (project_id, deleted_at, created_at),"
                 "KEY idx_fc_item_creator_created (create_user, deleted_at, created_at)"
                 ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='功能用例明细表'"
             )
         )
+        item_case_uid_column = await session.execute(
+            text("SHOW COLUMNS FROM pity_functional_case_item LIKE 'case_uid'")
+        )
+        if item_case_uid_column.first() is None:
+            await session.execute(
+                text(
+                    "ALTER TABLE pity_functional_case_item "
+                    "ADD COLUMN case_uid VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用例稳定标识'"
+                )
+            )
         item_case_pass_column = await session.execute(
             text("SHOW COLUMNS FROM pity_functional_case_item LIKE 'case_pass'")
         )
@@ -258,6 +271,17 @@ def _parse_priority(icons):
     return None
 
 
+def _resolve_case_uid(node_data, case_path, case_name, case_priority):
+    case_uid = str((node_data or {}).get("case_uid") or "").strip()
+    if case_uid:
+        return case_uid
+    uid_value = str((node_data or {}).get("uid") or "").strip()
+    if uid_value:
+        return f"legacy_uid_{uid_value}"
+    raw = f"{case_path}|{case_name}|{case_priority or ''}"
+    return f"legacy_{hashlib.md5(raw.encode('utf-8')).hexdigest()}"
+
+
 def extract_case_items(data):
     root = get_root_node(data)
     if not isinstance(root, dict):
@@ -278,9 +302,11 @@ def extract_case_items(data):
 
         is_pass = any(isinstance(icon, str) and icon == "progress_8" for icon in icons)
         if priority is not None:
+            case_path = " / ".join([p for p in next_path if p])
             items.append({
+                "case_uid": _resolve_case_uid(node_data, case_path, node_text, priority),
                 "case_name": node_text,
-                "case_path": " / ".join([p for p in next_path if p]),
+                "case_path": case_path,
                 "case_priority": priority,
                 "case_pass": 1 if is_pass else 0,
             })
@@ -304,54 +330,122 @@ def parse_case_data(case_text, source='database'):
         return None
 
 
-async def rebuild_functional_case_items(session, model, operator_user_id: int, case_items=None):
+async def rebuild_functional_case_items(session, model, operator_user_id: int, case_items=None, refresh_meta=False):
     now_deleted = int(datetime.now().timestamp())
     now_dt = datetime.now()
-
-    await session.execute(
-        text(
-            "UPDATE pity_functional_case_item "
-            "SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
-            "WHERE file_id=:file_id AND deleted_at=0"
-        ),
-        {
-            "deleted_at": now_deleted,
-            "update_user": operator_user_id,
-            "updated_at": now_dt,
-            "file_id": model.id,
-        },
-    )
 
     if case_items is None:
         case_data = parse_case_data(getattr(model, "case_data", None), source="database")
         case_items = extract_case_items(case_data)
-    if not case_items:
-        return
-
-    insert_sql = text(
-        "INSERT INTO pity_functional_case_item "
-        "(project_id, directory_id, file_id, file_title, case_name, case_path, case_priority, case_pass, deleted_at, create_user, update_user, created_at, updated_at) "
-        "VALUES (:project_id, :directory_id, :file_id, :file_title, :case_name, :case_path, :case_priority, :case_pass, 0, :create_user, :update_user, :created_at, :updated_at)"
-    )
-
-    rows = []
-    for item in case_items:
-        rows.append({
-            "project_id": model.project_id,
-            "directory_id": model.directory_id,
-            "file_id": model.id,
-            "file_title": model.title,
+    incoming_items = case_items or []
+    incoming_map = {}
+    for item in incoming_items:
+        uid = str(item.get("case_uid") or "").strip()
+        if not uid:
+            continue
+        incoming_map[uid] = {
+            "case_uid": uid,
             "case_name": item.get("case_name") or "未命名节点",
             "case_path": item.get("case_path"),
             "case_priority": item.get("case_priority"),
             "case_pass": int(item.get("case_pass") or 0),
-            "create_user": operator_user_id,
-            "update_user": operator_user_id,
-            "created_at": now_dt,
-            "updated_at": now_dt,
-        })
+        }
 
-    await session.execute(insert_sql, rows)
+    existing_result = await session.execute(
+        text(
+            "SELECT id, case_uid, case_name, case_path, case_priority, case_pass "
+            "FROM pity_functional_case_item WHERE file_id=:file_id AND deleted_at=0"
+        ),
+        {"file_id": model.id},
+    )
+    existing_rows = existing_result.mappings().all()
+    existing_map = {str(row.get("case_uid") or ""): row for row in existing_rows if str(row.get("case_uid") or "")}
+
+    if refresh_meta:
+        await update_functional_case_item_meta(session, model, operator_user_id)
+
+    if existing_map:
+        to_soft_delete = [uid for uid in existing_map.keys() if uid not in incoming_map]
+        if to_soft_delete:
+            delete_rows = []
+            for uid in to_soft_delete:
+                row = existing_map.get(uid)
+                if row and row.get("id") is not None:
+                    delete_rows.append({
+                        "id": int(row.get("id")),
+                        "deleted_at": now_deleted,
+                        "update_user": operator_user_id,
+                        "updated_at": now_dt,
+                    })
+            await session.execute(
+                text(
+                    "UPDATE pity_functional_case_item "
+                    "SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
+                    "WHERE id=:id AND deleted_at=0"
+                ),
+                delete_rows,
+            )
+
+    insert_rows = []
+    update_rows = []
+    for uid, item in incoming_map.items():
+        old = existing_map.get(uid)
+        if not old:
+            insert_rows.append({
+                "project_id": model.project_id,
+                "directory_id": model.directory_id,
+                "file_id": model.id,
+                "case_uid": uid,
+                "file_title": model.title,
+                "case_name": item["case_name"],
+                "case_path": item["case_path"],
+                "case_priority": item["case_priority"],
+                "case_pass": item["case_pass"],
+                "create_user": operator_user_id,
+                "update_user": operator_user_id,
+                "created_at": now_dt,
+                "updated_at": now_dt,
+            })
+            continue
+        if (
+            str(old.get("case_name") or "") != str(item["case_name"] or "")
+            or str(old.get("case_path") or "") != str(item["case_path"] or "")
+            or str(old.get("case_priority") or "") != str(item["case_priority"] or "")
+            or int(old.get("case_pass") or 0) != int(item["case_pass"] or 0)
+        ):
+            update_rows.append({
+                "id": int(old.get("id")),
+                "project_id": model.project_id,
+                "directory_id": model.directory_id,
+                "file_title": model.title,
+                "case_name": item["case_name"],
+                "case_path": item["case_path"],
+                "case_priority": item["case_priority"],
+                "case_pass": item["case_pass"],
+                "update_user": operator_user_id,
+                "updated_at": now_dt,
+            })
+
+    if insert_rows:
+        await session.execute(
+            text(
+                "INSERT INTO pity_functional_case_item "
+                "(project_id, directory_id, file_id, case_uid, file_title, case_name, case_path, case_priority, case_pass, deleted_at, create_user, update_user, created_at, updated_at) "
+                "VALUES (:project_id, :directory_id, :file_id, :case_uid, :file_title, :case_name, :case_path, :case_priority, :case_pass, 0, :create_user, :update_user, :created_at, :updated_at)"
+            ),
+            insert_rows,
+        )
+    if update_rows:
+        await session.execute(
+            text(
+                "UPDATE pity_functional_case_item SET "
+                "project_id=:project_id, directory_id=:directory_id, file_title=:file_title, "
+                "case_name=:case_name, case_path=:case_path, case_priority=:case_priority, case_pass=:case_pass, "
+                "update_user=:update_user, updated_at=:updated_at "
+                "WHERE id=:id"
+            ),
+            update_rows,
+        )
 
 
 async def update_functional_case_item_meta(session, model, operator_user_id: int):
