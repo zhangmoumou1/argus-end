@@ -11,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.handler.fatcory import PityResponse
 from app.models import async_session
-from app.models.functional_case import PityFunctionalCaseDirectory, PityFunctionalCaseFile
+from app.models.functional_case import PityFunctionalCaseDirectory, PityFunctionalCaseFile, PityFunctionalCaseItem
 from app.models.user import User
 from app.routers import Permission
 from app.schema.functional_case import (
@@ -191,9 +191,43 @@ async def ensure_functional_case_schema(session):
                     "ADD COLUMN project_id INT NOT NULL DEFAULT 0 COMMENT '项目ID'"
                 )
             )
+
+        await session.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS pity_functional_case_item ("
+                "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+                "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+                "deleted_at BIGINT NOT NULL DEFAULT 0,"
+                "create_user INT NULL,"
+                "update_user INT NULL,"
+                "project_id INT NOT NULL DEFAULT 0,"
+                "directory_id INT NOT NULL DEFAULT 0,"
+                "file_id INT NOT NULL DEFAULT 0,"
+                "file_title VARCHAR(128) NOT NULL,"
+                "case_name VARCHAR(512) NOT NULL,"
+                "case_path TEXT NULL,"
+                "case_priority VARCHAR(32) NULL,"
+                "case_pass INT NOT NULL DEFAULT 0,"
+                "KEY idx_fc_item_file_deleted (file_id, deleted_at),"
+                "KEY idx_fc_item_project_created (project_id, deleted_at, created_at),"
+                "KEY idx_fc_item_creator_created (create_user, deleted_at, created_at)"
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='功能用例明细表'"
+            )
+        )
+        item_case_pass_column = await session.execute(
+            text("SHOW COLUMNS FROM pity_functional_case_item LIKE 'case_pass'")
+        )
+        if item_case_pass_column.first() is None:
+            await session.execute(
+                text(
+                    "ALTER TABLE pity_functional_case_item "
+                    "ADD COLUMN case_pass INT NOT NULL DEFAULT 0 COMMENT '是否通过(1通过,0不通过)'"
+                )
+            )
+
         await session.commit()
     except OperationalError as exc:
-        # duplicate column race in concurrent requests
         if "Duplicate column name" not in str(exc):
             raise
     FUNCTIONAL_CASE_SCHEMA_READY = True
@@ -216,12 +250,115 @@ def truncate_case_text(value):
     return text[:10]
 
 
+def _parse_priority(icons):
+    for icon in icons:
+        if isinstance(icon, str) and icon.startswith("priority_"):
+            return icon.split("_", 1)[1] or ""
+    return None
+
+
+def extract_case_items(data):
+    root = get_root_node(data)
+    if not isinstance(root, dict):
+        return []
+
+    items = []
+
+    def walk(node, path_nodes):
+        node_data = node.get("data") if isinstance(node, dict) else {}
+        node_data = node_data if isinstance(node_data, dict) else {}
+        node_text = str(node_data.get("text") or "未命名节点").strip() or "未命名节点"
+        raw_icons = node_data.get("icon")
+        icons = raw_icons if isinstance(raw_icons, list) else [raw_icons] if raw_icons else []
+        priority = _parse_priority(icons)
+
+        next_path = list(path_nodes)
+        next_path.append(node_text)
+
+        is_pass = any(isinstance(icon, str) and icon == "progress_8" for icon in icons)
+        if priority is not None:
+            items.append({
+                "case_name": node_text,
+                "case_path": " / ".join([p for p in next_path if p]),
+                "case_priority": priority,
+                "case_pass": 1 if is_pass else 0,
+            })
+
+        children = node.get("children") if isinstance(node, dict) else []
+        for child in children or []:
+            walk(child, next_path)
+
+    walk(root, [])
+    return items
+
+
+def parse_case_data(case_text, source='database'):
+    text_value = str(case_text or '').strip()
+    if not text_value:
+        return None
+    try:
+        return json.loads(text_value)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning(f"read functional case data failed, source={source}, error={exc}")
+        return None
+
+
+async def rebuild_functional_case_items(session, model, operator_user_id: int):
+    now_deleted = int(datetime.now().timestamp())
+    now_dt = datetime.now()
+
+    await session.execute(
+        text(
+            "UPDATE pity_functional_case_item "
+            "SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
+            "WHERE file_id=:file_id AND deleted_at=0"
+        ),
+        {
+            "deleted_at": now_deleted,
+            "update_user": operator_user_id,
+            "updated_at": now_dt,
+            "file_id": model.id,
+        },
+    )
+
+    case_data = parse_case_data(getattr(model, "case_data", None), source="database")
+    case_items = extract_case_items(case_data)
+    if not case_items:
+        return
+
+    insert_sql = text(
+        "INSERT INTO pity_functional_case_item "
+        "(project_id, directory_id, file_id, file_title, case_name, case_path, case_priority, case_pass, deleted_at, create_user, update_user, created_at, updated_at) "
+        "VALUES (:project_id, :directory_id, :file_id, :file_title, :case_name, :case_path, :case_priority, :case_pass, 0, :create_user, :update_user, :created_at, :updated_at)"
+    )
+
+    rows = []
+    for item in case_items:
+        rows.append({
+            "project_id": model.project_id,
+            "directory_id": model.directory_id,
+            "file_id": model.id,
+            "file_title": model.title,
+            "case_name": item.get("case_name") or "未命名节点",
+            "case_path": item.get("case_path"),
+            "case_priority": item.get("case_priority"),
+            "case_pass": int(item.get("case_pass") or 0),
+            "create_user": operator_user_id,
+            "update_user": operator_user_id,
+            "created_at": now_dt,
+            "updated_at": now_dt,
+        })
+
+    await session.execute(insert_sql, rows)
+
+
 def analyze_case_data(data):
     root = get_root_node(data)
     if not isinstance(root, dict):
-        return {"case_count": 0, "conflicts": []}
+        return {"case_count": 0, "pass_count": 0, "conflicts": []}
 
     case_count = 0
+    pass_count = 0
     conflict_nodes = []
     conflict_seen = set()
 
@@ -233,16 +370,19 @@ def analyze_case_data(data):
         conflict_nodes.append(key)
 
     def walk(node, priority_path):
-        nonlocal case_count
+        nonlocal case_count, pass_count
         node_data = node.get("data") if isinstance(node, dict) else {}
         node_data = node_data if isinstance(node_data, dict) else {}
         node_text = node_data.get("text")
         raw_icons = node_data.get("icon")
         icons = raw_icons if isinstance(raw_icons, list) else [raw_icons] if raw_icons else []
         has_priority = any(isinstance(icon, str) and icon.startswith("priority_") for icon in icons)
+        is_pass = any(isinstance(icon, str) and icon == "progress_8" for icon in icons)
         next_priority_path = list(priority_path)
         if has_priority:
             case_count += 1
+            if is_pass:
+                pass_count += 1
             if priority_path:
                 for item in priority_path:
                     add_conflict(item)
@@ -253,8 +393,7 @@ def analyze_case_data(data):
             walk(child, next_priority_path)
 
     walk(root, [])
-    return {"case_count": case_count, "conflicts": conflict_nodes}
-
+    return {"case_count": case_count, "pass_count": pass_count, "conflicts": conflict_nodes}
 
 def build_ai_prompt_content(form: FunctionalCaseAIGenerateForm):
     requirement_text = truncate_ai_text(form.requirement_text, AI_TEXT_LIMIT)
@@ -429,11 +568,12 @@ def call_kimi_generate(form: FunctionalCaseAIGenerateForm):
     return extract_json_object(content)
 
 
-def build_tree(records, file_case_count_map=None):
+def build_tree(records, file_stats_map=None):
     node_map = {}
     roots = []
-    file_case_count_map = file_case_count_map or {}
+    file_stats_map = file_stats_map or {}
     own_case_count_map = {}
+    own_pass_count_map = {}
     for item in records:
         node = {
             "title": item.name,
@@ -449,14 +589,16 @@ def build_tree(records, file_case_count_map=None):
         }
         node_map[item.id] = node
         own_case_count_map[item.id] = 0
+        own_pass_count_map[item.id] = 0
     for item in records:
         node = node_map[item.id]
         if item.parent and item.parent in node_map:
             node_map[item.parent]["children"].append(node)
         else:
             roots.append(node)
-    for directory_id, count in file_case_count_map.items():
-        own_case_count_map[directory_id] = own_case_count_map.get(directory_id, 0) + count
+    for directory_id, stats in file_stats_map.items():
+        own_case_count_map[directory_id] = own_case_count_map.get(directory_id, 0) + int(stats.get("case_count", 0))
+        own_pass_count_map[directory_id] = own_pass_count_map.get(directory_id, 0) + int(stats.get("pass_count", 0))
 
     def sort_nodes(nodes):
         nodes.sort(key=lambda x: (x.get("sort_index") or 0, x.get("id") or 0))
@@ -464,13 +606,17 @@ def build_tree(records, file_case_count_map=None):
             sort_nodes(child["children"])
 
     def calc_case_count(nodes):
-        total = 0
+        total_case = 0
+        total_pass = 0
         for node in nodes:
-            child_total = calc_case_count(node["children"])
-            own = own_case_count_map.get(node["id"], 0)
-            node["case_count"] = own + child_total
-            total += node["case_count"]
-        return total
+            child_case, child_pass = calc_case_count(node["children"])
+            own_case = own_case_count_map.get(node["id"], 0)
+            own_pass = own_pass_count_map.get(node["id"], 0)
+            node["case_count"] = own_case + child_case
+            node["pass_count"] = own_pass + child_pass
+            total_case += node["case_count"]
+            total_pass += node["pass_count"]
+        return total_case, total_pass
 
     sort_nodes(roots)
     calc_case_count(roots)
@@ -478,14 +624,7 @@ def build_tree(records, file_case_count_map=None):
 
 
 def read_case_file(file_path):
-    if not file_path or not os.path.exists(file_path):
-        return None
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        logger.warning(f"read functional case file failed, path={file_path}, error={exc}")
-        return None
+    return None
 
 
 def dump_case_data(data):
@@ -496,24 +635,10 @@ def dump_case_data(data):
         return None
 
 
-def parse_case_data(case_text, source='database'):
-    text_value = str(case_text or '').strip()
-    if not text_value:
-        return None
-    try:
-        return json.loads(text_value)
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        logger.warning(f"read functional case data failed, source={source}, error={exc}")
-        return None
-
-
 def read_case_payload(model):
     if model is None:
         return None
-    case_data = parse_case_data(getattr(model, 'case_data', None), source='database')
-    if case_data is not None:
-        return case_data
-    return read_case_file(getattr(model, 'file_path', None))
+    return parse_case_data(getattr(model, 'case_data', None), source='database')
 
 
 async def collect_directory_ids(project_id: int, directory_id: int):
@@ -537,7 +662,6 @@ async def collect_directory_ids(project_id: int, directory_id: int):
         cursor.extend(children)
     return ans
 
-
 @router.get("/directory")
 async def list_directory(project_id: int, _=Depends(Permission())):
     async with async_session() as session:
@@ -558,11 +682,15 @@ async def list_directory(project_id: int, _=Depends(Permission())):
         )
         records = directory_result.scalars().all()
         files = file_result.scalars().all()
-    file_case_count_map = {}
+    file_stats_map = {}
     for item in files:
         stats = analyze_case_data(read_case_payload(item))
-        file_case_count_map[item.directory_id] = file_case_count_map.get(item.directory_id, 0) + stats["case_count"]
-    return PityResponse.success(build_tree(records, file_case_count_map))
+        directory_id = item.directory_id
+        if directory_id not in file_stats_map:
+            file_stats_map[directory_id] = {"case_count": 0, "pass_count": 0}
+        file_stats_map[directory_id]["case_count"] += int(stats.get("case_count") or 0)
+        file_stats_map[directory_id]["pass_count"] += int(stats.get("pass_count") or 0)
+    return PityResponse.success(build_tree(records, file_stats_map))
 
 
 @router.post("/directory/insert")
@@ -677,14 +805,32 @@ async def delete_directory(id: int, project_id: int, user_info=Depends(Permissio
                 PityFunctionalCaseFile.project_id == project_id,
             )
         )
+        files = case_result.scalars().all()
+
         for item in directory_result.scalars().all():
             item.deleted_at = now_deleted
             item.update_user = user_info["id"]
             item.updated_at = datetime.now()
-        for item in case_result.scalars().all():
+        for item in files:
             item.deleted_at = now_deleted
             item.update_user = user_info["id"]
             item.updated_at = datetime.now()
+
+        for item in files:
+            await session.execute(
+                text(
+                    "UPDATE pity_functional_case_item "
+                    "SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
+                    "WHERE file_id=:file_id AND deleted_at=0"
+                ),
+                {
+                    "deleted_at": now_deleted,
+                    "update_user": user_info["id"],
+                    "updated_at": datetime.now(),
+                    "file_id": item.id,
+                },
+            )
+
         await session.commit()
     return PityResponse.success()
 
@@ -713,9 +859,7 @@ async def list_files(project_id: int, directory_id: int = None, title: str = "",
         user_ids = list({item.create_user for item in files if item.create_user is not None})
         user_name_map = {}
         if user_ids:
-            user_result = await session.execute(
-                select(User).where(User.id.in_(user_ids))
-            )
+            user_result = await session.execute(select(User).where(User.id.in_(user_ids)))
             user_name_map = {item.id: pick_user_name(item) for item in user_result.scalars().all()}
         data = []
         for item in files:
@@ -723,6 +867,7 @@ async def list_files(project_id: int, directory_id: int = None, title: str = "",
             stats = analyze_case_data(case_data)
             row = serialize_model(item)
             row["case_count"] = int(stats["case_count"] or 0)
+            row["pass_count"] = int(stats.get("pass_count") or 0)
             row["case_num"] = row["case_count"]
             row["create_user_name"] = user_name_map.get(item.create_user, "")
             row["creator_name"] = row["create_user_name"]
@@ -734,27 +879,21 @@ async def list_files(project_id: int, directory_id: int = None, title: str = "",
 async def query_file(id: int, project_id: int = None, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_functional_case_schema(session)
-        filters = [
-            PityFunctionalCaseFile.id == id,
-            PityFunctionalCaseFile.deleted_at == 0,
-        ]
+        filters = [PityFunctionalCaseFile.id == id, PityFunctionalCaseFile.deleted_at == 0]
         if project_id is not None:
             filters.append(PityFunctionalCaseFile.project_id == project_id)
-        result = await session.execute(
-            select(PityFunctionalCaseFile).where(*filters)
-        )
+        result = await session.execute(select(PityFunctionalCaseFile).where(*filters))
         model = result.scalars().first()
         if model is None:
             return PityResponse.failed("功能用例不存在")
-        user_result = await session.execute(
-            select(User).where(User.id == model.create_user)
-        )
+        user_result = await session.execute(select(User).where(User.id == model.create_user))
         user = user_result.scalars().first()
         data = serialize_model(model)
         case_data = read_case_payload(model)
         stats = analyze_case_data(case_data)
         data["data"] = case_data
         data["case_count"] = int(stats["case_count"] or 0)
+        data["pass_count"] = int(stats.get("pass_count") or 0)
         data["case_num"] = data["case_count"]
         data["create_user_name"] = pick_user_name(user)
         data["creator_name"] = data["create_user_name"]
@@ -787,15 +926,16 @@ async def insert_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
             case_data=dump_case_data(form.data),
         )
         session.add(model)
-        await session.commit()
+        await session.flush()
         await session.refresh(model)
-        user_result = await session.execute(
-            select(User).where(User.id == model.create_user)
-        )
+        await rebuild_functional_case_items(session, model, user_info["id"])
+        await session.commit()
+        user_result = await session.execute(select(User).where(User.id == model.create_user))
         user = user_result.scalars().first()
     data = serialize_model(model)
     data["data"] = form.data
     data["case_count"] = int(stats["case_count"] or 0)
+    data["pass_count"] = int(stats.get("pass_count") or 0)
     data["case_num"] = data["case_count"]
     data["create_user_name"] = pick_user_name(user)
     data["creator_name"] = data["create_user_name"]
@@ -837,15 +977,15 @@ async def update_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
         model.sort_index = form.sort_index
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
+        await rebuild_functional_case_items(session, model, user_info["id"])
         await session.commit()
         await session.refresh(model)
-        user_result = await session.execute(
-            select(User).where(User.id == model.create_user)
-        )
+        user_result = await session.execute(select(User).where(User.id == model.create_user))
         user = user_result.scalars().first()
     data = serialize_model(model)
     data["data"] = form.data
     data["case_count"] = int(stats["case_count"] or 0)
+    data["pass_count"] = int(stats.get("pass_count") or 0)
     data["case_num"] = data["case_count"]
     data["create_user_name"] = pick_user_name(user)
     data["creator_name"] = data["create_user_name"]
@@ -866,6 +1006,7 @@ async def ai_generate_file(form: FunctionalCaseAIGenerateForm, _=Depends(Permiss
             "title": title,
             "data": data,
             "case_count": int(stats["case_count"] or 0),
+            "pass_count": int(stats.get("pass_count") or 0),
             "case_num": int(stats["case_count"] or 0),
         })
     except Exception as exc:
@@ -909,20 +1050,28 @@ async def move_file(form: FunctionalCaseFileMoveForm, user_info=Depends(Permissi
 async def delete_file(id: int, project_id: int = None, user_info=Depends(Permission())):
     async with async_session() as session:
         await ensure_functional_case_schema(session)
-        filters = [
-            PityFunctionalCaseFile.id == id,
-            PityFunctionalCaseFile.deleted_at == 0,
-        ]
+        filters = [PityFunctionalCaseFile.id == id, PityFunctionalCaseFile.deleted_at == 0]
         if project_id is not None:
             filters.append(PityFunctionalCaseFile.project_id == project_id)
-        result = await session.execute(
-            select(PityFunctionalCaseFile).where(*filters)
-        )
+        result = await session.execute(select(PityFunctionalCaseFile).where(*filters))
         model = result.scalars().first()
         if model is None:
             return PityResponse.failed("功能用例不存在")
         model.deleted_at = int(datetime.now().timestamp())
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
+        await session.execute(
+            text(
+                "UPDATE pity_functional_case_item "
+                "SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
+                "WHERE file_id=:file_id AND deleted_at=0"
+            ),
+            {
+                "deleted_at": model.deleted_at,
+                "update_user": user_info["id"],
+                "updated_at": datetime.now(),
+                "file_id": model.id,
+            },
+        )
         await session.commit()
     return PityResponse.success()

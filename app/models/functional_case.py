@@ -39,6 +39,31 @@ class PityFunctionalCaseFile(PityBase):
         self.sort_index = sort_index
 
 
+class PityFunctionalCaseItem(PityBase):
+    __tablename__ = "pity_functional_case_item"
+
+    project_id = Column(INT, ForeignKey("pity_project.id"), index=True, nullable=True, comment="所属项目")
+    directory_id = Column(INT, nullable=False, comment="所属目录")
+    file_id = Column(INT, nullable=False, index=True, comment="所属功能用例文件ID")
+    file_title = Column(String(128), nullable=False, comment="功能用例文件标题")
+    case_name = Column(String(512), nullable=False, comment="功能用例名称")
+    case_path = Column(TEXT, nullable=True, comment="功能用例节点路径")
+    case_priority = Column(String(32), nullable=True, comment="优先级")
+    case_pass = Column(INT, nullable=False, default=0, comment="是否通过(1通过,0不通过)")
+
+    def __init__(self, project_id, directory_id, file_id, file_title, case_name, user, case_path=None, case_priority=None,
+                 case_pass=0):
+        super().__init__(user)
+        self.project_id = project_id
+        self.directory_id = directory_id
+        self.file_id = file_id
+        self.file_title = file_title
+        self.case_name = case_name
+        self.case_path = case_path
+        self.case_priority = case_priority
+        self.case_pass = case_pass
+
+
 class PityFunctionalCaseSkillDoc(PityBase):
     __tablename__ = "pity_functional_case_skill_doc"
 
