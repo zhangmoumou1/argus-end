@@ -21,7 +21,6 @@ class Constructor(PityBase):
     case_id = Column(INT, nullable=False, comment="所属用例id")
     public = Column(BOOLEAN, default=False, comment="是否共享")
     index = Column(INT, comment="前置条件顺序")
-    # 2021-12-18 是否是后置条件
     suffix = Column(BOOLEAN, default=False, comment="是否是后置条件，默认为否")
 
     def __init__(self, type, name, enable, constructor_json, case_id, public, user_id, value="", suffix=False, id=None,
@@ -45,7 +44,6 @@ class Constructor(PityBase):
         ).order_by(desc(Constructor.index))
         data = await session.execute(sql)
         query = data.scalars().first()
-        # 如果没有查出来前/后置条件，那么给他0
         if query is None:
             return 0
         return query.index + 1

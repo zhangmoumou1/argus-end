@@ -37,6 +37,13 @@ class TestCaseForm(BaseModel):
     directory_id: int
     request_type: int
 
+    api_service_id: int = 0
+    api_endpoint_id: int = 0
+    api_version_id: int = 0
+    api_version_no: Optional[str] = None
+    api_bind_mode: str = "pinned"
+    api_pending_update: int = 0
+
     @validator("priority", "status", "directory_id", "request_type", "url", "name")
     def name_not_empty(cls, v):
         if isinstance(v, str) and len(v.strip()) == 0:

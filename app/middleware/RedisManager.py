@@ -224,7 +224,7 @@ class RedisHelper(object):
         """
         # 默认录制1小时
         value = json.dumps({"user_id": user_id, "regex": regex}, ensure_ascii=False)
-        RedisHelper.pity_redis_client.set(RedisHelper.get_key(f"record:ip:{address}"), value, ex=3600)
+        RedisHelper.pity_redis_client.set(RedisHelper.get_key(f"record:ip:{address}"), value, ex=7200)
         # 清除上次录制数据
         RedisHelper.pity_redis_client.delete(RedisHelper.get_key(f"record:{address}:requests"))
 

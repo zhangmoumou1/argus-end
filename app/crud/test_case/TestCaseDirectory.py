@@ -94,10 +94,9 @@ class PityTestcaseDirectoryDao(Mapper):
 
                     old_parent = current.parent
                     old_index = current.sort_index or 0
-                    # 支持显式传 parent=null 移动到根目录；不传parent则保持原父级
-                    target_parent = form.parent if "parent" in form.__fields_set__ else old_parent
+                    fields_set = getattr(form, "model_fields_set", getattr(form, "__fields_set__", set()))
+                    target_parent = form.parent if "parent" in fields_set else old_parent
 
-                    # 防止循环引用: 不能把目录移动到自己的子目录下
                     if target_parent == current.id:
                         raise Exception("目录不能移动到自身下")
                     if target_parent is not None:
@@ -114,7 +113,6 @@ class PityTestcaseDirectoryDao(Mapper):
                         if target_parent in descendants:
                             raise Exception("目录不能移动到自己的子目录")
 
-                    # 同父目录不可重名校验（改名或换父级时）
                     if form.name:
                         dup_sql = select(PityTestcaseDirectory).where(
                             PityTestcaseDirectory.deleted_at == 0,
@@ -140,11 +138,7 @@ class PityTestcaseDirectoryDao(Mapper):
                         new_index = max_index + 1
                     else:
                         new_index = max(0, int(form.sort_index))
-                        if target_parent == old_parent:
-                            # 同父级移动时，当前节点占了一个坑位
-                            sibling_max = max_index
-                        else:
-                            sibling_max = max_index + 1
+                        sibling_max = max_index if target_parent == old_parent else max_index + 1
                         new_index = min(new_index, sibling_max)
 
                     if target_parent == old_parent:
@@ -175,7 +169,6 @@ class PityTestcaseDirectoryDao(Mapper):
                                 .values(sort_index=PityTestcaseDirectory.sort_index + 1)
                             )
                     else:
-                        # 旧父目录腾位
                         await session.execute(
                             update(PityTestcaseDirectory)
                             .where(
@@ -186,7 +179,6 @@ class PityTestcaseDirectoryDao(Mapper):
                             )
                             .values(sort_index=PityTestcaseDirectory.sort_index - 1)
                         )
-                        # 新父目录插位
                         await session.execute(
                             update(PityTestcaseDirectory)
                             .where(
@@ -227,13 +219,6 @@ class PityTestcaseDirectoryDao(Mapper):
 
     @staticmethod
     async def get_directory_tree(project_id: int, case_node=None, move: bool = False) -> (list, dict):
-        """
-        通过项目获取目录树
-        :param project_id:
-        :param case_node:
-        :param move:
-        :return:
-        """
         res = await PityTestcaseDirectoryDao.list_directory(project_id)
         ans = list()
         ans_map = dict()
@@ -241,7 +226,6 @@ class PityTestcaseDirectoryDao(Mapper):
         parent_map = defaultdict(list)
         for directory in res:
             if directory.parent is None:
-                # 如果没有父亲，说明是最底层数据
                 ans.append(dict(
                     title=directory.name,
                     key=directory.id,
@@ -253,7 +237,6 @@ class PityTestcaseDirectoryDao(Mapper):
             else:
                 parent_map[directory.parent].append(directory.id)
             ans_map[directory.id] = directory
-        # 获取到所有数据信息
         for r in ans:
             await PityTestcaseDirectoryDao.get_directory(ans_map, parent_map, r.get('key'), r.get('children'), case_map,
                                                          case_node, move)
@@ -286,14 +269,14 @@ class PityTestcaseDirectoryDao(Mapper):
                 sort_index=temp.sort_index,
                 disabled=len(child) == 0 and not move
             ))
-            await PityTestcaseDirectoryDao.get_directory(ans_map, parent_map, temp.id, child, case_node, move=move)
+            await PityTestcaseDirectoryDao.get_directory(ans_map, parent_map, temp.id, child, case_map, case_node,
+                                                         move=move)
 
     @staticmethod
     async def get_directory_son(directory_id: int):
         parent_map = defaultdict(list)
         async with async_session() as session:
             ans = [directory_id]
-            # 找出父类为directory_id或者非根的目录
             sql = select(PityTestcaseDirectory) \
                 .where(PityTestcaseDirectory.deleted_at == 0,
                        or_(PityTestcaseDirectory.parent == directory_id, PityTestcaseDirectory.parent != None)) \
@@ -315,5 +298,4 @@ class PityTestcaseDirectoryDao(Mapper):
             sons = parent_map.get(s)
             if not sons:
                 continue
-            result.extend(sons)
             PityTestcaseDirectoryDao.get_sub_son(parent_map, sons, result)

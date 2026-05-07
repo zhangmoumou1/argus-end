@@ -223,16 +223,11 @@ def build_ai_prompt(context):
         "3. assert_type只允许: equal, not_equal, contain, not_contain, in, not_in, length_eq, length_gt, length_ge, length_le, length_lt, json_equal, text_in, text_not_in。\n"
         "4. 禁止输出: eq, contains, not_null, not_empty, exists。校验非空统一用not_equal + expected=\"None\"。\n"
         "5. include_asserts=false -> asserts=[]。否则每步至少保留1条$.code=0断言。\n"
-        "6. include_extractors=false -> out_parameters=[]；include_extractors=true 时，只要后续步骤会用到动态数据，前序步骤必须生成 out_parameters。\n"
-        "7. out_parameters格式固定:{\"name\":\"变量名\",\"expression\":\"JSONPath\",\"source\":1,\"match_index\":\"0\"}。name只能用英文/数字/下划线，如 entityId、entityName、latestId。\n"
-        "8. 同一流程内变量引用统一使用${变量名}。后续请求的url/query/body/header必须真实引用前序out_parameters的变量。禁止虚构${【caseX】变量}；business_goal里已有外部变量除外。\n"
-        "9. pre_steps必须写清依赖来源，例如: 依赖步骤1提取${entityName}查询列表、依赖步骤2提取${entityId}删除数据。真正依赖关系靠out_parameters和${变量名}。\n"
-        "10. 如果business_goal包含 新增/创建/保存 + 列表/查询 + 删除/移除，必须按以下链路生成：新增步骤提取可用于查询的名称/编码变量；列表/查询步骤使用该变量过滤最新数据，并提取删除需要的id；删除步骤必须在url或body中使用${id变量}。\n"
-        "11. 如果新增接口响应可能直接返回id，也可以在新增步骤提取 createdId；但删除前仍应优先通过列表/详情再次提取 latestId，避免删除错数据。\n"
-        "12. 生成删除/编辑/详情步骤时，禁止写死id、禁止使用示例id、禁止留空id，必须使用${变量名}。\n"
-        "13. include_negative=false时只生成主流程。cases数量 <= 已选接口数 + 1。\n"
-        "14. 优先按business_goal生成CRUD主链路，例如 新增 -> 列表/查询提取id -> 编辑/删除。\n"
-        "强制示例: 新增数据 body.name=Auto_${timestamp} 且 out_parameters=[{name:'entityName',expression:'$.data.name',source:1}]；列表url或body使用${entityName}查询，并 out_parameters=[{name:'entityId',expression:'$.data.list[0].id',source:1}]；删除url=/delete?id=${entityId}。\n"
+        "6. include_extractors=false -> out_parameters=[]。否则提取后续步骤必需变量，格式:{\"name\":\"\",\"expression\":\"$.data.id\",\"source\":1,\"match_index\":\"0\"}。\n"
+        "7. 同一流程内变量引用统一使用${变量名}。禁止虚构${【caseX】变量}；外部已有变量除外。\n"
+        "8. pre_steps只写简短中文依赖说明。真正依赖关系靠out_parameters和${变量名}。\n"
+        "9. include_negative=false时只生成主流程。cases数量 <= 已选接口数 + 1。\n"
+        "10. 优先按business_goal生成CRUD主链路，例如 新增 -> 列表/查询提取id -> 编辑/删除。\n"
         f"上下文:\n{json.dumps(lightweight_context, ensure_ascii=False)}"
     )
 
@@ -296,11 +291,11 @@ def build_fallback_flow_payload(context, reason=""):
             "out_parameters": out_parameters,
             "pre_steps": pre_steps,
             "tags": ["AI生成", "流程场景", "超时兜底"],
-            "reason": "AI模型超时后自动按接口顺序生成，可直接微调后保存",
+            "reason": "Kimi超时后自动按接口顺序生成，可直接微调后保存",
         })
     return {
         "scenario_name": "流程场景-超时兜底预览",
-        "summary": "AI模型超时，已使用本地规则生成可编辑的流程场景预览",
+        "summary": "Kimi 超时，已使用本地规则生成可编辑的流程场景预览",
         "warnings": [reason] if reason else [],
         "cases": cases,
     }
@@ -325,12 +320,12 @@ def call_kimi_for_flow_cases(context, ai_config=None):
         context_text = json.dumps(context, ensure_ascii=False)
     except Exception:
         context_text = str(context)
-    logger.info(f"flow-preview ai context provider={provider}, model={model}, context={context_text}")
-    logger.info(f"flow-preview ai prompt begin provider={provider}, model={model}")
+    logger.info(f"flow-preview kimi context={context_text}")
+    logger.info("flow-preview kimi prompt begin")
     chunk_size = 1800
     for idx in range(0, len(prompt), chunk_size):
-        logger.info(f"flow-preview ai prompt chunk[{idx // chunk_size + 1}] provider={provider}, model={model}, text={prompt[idx:idx + chunk_size]}")
-    logger.info(f"flow-preview ai prompt end provider={provider}, model={model}")
+        logger.info(f"flow-preview kimi prompt chunk[{idx // chunk_size + 1}]={prompt[idx:idx + chunk_size]}")
+    logger.info("flow-preview kimi prompt end")
     request_payload = {
         "model": model,
         "temperature": 1,
@@ -350,31 +345,31 @@ def call_kimi_for_flow_cases(context, ai_config=None):
         )
     except requests.Timeout as exc:
         elapsed = round(time.perf_counter() - started_at, 2)
-        logger.warning(f"flow-preview ai timeout provider={provider}, model={model}, elapsed={elapsed}s, endpoint_count={endpoint_count}, prompt_chars={prompt_chars}")
-        raise ValueError(f"AI模型({provider}/{model})请求超时({elapsed}s)，已压缩接口上下文仍未返回，请减少接口数量或稍后重试") from exc
+        logger.warning(f"flow-preview kimi timeout elapsed={elapsed}s, endpoint_count={endpoint_count}, prompt_chars={prompt_chars}")
+        raise ValueError(f"Kimi 请求超时({elapsed}s)，已压缩接口上下文仍未返回，请减少接口数量或稍后重试") from exc
     except requests.RequestException as exc:
         elapsed = round(time.perf_counter() - started_at, 2)
-        logger.error(f"flow-preview ai request error provider={provider}, model={model}, elapsed={elapsed}s, error={exc}")
-        raise ValueError(f"AI模型({provider}/{model})请求失败({elapsed}s): {exc}") from exc
+        logger.error(f"flow-preview kimi request error elapsed={elapsed}s, error={exc}")
+        raise ValueError(f"Kimi 请求失败({elapsed}s): {exc}") from exc
     elapsed = round(time.perf_counter() - started_at, 2)
     request_id = response.headers.get("x-request-id") or response.headers.get("request-id") or ""
-    logger.info(f"flow-preview ai done provider={provider}, model={model}, status={response.status_code}, elapsed={elapsed}s, request_id={request_id}")
+    logger.info(f"flow-preview kimi done status={response.status_code}, elapsed={elapsed}s, request_id={request_id}")
     if response.status_code >= 400:
         try:
             detail = response.json()
         except Exception:
             detail = response.text
-        raise ValueError(f"AI模型({provider}/{model})调用失败({elapsed}s): {detail}")
+        raise ValueError(f"Kimi 调用失败({elapsed}s): {detail}")
     try:
         payload = response.json()
     except Exception as exc:
         body_preview = preview_text(response.text, 2000)
-        logger.error(f"flow-preview ai invalid-json-response provider={provider}, model={model}, request_id={request_id}, body_preview={body_preview}")
-        raise ValueError(f"AI模型({provider}/{model})响应不是有效 JSON: {body_preview}") from exc
-    logger.info(f"flow-preview ai raw-payload-preview provider={provider}, model={model}, payload={preview_text(json.dumps(payload, ensure_ascii=False), 2000)}")
+        logger.error(f"flow-preview kimi invalid-json-response request_id={request_id}, body_preview={body_preview}")
+        raise ValueError(f"Kimi 响应不是有效 JSON: {body_preview}") from exc
+    logger.info(f"flow-preview kimi raw-payload-preview={preview_text(json.dumps(payload, ensure_ascii=False), 2000)}")
     choices = payload.get("choices") or []
     if not choices:
-        raise ValueError(f"AI模型({provider}/{model})未返回可用结果")
+        raise ValueError("Kimi 未返回可用结果")
     message = choices[0].get("message") or {}
     content = message.get("content")
     if isinstance(content, list):
@@ -386,95 +381,17 @@ def call_kimi_for_flow_cases(context, ai_config=None):
         reasoning_content = message.get("reasoning_content")
         refusal = message.get("refusal")
         logger.warning(
-            f"flow-preview ai empty-content provider={provider}, model={model}, "
+            "flow-preview kimi empty-content "
             f"request_id={request_id}, finish_reason={finish_reason}, "
             f"reasoning_preview={preview_text(reasoning_content, 1000)}, "
             f"refusal_preview={preview_text(refusal, 1000)}"
         )
-        raise ValueError(f"AI模型({provider}/{model})返回空内容")
+        raise ValueError("Kimi 返回空内容")
     if not isinstance(content, str):
-        raise ValueError(f"AI模型({provider}/{model})返回内容格式不支持")
+        raise ValueError("Kimi 返回内容格式不支持")
     return extract_json_object(content)
 
 
-
-def case_text_has_var(value):
-    try:
-        text_value = json.dumps(value, ensure_ascii=False)
-    except Exception:
-        text_value = str(value)
-    return "${" in text_value
-
-
-def append_unique_out_parameter(case_item, name, expression):
-    out_parameters = case_item.get("out_parameters")
-    if not isinstance(out_parameters, list):
-        out_parameters = []
-    if not any(str(item.get("name") or "") == name for item in out_parameters if isinstance(item, dict)):
-        out_parameters.append({"name": name, "expression": expression, "source": 1, "match_index": "0"})
-    case_item["out_parameters"] = out_parameters
-
-
-def append_pre_step(case_item, text_value):
-    pre_steps = case_item.get("pre_steps")
-    if not isinstance(pre_steps, list):
-        pre_steps = []
-    if text_value not in pre_steps:
-        pre_steps.append(text_value)
-    case_item["pre_steps"] = pre_steps
-
-
-def ensure_flow_dependencies(payload, context):
-    cases = payload.get("cases") if isinstance(payload, dict) else []
-    if not isinstance(cases, list) or len(cases) < 2 or not context.get("include_extractors", True):
-        return payload
-    goal_text = str(context.get("business_goal") or "")
-    flow_text = goal_text + " " + " ".join(str(item.get("name") or "") for item in cases if isinstance(item, dict))
-    has_create = any(key in flow_text for key in ("新增", "创建", "保存", "添加", "create", "add", "save"))
-    has_query = any(key in flow_text for key in ("列表", "查询", "详情", "最新", "list", "query", "detail"))
-    has_delete = any(key in flow_text for key in ("删除", "移除", "delete", "remove"))
-    if not (has_create and (has_query or has_delete)):
-        return payload
-
-    create_case = cases[0]
-    append_unique_out_parameter(create_case, "entityName", "$.data.name")
-    create_body = create_case.get("body")
-    if isinstance(create_body, dict):
-        if not any(case_text_has_var(v) for v in create_body.values()):
-            for key in ("name", "dimName", "title", "code", "key"):
-                if key in create_body:
-                    create_body[key] = create_body.get(key) or "Auto_${timestamp}"
-                    break
-
-    if len(cases) >= 2:
-        query_case = cases[1]
-        append_pre_step(query_case, "依赖步骤1提取${entityName}作为查询条件")
-        if not case_text_has_var({"url": query_case.get("url"), "body": query_case.get("body")}):
-            method = str(query_case.get("method") or query_case.get("request_method") or "GET").upper()
-            if method == "GET":
-                url = str(query_case.get("url") or "")
-                sep = "&" if "?" in url else "?"
-                query_case["url"] = f"{url}{sep}name=${{entityName}}" if url else "?name=${entityName}"
-            else:
-                body = query_case.get("body") if isinstance(query_case.get("body"), dict) else {}
-                body.setdefault("name", "${entityName}")
-                query_case["body"] = body
-        append_unique_out_parameter(query_case, "entityId", "$.data.list[0].id")
-
-    if len(cases) >= 3:
-        delete_case = cases[-1]
-        append_pre_step(delete_case, "依赖列表/查询步骤提取${entityId}作为删除目标")
-        if not case_text_has_var({"url": delete_case.get("url"), "body": delete_case.get("body")}):
-            method = str(delete_case.get("method") or delete_case.get("request_method") or "DELETE").upper()
-            if method == "DELETE" or not isinstance(delete_case.get("body"), dict):
-                url = str(delete_case.get("url") or "")
-                sep = "&" if "?" in url else "?"
-                delete_case["url"] = f"{url}{sep}id=${{entityId}}" if url else "?id=${entityId}"
-            else:
-                body = delete_case.get("body") if isinstance(delete_case.get("body"), dict) else {}
-                body.setdefault("id", "${entityId}")
-                delete_case["body"] = body
-    return payload
 async def ensure_ai_interface_columns(session):
     for sql in [
         "ALTER TABLE pity_api_service ADD COLUMN developer VARCHAR(128) NULL COMMENT '开发人员'",
@@ -629,20 +546,19 @@ async def ai_generate_flow_preview(form: dict, _=Depends(Permission()), session=
         except ValueError as kimi_error:
             err_msg = str(kimi_error)
             fallback_keywords = [
-                "AI模型",
-                "返回空内容",
+                "Kimi 请求超时",
+                "Kimi 返回空内容",
                 "AI 未返回内容",
                 "AI 返回结果不是有效 JSON",
-                "未返回可用结果",
-                "返回内容格式不支持",
-                "响应不是有效 JSON",
+                "Kimi 未返回可用结果",
+                "Kimi 返回内容格式不支持",
+                "Kimi 响应不是有效 JSON",
             ]
             if any(keyword in err_msg for keyword in fallback_keywords):
                 payload = build_fallback_flow_payload(context, err_msg)
             else:
                 raise
         normalized = normalize_ai_payload(payload)
-        normalized = ensure_flow_dependencies(normalized, context)
         for index, item in enumerate(normalized["cases"]):
             item["api_service_id"] = context["service"].get("id") or 0
             matched = next((v for v in context["endpoints"] if str(v.get("path")) == str(item.get("url")) or str(v.get("full_url")) == str(item.get("url"))), None)
@@ -994,32 +910,10 @@ async def remove_record(index: int, request: Request, _=Depends(Permission())):
     return PityResponse.success()
 
 
-@router.post("/record/remove/batch", summary="批量删除录制接口")
-async def remove_record_batch(payload: dict, request: Request, _=Depends(Permission())):
-    index_list = payload.get("index_list") or []
-    valid_indexes = sorted({int(index) for index in index_list}, reverse=True)
-    for index in valid_indexes:
-        await RedisHelper.remove_record_data(request.client.host, index)
-    return PityResponse.success()
-
-
 @router.post("/generate", summary="生成用例")
 async def generate_case(form: TestCaseGeneratorForm, user=Depends(Permission()), session=Depends(get_session)):
     if len(form.requests) == 0:
         return PityResponse.failed("无http请求，请检查参数")
-    if len(form.requests) > 1:
-        created_cases = []
-        async with session.begin():
-            for case_form in CaseGenerator.generate_case_batch(form.directory_id, form.name, form.requests):
-                case_info = TestCaseInfo(case=case_form)
-                ans = await TestCaseDao.insert_test_case(session, case_info, user['id'])
-                created_cases.append(ans)
-        return PityResponse.success({
-            "directory_id": form.directory_id,
-            "id": created_cases[0].id if created_cases else None,
-            "ids": [item.id for item in created_cases],
-            "count": len(created_cases),
-        })
     CaseGenerator.extract_field(form.requests)
     cs = CaseGenerator.generate_case(form.directory_id, form.name, form.requests[-1])
     constructors = CaseGenerator.generate_constructors(form.requests)
@@ -1045,11 +939,6 @@ async def query_variables(steps: List[PityTestCaseVariablesDto], session=Depends
     var_list = list()
     await TestCaseDao.query_test_case_out_parameters(session, steps, var_list=var_list)
     return PityResponse.success(var_list)
-
-
-
-
-
 
 
 

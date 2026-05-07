@@ -1,3 +1,5 @@
+import urllib.parse
+
 from pity_proxy.mock import PityMock
 from pity_proxy.record import PityRecorder
 from config import Config
@@ -9,6 +11,10 @@ async def start_proxy(log):
     :return:
     """
     try:
+        import werkzeug.urls
+        if not hasattr(werkzeug.urls, "url_quote"):
+            # Flask 2.0.x still imports url_quote, but newer Werkzeug removed it.
+            werkzeug.urls.url_quote = urllib.parse.quote
         from mitmproxy import options
         from mitmproxy.tools.dump import DumpMaster
     except ImportError:
@@ -26,9 +32,15 @@ async def start_proxy(log):
         m = DumpMaster(opts, False, False)
         # remove global block
         block_addon = m.addons.get("block")
-        m.addons.remove(block_addon)
+        if block_addon is not None:
+            m.addons.remove(block_addon)
+        # mitmproxy's errorcheck addon will sys.exit(1) on startup/runtime errors,
+        # which should not bring down the main Argus service.
+        errorcheck_addon = m.addons.get("errorcheck")
+        if errorcheck_addon is not None:
+            m.addons.remove(errorcheck_addon)
         m.addons.add(*addons)
         log.bind(name=None).debug(f"mock server is running at http://0.0.0.0:{Config.PROXY_PORT}")
         await m.run()
-    except Exception as e:
-        log.bind(name=None).debug(f"mock server running failed, if all nodes run failed, please check: {e}")
+    except BaseException as e:
+        log.bind(name=None).error(f"mock server running failed, please check: {e}")

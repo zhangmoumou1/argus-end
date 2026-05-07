@@ -22,7 +22,6 @@ case生成器，根据RequestInfo数组生成
 
 
 class CaseGenerator(object):
-    # 忽略的字段
     ignored = (
         "Content-Type", "Connection", "Date", "Content-Length", "Host", "access-control-allow-credentials",
         "access-control-allow-origin", "User-Agent", "Server"
@@ -45,6 +44,11 @@ class CaseGenerator(object):
         if "form" in content_type:
             return BodyType.form
         return BodyType.none
+
+    @staticmethod
+    def build_batch_case_name(name: str, index: int) -> str:
+        base_name = (name or "录制场景").strip() or "录制场景"
+        return f"{base_name}_{index}"
 
     @staticmethod
     def generate_constructors(requests: List[RequestInfo]) -> List[ConstructorForm]:
@@ -75,21 +79,31 @@ class CaseGenerator(object):
                             case_type=0, status=CaseStatus.debugging.value, priority="P3")
 
     @staticmethod
+    def generate_single_case(directory_id: int, name: str, request: RequestInfo) -> TestCaseForm:
+        return CaseGenerator.generate_case(directory_id, name, request)
+
+    @staticmethod
+    def generate_case_batch(directory_id: int, name: str, requests: List[RequestInfo]) -> List[TestCaseForm]:
+        cases = []
+        for index, request in enumerate(requests, start=1):
+            cases.append(
+                CaseGenerator.generate_single_case(
+                    directory_id=directory_id,
+                    name=CaseGenerator.build_batch_case_name(name, index),
+                    request=request,
+                )
+            )
+        return cases
+
+    @staticmethod
     def extract_field(requests: List[RequestInfo]) -> List[str]:
-        """
-        遍历接口，并提取其中的变量
-        :param requests:
-        :return:
-        """
         var_pool = defaultdict(list)
         replaced = []
         for i in range(len(requests)):
-            # 删除headers里面的Content-Length字段
             if "Content-Length" in requests[i].request_headers:
                 requests[i].request_headers.pop("Content-Length")
             if "Content-Length" in requests[i].response_headers:
                 requests[i].response_headers.pop("Content-Length")
-            # 记录变量
             CaseGenerator.record_vars(requests[i], var_pool, f"http_res_{i + 1}")
             if i > 0:
                 CaseGenerator.replace_vars(requests[i], var_pool, replaced)
@@ -118,7 +132,6 @@ class CaseGenerator(object):
                 CaseGenerator.dfs(v, c_path, ans, headers)
         else:
             if not headers or not CaseGenerator.ignore(path):
-                # 如果是bool值，需要特殊处理一下，因为Python get False/True会变成get 0 1
                 if body is not None:
                     if isinstance(body, bool):
                         ans[str(body)].append(path)
@@ -132,7 +145,6 @@ class CaseGenerator(object):
                 body = json.loads(request.response_content)
                 CaseGenerator.dfs(body, var_name, ans)
             except JSONDecodeError:
-                # 可能body不是JSON，跳过
                 pass
             except Exception as e:
                 raise GenerateError(f"解析接口body变量出错: {e}")
@@ -197,11 +209,6 @@ class CaseGenerator(object):
 
     @staticmethod
     def replace_url(request: RequestInfo, ans: dict, replaced: list):
-        """
-        拆解url，将url里面的路由path和query参数
-        :return:
-        """
-        # 获取前缀和后缀
         url_query = request.url.split("?")
         if len(url_query) == 1:
             query_list = list()
@@ -230,11 +237,3 @@ class CaseGenerator(object):
             request.url = f"{http}//{'/'.join(new_url)}"
             return
         request.url = f"{http}//{'/'.join(new_url)}?{'&'.join(new_query)}"
-
-# if __name__ == "__main__":
-#     req = HarConvertor.convert("./pity.fun.har", "api.pity.fun")
-#     for r in req:
-#         print(r)
-#     CaseGenerator.extract_field(req)
-#     for r in req:
-#         print(r)

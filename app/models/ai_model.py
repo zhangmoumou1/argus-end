@@ -1,0 +1,32 @@
+AI_MODEL_CONFIG_KEY = "__ai_model_config__"
+
+AI_MODEL_DEFAULTS = {
+    "kimi": {
+        "provider": "kimi",
+        "name": "Kimi",
+        "base_url": "https://api.moonshot.cn/v1",
+        "models": ["kimi-k2.6"],
+        "model": "kimi-k2.6",
+        "api_key": "sk-e5OUafm3yFex3hWjsgS7rZw68hNtYJsJLji0u7ruEKqhQavU",
+        "enabled": True,
+    },
+    "qwen": {
+        "provider": "qwen",
+        "name": "Qwen",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "models": ["qwen3.6-plus"],
+        "model": "qwen3.6-plus",
+        "api_key": "sk-f69eb070ffaa4174af6d85b408833aa4",
+        "enabled": False,
+    },
+    "deepseek": {
+        "provider": "deepseek",
+        "name": "DeepSeek",
+        "base_url": "https://api.deepseek.com",
+        "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
+        "model": "deepseek-v4-pro",
+        "api_key": "sk-4cf758981a69465caecaf3c1b8ef3d66",
+        "enabled": False,
+    },
+}
+

@@ -54,4 +54,3 @@ async def update_gconfig(data: GConfigForm, user_info=Depends(Permission(Config.
 async def delete_gconfig(id: int, user_info=Depends(Permission(Config.ADMIN)), session=Depends(get_session)):
     await GConfigDao.delete_record_by_id(session, user_info['id'], id, log=True)
     return PityResponse.success()
-

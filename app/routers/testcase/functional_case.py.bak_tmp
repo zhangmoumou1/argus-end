@@ -680,8 +680,8 @@ def call_kimi_generate(form: FunctionalCaseAIGenerateForm, ai_config=None):
     }
     loggable_payload = build_loggable_kimi_payload(request_payload)
     logger.info(f"functional-case ai provider={provider}, model={model}, base_url={base_url}")
-    logger.info(f"functional-case ai request summary provider={provider}, model={model}, summary={json.dumps(request_summary, ensure_ascii=False)}")
-    logger.info(f"functional-case ai request payload provider={provider}, model={model}, payload={json.dumps(loggable_payload, ensure_ascii=False)}")
+    logger.info(f"Kimi request summary: {json.dumps(request_summary, ensure_ascii=False)}")
+    logger.info(f"Kimi request payload: {json.dumps(loggable_payload, ensure_ascii=False)}")
     started_at = time.perf_counter()
     try:
         response = requests.post(
@@ -696,36 +696,36 @@ def call_kimi_generate(form: FunctionalCaseAIGenerateForm, ai_config=None):
     except requests.Timeout as exc:
         elapsed = round(time.perf_counter() - started_at, 2)
         logger.warning(
-            f"functional-case ai timeout provider={provider}, model={model}, elapsed={elapsed}s, summary={json.dumps(request_summary, ensure_ascii=False)}"
+            f"Kimi request timeout after {elapsed}s, summary={json.dumps(request_summary, ensure_ascii=False)}"
         )
-        raise ValueError(f"AI模型({provider}/{model})请求超时({elapsed}s)，请减少图片数量或缩小需求内容后重试") from exc
+        raise ValueError(f"Kimi 请求超时({elapsed}s)，请减少图片数量或缩小需求内容后重试") from exc
     except requests.RequestException as exc:
         elapsed = round(time.perf_counter() - started_at, 2)
         logger.error(
-            f"functional-case ai request failed provider={provider}, model={model}, elapsed={elapsed}s, summary={json.dumps(request_summary, ensure_ascii=False)}, error={exc}"
+            f"Kimi request failed after {elapsed}s, summary={json.dumps(request_summary, ensure_ascii=False)}, error={exc}"
         )
         raise
     elapsed = round(time.perf_counter() - started_at, 2)
     logger.info(
-        f"functional-case ai response provider={provider}, model={model}, status={response.status_code}, elapsed={elapsed}s, body_preview={preview_text(response.text, 1000)}"
+        f"Kimi response status={response.status_code}, elapsed={elapsed}s, body_preview={preview_text(response.text, 1000)}"
     )
     if response.status_code >= 400:
         try:
             detail = response.json()
         except Exception:
             detail = response.text
-        raise ValueError(f"AI模型({provider}/{model})调用失败: {detail}")
+        raise ValueError(f"Kimi 调用失败: {detail}")
     payload = response.json()
     choices = payload.get("choices") or []
     if not choices:
-        raise ValueError(f"AI模型({provider}/{model})未返回可用结果")
+        raise ValueError("Kimi 未返回可用结果")
     message = choices[0].get("message") or {}
     content = message.get("content")
     if isinstance(content, list):
         text_parts = [item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"]
         content = "\n".join(text_parts)
     if not isinstance(content, str):
-        raise ValueError(f"AI模型({provider}/{model})返回内容格式不支持")
+        raise ValueError("Kimi 返回内容格式不支持")
     return extract_json_object(content)
 
 
@@ -1287,4 +1287,3 @@ async def delete_file(id: int, project_id: int = None, user_info=Depends(Permiss
         )
         await session.commit()
     return PityResponse.success()
-

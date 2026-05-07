@@ -65,11 +65,6 @@ class GConfigDao(Mapper):
             item["models"] = [str(v).strip() for v in item["models"] if str(v or "").strip()]
             if not item["models"]:
                 item["models"] = default_item["models"]
-            if provider == "deepseek":
-                item["models"] = ["deepseek-v4-pro" if v == "deepseek-v4" else v for v in item["models"]]
-                item["models"] = list(dict.fromkeys([*item["models"], "deepseek-v4-pro", "deepseek-v4-flash"]))
-                if item.get("model") == "deepseek-v4":
-                    item["model"] = "deepseek-v4-pro"
             if not item.get("model"):
                 item["model"] = item["models"][0]
             if item.get("model") not in item["models"]:
@@ -390,4 +385,3 @@ class GConfigDao(Mapper):
                 if key not in result:
                     result[key] = GConfigDao._parse_value(row)
         return result
-

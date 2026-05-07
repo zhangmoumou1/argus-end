@@ -10,6 +10,7 @@ import time
 from datetime import datetime
 
 import requests
+from app.crud.config.GConfigDao import GConfigDao
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
@@ -728,6 +729,7 @@ def run_claude_code_generate(task_dir, task_payload, docs):
         or shutil.which("claude")
         or os.path.expandvars(r"%APPDATA%\npm\claude.cmd")
     )
+    logger.info(f"functional skill task claude-code start executable={claude_executable}, task_dir={task_dir}")
     if not claude_executable or not os.path.exists(claude_executable):
         raise ValueError("未找到 Claude Code CLI，可执行文件 claude/claude.cmd 不存在")
     command = [
@@ -903,6 +905,7 @@ async def execute_skill_task(task_id):
         task_payload = load_task_request_payload(task, task_dir)
         docs = await load_skill_docs(session, user_id, task_payload.get("doc_ids") or [])
 
+    review_provider = "claude-code-cli"
     try:
         await update_task_state(task_id, user_id, status="running", stage="prepare", stage_text="正在组装需求目录与技能材料", progress=10)
         export_runtime_materials(
@@ -914,11 +917,25 @@ async def execute_skill_task(task_id):
             task_payload.get("requirement_items") or [],
         )
 
-        await update_task_state(task_id, user_id, stage="generate", stage_text="正在调用 Claude Code CLI 生成测试用例", progress=35, review_provider="claude-code-cli")
+        try:
+            ai_config = await GConfigDao.get_active_ai_model_config()
+            logger.info(
+                f"functional skill task execute task_id={task_id}, generator=claude-code-cli, "
+                f"system_active_ai_provider={ai_config.get('provider')}, "
+                f"system_active_ai_model={ai_config.get('model')}, "
+                f"system_active_ai_base_url={ai_config.get('base_url')}"
+            )
+        except Exception as config_exc:
+            logger.warning(
+                f"functional skill task execute task_id={task_id}, generator=claude-code-cli, "
+                f"load system ai config failed: {config_exc}"
+            )
+
+        await update_task_state(task_id, user_id, stage="generate", stage_text="正在调用 Claude Code CLI 生成测试用例", progress=35, review_provider=review_provider)
         loop = asyncio.get_running_loop()
         cli_result = await loop.run_in_executor(None, run_claude_code_generate, task_dir, task_payload, docs)
 
-        await update_task_state(task_id, user_id, stage="convert", stage_text="正在解析 Markdown 并转换画布数据", progress=80, review_provider="claude-code-cli", review_rounds=1)
+        await update_task_state(task_id, user_id, stage="convert", stage_text="正在解析 Markdown 并转换画布数据", progress=80, review_provider=review_provider, review_rounds=1)
         case_title, case_data = parse_markdown_case_tree(cli_result.get("markdown_text"), task_payload.get("title") or "功能用例")
         stats = analyze_case_data(case_data)
         result_json_path = os.path.join(task_dir, "generated_case.json")
@@ -945,7 +962,7 @@ async def execute_skill_task(task_id):
             }, ensure_ascii=False),
             error_message="",
             finished_at=int(time.time()),
-            review_provider="claude-code-cli",
+            review_provider=review_provider,
             review_rounds=1,
         )
     except Exception as exc:
@@ -959,9 +976,8 @@ async def execute_skill_task(task_id):
             progress=100,
             error_message=str(exc),
             finished_at=int(time.time()),
-            review_provider="claude-code-cli",
+            review_provider=review_provider,
         )
-
 
 async def try_finalize_task_from_runtime(task_id, user_id):
     async with async_session() as session:
@@ -1256,6 +1272,14 @@ async def create_skill_task(form: FunctionalCaseSkillTaskForm, user_info=Depends
             "request_payload_path": request_payload_path,
         }, ensure_ascii=False)
         await session.commit()
+    try:
+        ai_config = await GConfigDao.get_active_ai_model_config()
+        logger.info(
+            f"functional skill task create task_id={task.id}, generator=claude-code-cli, "
+            f"system_active_ai_provider={ai_config.get('provider')}, system_active_ai_model={ai_config.get('model')}, system_active_ai_base_url={ai_config.get('base_url')}"
+        )
+    except Exception as config_exc:
+        logger.warning(f"functional skill task create task_id={task.id}, load ai config failed: {config_exc}")
     asyncio.create_task(execute_skill_task(task.id))
     return PityResponse.success({"task_id": task.id, "status": task.status, "stage": task.stage, "progress": task.progress})
 
@@ -1277,3 +1301,5 @@ async def query_skill_task_status(id: int, user_info=Depends(Permission())):
             return PityResponse.failed("只能查看自己的任务")
     task = await try_finalize_task_from_runtime(id, user_info["id"]) or task
     return PityResponse.success(build_task_result(task))
+
+

@@ -1,6 +1,7 @@
 __author__ = "woody"
 
 import json
+from datetime import datetime
 from typing import TypeVar
 
 import pydantic
@@ -24,6 +25,7 @@ class RequestInfo(pydantic.BaseModel):
     request_cookies: dict
     response_content: str
     status_code: int
+    created_at: str = ""
 
     def __init__(self, flow=None, **kwargs):
         if flow:
@@ -37,6 +39,7 @@ class RequestInfo(pydantic.BaseModel):
                      body=self.get_body(flow.request),
                      cookies=dict(flow.response.cookies),
                      request_cookies=dict(flow.request.cookies),
+                     created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                      ))
         super().__init__(**kwargs)
 

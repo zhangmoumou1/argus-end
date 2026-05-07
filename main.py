@@ -5,6 +5,7 @@ from os.path import isfile
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Request, WebSocket, WebSocketDisconnect, Depends
+from sqlalchemy import text
 from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
@@ -16,6 +17,7 @@ from app.crud import create_table
 from app.crud.notification.NotificationDao import PityNotificationDao
 from app.enums.MessageEnum import MessageStateEnum, MessageTypeEnum
 from app.middleware.RedisManager import RedisHelper
+from app.models import async_session
 from app.routers.auth import user
 from app.routers.config import router as config_router
 from app.routers.notification import router as msg_router
@@ -27,14 +29,27 @@ from app.routers.request import http
 from app.routers.testcase import router as testcase_router
 from app.routers.testcase.functional_case import router as functional_case_router
 from app.routers.testcase.functional_case_skill import router as functional_case_skill_router
+from app.routers.testcase.interface_manage import router as interface_manage_router
 from app.routers.workspace import router as workspace_router
 from app.utils.scheduler import Scheduler
 from config import Config, PITY_ENV, BANNER
+from pity_proxy import start_proxy
 
 logger = init_logging()
 
 logger.bind(name=None).opt(ansi=True).success(f"pity is running at <red>{PITY_ENV}</red>")
 logger.bind(name=None).success(BANNER)
+
+proxy_task = None
+
+
+def _handle_proxy_task_done(task):
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        logger.bind(name=None).warning("record proxy task cancelled.        🚫")
+    except BaseException as e:
+        logger.bind(name=None).error(f"record proxy task failed but main service continues.        ❌ {e}")
 
 
 def _trim_request_payload(payload, limit: int = 2000):
@@ -75,6 +90,7 @@ pity.include_router(http.router, dependencies=[Depends(request_info)])
 pity.include_router(testcase_router, dependencies=[Depends(request_info)])
 pity.include_router(functional_case_router, dependencies=[Depends(request_info)])
 pity.include_router(functional_case_skill_router, dependencies=[Depends(request_info)])
+pity.include_router(interface_manage_router, dependencies=[Depends(request_info)])
 pity.include_router(config_router, dependencies=[Depends(request_info)])
 pity.include_router(online_router, dependencies=[Depends(request_info)])
 pity.include_router(oss_router, dependencies=[Depends(request_info)])
@@ -170,9 +186,49 @@ async def init_database():
         raise
 
 
+@pity.on_event('startup')
+async def init_record_proxy():
+    """
+    启动录制代理，避免部署时需要额外手动运行 proxy.py
+    """
+    global proxy_task
+    if proxy_task is not None:
+        return
+    proxy_task = asyncio.create_task(start_proxy(logger))
+    proxy_task.add_done_callback(_handle_proxy_task_done)
+    logger.bind(name=None).success(f"record proxy startup task created.        ✔ port={Config.PROXY_PORT}")
+
+
 @pity.on_event('shutdown')
 def stop_test():
     pass
+
+
+@pity.on_event('startup')
+async def ensure_testcase_api_columns():
+    """
+    为接口版本绑定字段做启动兜底迁移，避免历史库缺列导致查询失败
+    """
+    alter_sql_list = [
+        "ALTER TABLE pity_testcase ADD COLUMN api_service_id INT NOT NULL DEFAULT 0 COMMENT '绑定服务ID'",
+        "ALTER TABLE pity_testcase ADD COLUMN api_endpoint_id INT NOT NULL DEFAULT 0 COMMENT '绑定接口ID'",
+        "ALTER TABLE pity_testcase ADD COLUMN api_version_id INT NOT NULL DEFAULT 0 COMMENT '绑定接口版本ID'",
+        "ALTER TABLE pity_testcase ADD COLUMN api_version_no VARCHAR(32) NULL COMMENT '绑定接口版本号'",
+        "ALTER TABLE pity_testcase ADD COLUMN api_bind_mode VARCHAR(16) NOT NULL DEFAULT 'pinned' COMMENT '绑定模式'",
+        "ALTER TABLE pity_testcase ADD COLUMN api_pending_update INT NOT NULL DEFAULT 0 COMMENT '是否待更新'",
+    ]
+    async with async_session() as session:
+        try:
+            for sql in alter_sql_list:
+                try:
+                    await session.execute(text(sql))
+                except Exception:
+                    # 列已存在等场景直接忽略，保证幂等
+                    pass
+            await session.commit()
+            logger.bind(name=None).success("testcase api version columns checked.        ✔")
+        except Exception as e:
+            logger.bind(name=None).warning(f"testcase api version columns check failed: {e}")
 
 
 @pity.websocket("/ws/{user_id}")

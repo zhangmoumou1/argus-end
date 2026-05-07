@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, validator
 
@@ -6,11 +6,11 @@ from app.schema.base import PityModel
 
 
 class PityTestcaseDirectoryForm(BaseModel):
-    id: int = None
+    id: Optional[int] = None
     name: str
     project_id: int
-    parent: int = None
-    sort_index: int = None
+    parent: Optional[int] = None
+    sort_index: Optional[int] = None
 
     @validator("name", "project_id")
     def name_not_empty(cls, v):
@@ -30,9 +30,9 @@ class PityMoveTestCaseDto(BaseModel):
 class PityTestcaseDirectoryUpdateForm(BaseModel):
     id: int
     project_id: int
-    name: str = None
-    parent: int = None
-    sort_index: int = None
+    name: Optional[str] = None
+    parent: Optional[int] = None
+    sort_index: Optional[int] = None
 
     @validator("id", "project_id")
     def required_not_empty(cls, v):
