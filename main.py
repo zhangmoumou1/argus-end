@@ -30,6 +30,7 @@ from app.routers.testcase import router as testcase_router
 from app.routers.testcase.functional_case import router as functional_case_router
 from app.routers.testcase.functional_case_skill import router as functional_case_skill_router
 from app.routers.testcase.interface_manage import router as interface_manage_router
+from app.routers.testcase.mock_config import router as mock_config_router
 from app.routers.workspace import router as workspace_router
 from app.utils.scheduler import Scheduler
 from config import Config, PITY_ENV, BANNER
@@ -91,6 +92,7 @@ pity.include_router(testcase_router, dependencies=[Depends(request_info)])
 pity.include_router(functional_case_router, dependencies=[Depends(request_info)])
 pity.include_router(functional_case_skill_router, dependencies=[Depends(request_info)])
 pity.include_router(interface_manage_router, dependencies=[Depends(request_info)])
+pity.include_router(mock_config_router, dependencies=[Depends(request_info)])
 pity.include_router(config_router, dependencies=[Depends(request_info)])
 pity.include_router(online_router, dependencies=[Depends(request_info)])
 pity.include_router(oss_router, dependencies=[Depends(request_info)])

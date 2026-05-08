@@ -391,3 +391,38 @@ class GConfigDao(Mapper):
                     result[key] = GConfigDao._parse_value(row)
         return result
 
+    @staticmethod
+    async def latest_runtime_values_by_names(env: int, project_id: int, names: List[str], limit: int = 5000) -> Dict[str, str]:
+        """
+        按变量名跨case取最近值（同环境、同项目优先），用于${var}不依赖case_id的场景。
+        """
+        if not names:
+            return {}
+        normalized_names = [str(name).strip() for name in names if str(name).strip()]
+        if not normalized_names:
+            return {}
+        project_filter = (
+            or_(GConfig.project_id == project_id, GConfig.project_id.is_(None))
+            if project_id is not None else GConfig.project_id.is_(None)
+        )
+        result = {}
+        async with async_session() as session:
+            query = await session.execute(
+                select(GConfig)
+                .where(
+                    GConfig.deleted_at == 0,
+                    GConfig.enable == True,
+                    GConfig.type == int(GConfigVariableType.runtime_var),
+                    GConfig.env == env,
+                    project_filter,
+                    GConfig.key.in_(normalized_names),
+                )
+                .order_by(desc(GConfig.id))
+                .limit(limit)
+            )
+            rows = query.scalars().all()
+            for row in rows:
+                if row.key not in result:
+                    result[row.key] = GConfigDao._parse_value(row)
+        return result
+

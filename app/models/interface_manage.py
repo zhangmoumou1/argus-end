@@ -89,3 +89,41 @@ class PityApiEndpointVersion(PityBase):
         self.request_headers = request_headers
         self.request_params = request_params
         self.response_body = response_body
+
+
+class PityApiEndpointSample(PityBase):
+    __tablename__ = "pity_api_endpoint_sample"
+
+    project_id = Column(INT, nullable=False, default=0, comment="所属项目")
+    service_id = Column(INT, ForeignKey("pity_api_service.id"), index=True, nullable=False, default=0, comment="服务ID")
+    endpoint_id = Column(INT, ForeignKey("pity_api_endpoint.id"), index=True, nullable=False, default=0, comment="接口ID")
+    api_version_id = Column(INT, nullable=False, default=0, comment="接口版本ID")
+    sample_source = Column(String(32), nullable=False, default="record", comment="样本来源")
+    sample_name = Column(String(128), nullable=True, comment="样本名称")
+    request_url = Column(String(1024), nullable=True, comment="请求地址")
+    request_path = Column(String(512), nullable=True, comment="请求路径")
+    request_query = Column(TEXT, nullable=True, comment="请求Query JSON")
+    request_headers = Column(TEXT, nullable=True, comment="请求头JSON")
+    request_body = Column(TEXT, nullable=True, comment="请求体")
+    response_headers = Column(TEXT, nullable=True, comment="响应头JSON")
+    response_body = Column(TEXT, nullable=True, comment="响应体")
+    status_code = Column(INT, nullable=False, default=0, comment="状态码")
+    recorded_at = Column(String(32), nullable=True, comment="录制时间")
+
+    def __init__(self, project_id, service_id, endpoint_id, api_version_id, user, sample_source="record", sample_name="", request_url="", request_path="", request_query=None, request_headers=None, request_body="", response_headers=None, response_body="", status_code=0, recorded_at=""):
+        super().__init__(user)
+        self.project_id = project_id
+        self.service_id = service_id
+        self.endpoint_id = endpoint_id
+        self.api_version_id = api_version_id
+        self.sample_source = sample_source
+        self.sample_name = sample_name
+        self.request_url = request_url
+        self.request_path = request_path
+        self.request_query = request_query
+        self.request_headers = request_headers
+        self.request_body = request_body
+        self.response_headers = response_headers
+        self.response_body = response_body
+        self.status_code = status_code
+        self.recorded_at = recorded_at

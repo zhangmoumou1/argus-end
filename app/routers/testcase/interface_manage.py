@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs, urljoin
@@ -9,12 +10,15 @@ from sqlalchemy import select, text, func
 from app.handler.fatcory import PityResponse
 from app.core.configuration import SystemConfiguration
 from app.models import async_session
-from app.models.interface_manage import PityApiService, PityApiEndpoint, PityApiEndpointVersion
+from app.models.interface_manage import PityApiService, PityApiEndpoint, PityApiEndpointVersion, PityApiEndpointSample
+from app.core.interface_sample import ensure_interface_sample_schema
 from app.routers import Permission
 from app.utils.json_compare import JsonCompare
 
 router = APIRouter(prefix="/interface-management")
 DEFAULT_SYNC_CRON = "0 0 * * *"
+_INTERFACE_SCHEMA_READY = False
+_INTERFACE_SCHEMA_LOCK = asyncio.Lock()
 
 
 def normalize_path(path: str):
@@ -110,7 +114,6 @@ def resolve_swagger_payload(source_url: str):
     source_url = str(source_url or "").strip()
     if not source_url:
         raise ValueError("source_url不能为空")
-    # 1) direct JSON
     direct_resp = requests.get(source_url, timeout=120)
     if direct_resp.ok:
         try:
@@ -119,7 +122,6 @@ def resolve_swagger_payload(source_url: str):
                 return direct_json
         except Exception:
             pass
-    # 2) swagger-ui html -> swagger-config -> select named url
     parsed = urlparse(source_url)
     qs = parse_qs(parsed.query or "")
     target_name = (qs.get("urls.primaryName") or [None])[0]
@@ -164,7 +166,13 @@ def resolve_swagger_payload(source_url: str):
 
 
 async def ensure_interface_schema(session):
-    await session.execute(text(
+    global _INTERFACE_SCHEMA_READY
+    if _INTERFACE_SCHEMA_READY:
+        return
+    async with _INTERFACE_SCHEMA_LOCK:
+        if _INTERFACE_SCHEMA_READY:
+            return
+        await session.execute(text(
         "CREATE TABLE IF NOT EXISTS pity_api_service ("
         "id INT PRIMARY KEY AUTO_INCREMENT,"
         "project_id INT NOT NULL DEFAULT 0,"
@@ -185,7 +193,7 @@ async def ensure_interface_schema(session):
         "update_user INT NOT NULL"
         ")"
     ))
-    await session.execute(text(
+        await session.execute(text(
         "CREATE TABLE IF NOT EXISTS pity_api_endpoint ("
         "id INT PRIMARY KEY AUTO_INCREMENT,"
         "service_id INT NOT NULL DEFAULT 0,"
@@ -208,7 +216,7 @@ async def ensure_interface_schema(session):
         "update_user INT NOT NULL"
         ")"
     ))
-    await session.execute(text(
+        await session.execute(text(
         "CREATE TABLE IF NOT EXISTS pity_api_endpoint_version ("
         "id INT PRIMARY KEY AUTO_INCREMENT,"
         "endpoint_id INT NOT NULL DEFAULT 0,"
@@ -229,8 +237,8 @@ async def ensure_interface_schema(session):
         "update_user INT NOT NULL"
         ")"
     ))
-    # backward compatible columns for pity_testcase
-    for column_sql in [
+        await ensure_interface_sample_schema(session)
+        for column_sql in [
         "ALTER TABLE pity_api_endpoint ADD COLUMN module_name VARCHAR(128) NOT NULL DEFAULT '默认模块' COMMENT '功能模块'",
         "ALTER TABLE pity_api_endpoint_version ADD COLUMN module_name VARCHAR(128) NOT NULL DEFAULT '默认模块' COMMENT '功能模块'",
         "ALTER TABLE pity_api_endpoint ADD COLUMN endpoint_status VARCHAR(16) NOT NULL DEFAULT 'available' COMMENT '接口状态'",
@@ -245,12 +253,15 @@ async def ensure_interface_schema(session):
         "ALTER TABLE pity_testcase ADD COLUMN api_version_no VARCHAR(32) NULL COMMENT '绑定接口版本号'",
         "ALTER TABLE pity_testcase ADD COLUMN api_bind_mode VARCHAR(16) NOT NULL DEFAULT 'pinned' COMMENT '绑定模式'",
         "ALTER TABLE pity_testcase ADD COLUMN api_pending_update INT NOT NULL DEFAULT 0 COMMENT '是否待更新'",
+        "ALTER TABLE pity_api_endpoint ADD INDEX idx_service_deleted_module_status_updated(service_id, deleted_at, module_name, endpoint_status, updated_at)",
+        "ALTER TABLE pity_api_endpoint_sample ADD INDEX idx_endpoint_deleted(endpoint_id, deleted_at)",
     ]:
-        try:
-            await session.execute(text(column_sql))
-        except Exception:
-            pass
-    await session.commit()
+            try:
+                await session.execute(text(column_sql))
+            except Exception:
+                pass
+        await session.commit()
+        _INTERFACE_SCHEMA_READY = True
 
 
 async def create_version(session, endpoint: PityApiEndpoint, user_id: int):
@@ -503,10 +514,50 @@ async def list_endpoints(service_id: int, keyword: str = "", module_name: str = 
         if endpoint_status:
             filters.append(PityApiEndpoint.endpoint_status == endpoint_status)
         result = await session.execute(
-            select(PityApiEndpoint).where(*filters).order_by(PityApiEndpoint.module_name.asc(), PityApiEndpoint.updated_at.desc(), PityApiEndpoint.id.desc())
+            select(
+                PityApiEndpoint.id,
+                PityApiEndpoint.name,
+                PityApiEndpoint.method,
+                PityApiEndpoint.module_name,
+                PityApiEndpoint.endpoint_status,
+                PityApiEndpoint.path,
+                PityApiEndpoint.current_version_no,
+                PityApiEndpoint.updated_at,
+            )
+            .where(*filters)
+            .order_by(PityApiEndpoint.module_name.asc(), PityApiEndpoint.updated_at.desc(), PityApiEndpoint.id.desc())
         )
-        rows = result.scalars().all()
-        data = [serialize_model(item) for item in rows]
+        rows = result.all()
+        endpoint_ids = [item.id for item in rows]
+        sample_map = {}
+        if endpoint_ids:
+            sample_rows = (await session.execute(
+                select(
+                    PityApiEndpointSample.endpoint_id,
+                    PityApiEndpointSample.recorded_at,
+                    PityApiEndpointSample.status_code,
+                ).where(
+                    PityApiEndpointSample.endpoint_id.in_(endpoint_ids),
+                    PityApiEndpointSample.deleted_at == 0,
+                )
+            )).all()
+            sample_map = {item.endpoint_id: item for item in sample_rows}
+        data = []
+        for item in rows:
+            sample = sample_map.get(item.id)
+            data.append({
+                "id": item.id,
+                "name": item.name,
+                "method": item.method,
+                "module_name": item.module_name,
+                "endpoint_status": item.endpoint_status,
+                "path": item.path,
+                "current_version_no": item.current_version_no,
+                "updated_at": item.updated_at,
+                "sample_available": 1 if sample else 0,
+                "sample_recorded_at": sample.recorded_at if sample else None,
+                "sample_status_code": sample.status_code if sample else None,
+            })
         module_result = await session.execute(
             select(PityApiEndpoint.module_name).where(
                 PityApiEndpoint.service_id == service_id,
@@ -544,6 +595,22 @@ async def get_endpoint_version_detail(version_id: int, _=Depends(Permission())):
         )).scalars().first()
         if record is None:
             return PityResponse.failed("版本不存在")
+        data = serialize_model(record)
+    return PityResponse.success(data)
+
+
+@router.get("/endpoint/sample/query")
+async def get_endpoint_sample(endpoint_id: int, _=Depends(Permission())):
+    async with async_session() as session:
+        await ensure_interface_schema(session)
+        record = (await session.execute(
+            select(PityApiEndpointSample).where(
+                PityApiEndpointSample.endpoint_id == endpoint_id,
+                PityApiEndpointSample.deleted_at == 0,
+            )
+        )).scalars().first()
+        if record is None:
+            return PityResponse.success(None)
         data = serialize_model(record)
     return PityResponse.success(data)
 
