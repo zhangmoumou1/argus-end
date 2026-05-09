@@ -79,7 +79,7 @@ class ProjectRoleDao(Mapper):
 
     @staticmethod
     async def access(user: int, user_role: int, roles: List[ProjectRole], project: Project = None):
-        if user_role == Config.ADMIN or not project.private or user == project.owner:
+        if user_role == Config.ADMIN or user == project.owner:
             return
         if not any([r.user_id == user for r in roles]):
             raise AuthError("没有权限访问项目")
@@ -101,7 +101,7 @@ class ProjectRoleDao(Mapper):
             project = query.scalars().first()
             if project is None:
                 raise Exception("项目不存在")
-            if project.private and project.owner != user_id:
+            if project.owner != user_id:
                 query = await session.execute(select(ProjectRole).where(ProjectRole.user_id == user_id,
                                                                         ProjectRole.project_id == project_id,
                                                                         ProjectRole.deleted_at == 0))

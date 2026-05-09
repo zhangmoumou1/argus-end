@@ -10,7 +10,14 @@ from app.exception.request import AuthException
 from app.handler.fatcory import PityResponse
 from app.middleware.Jwt import UserToken
 from app.routers import Permission, FORBIDDEN
-from app.schema.user import UserUpdateForm, UserForm, UserDto, ResetPwdForm
+from app.schema.user import (
+    UserUpdateForm,
+    UserForm,
+    UserDto,
+    ResetPwdForm,
+    ResetSelfPwdForm,
+    ResetUserPwdByAdminForm,
+)
 from app.utils.des import Des
 from config import Config
 
@@ -118,6 +125,24 @@ async def reset_user(form: ResetPwdForm):
     email = Des.des_decrypt(form.token)
     await UserDao.reset_password(email, form.password)
     return PityResponse.success()
+
+
+@router.post("/reset/self", summary="当前用户重置密码")
+async def reset_self_password(form: ResetSelfPwdForm, user=Depends(Permission(Config.MEMBER))):
+    try:
+        await UserDao.reset_password_by_user_id(user['id'], form.password, user['id'])
+        return PityResponse.success()
+    except Exception as e:
+        return PityResponse.failed(str(e))
+
+
+@router.post("/reset/admin", summary="管理员重置指定用户密码")
+async def reset_password_by_admin(form: ResetUserPwdByAdminForm, user=Depends(Permission(Config.ADMIN))):
+    try:
+        await UserDao.reset_password_by_user_id(form.user_id, form.password, user['id'])
+        return PityResponse.success()
+    except Exception as e:
+        return PityResponse.failed(str(e))
 
 
 @router.get("/reset/generate/{email}", summary="生成重置密码链接")

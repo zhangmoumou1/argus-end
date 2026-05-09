@@ -31,8 +31,7 @@ class ProjectDao(Mapper):
             async with async_session() as session:
                 if role != Config.ADMIN:
                     project_list = await ProjectRoleDao.list_project_by_user(user_id)
-                    # 找出用户能看到的公开项目
-                    search.append(or_(Project.id.in_(project_list), Project.owner == user_id, Project.private == False))
+                    search.append(or_(Project.id.in_(project_list), Project.owner == user_id))
                 if name:
                     search.append(Project.name.like("%{}%".format(name)))
                 sql = select(Project).where(*search).order_by(desc(Project.updated_at))
@@ -61,7 +60,7 @@ class ProjectDao(Mapper):
             ans.add(r[0])
         # 找到未删除的项目
         roles = await session.execute(select(Project.id).where(
-            or_(Project.private == False, Project.owner == user), Project.deleted_at == 0))
+            Project.owner == user, Project.deleted_at == 0))
         for r in roles.all():
             ans.add(r[0])
         return list(ans) if len(ans) > 0 else None
@@ -72,14 +71,14 @@ class ProjectDao(Mapper):
         return query.scalars().first() == user_id
 
     @classmethod
-    async def add_project(cls, name, app, owner, user_id, private, description, dingtalk_url=''):
+    async def add_project(cls, name, app, owner, user_id, description, dingtalk_url=''):
         try:
             async with async_session() as session:
                 async with session.begin():
                     data = await session.execute(select(Project).where(Project.name == name, Project.deleted_at == 0))
                     if data.scalars().first() is not None:
                         raise Exception("项目已存在")
-                    pr = Project(name, app, owner, user_id, description, private, dingtalk_url)
+                    pr = Project(name, app, owner, user_id, description, dingtalk_url=dingtalk_url)
                     session.add(pr)
         except Exception as e:
             cls.__log__.error(f"新增项目: {name}失败, {e}")
@@ -106,7 +105,7 @@ class ProjectDao(Mapper):
             raise Exception(e)
 
     @classmethod
-    async def update_project(cls, id: int, user_id, role: int, name: str, app: str, owner: int, private: bool,
+    async def update_project(cls, id: int, user_id, role: int, name: str, app: str, owner: int,
                              description: str, dingtalk_url: str = '') -> None:
         """
         修改项目
@@ -116,7 +115,6 @@ class ProjectDao(Mapper):
         :param name:
         :param app:
         :param owner:
-        :param private:
         :param description:
         :param dingtalk_url:
         :return:
@@ -134,7 +132,6 @@ class ProjectDao(Mapper):
                     if data.owner != owner and role < Config.ADMIN and user_id != data.owner:
                         raise Exception("您没有权限修改项目负责人")
                     data.owner = owner
-                    data.private = private
                     data.description = description
                     data.updated_at = datetime.now()
                     data.update_user = user_id

@@ -52,3 +52,28 @@ class ResetPwdForm(BaseModel):
             raise ParamsError("不能为空")
         return v
 
+
+class ResetSelfPwdForm(BaseModel):
+    password: str
+
+    @validator('password')
+    def password_not_empty(cls, v):
+        if isinstance(v, str) and len(v.strip()) == 0:
+            raise ParamsError("不能为空")
+        return v
+
+
+class ResetUserPwdByAdminForm(BaseModel):
+    user_id: int
+    password: str
+
+    @validator('user_id')
+    def user_id_not_empty(cls, v):
+        return PityModel.not_empty(v)
+
+    @validator('password')
+    def admin_password_not_empty(cls, v):
+        if isinstance(v, str) and len(v.strip()) == 0:
+            raise ParamsError("不能为空")
+        return v
+

@@ -7,7 +7,6 @@ class ProjectForm(BaseModel):
     name: str
     app: str
     owner: int
-    private: bool = False
     description: str = ''
     dingtalk_url: str = None
 
@@ -23,7 +22,6 @@ class ProjectEditForm(BaseModel):
     name: str
     app: str
     owner: int
-    private: bool = False
     description: str = ''
     dingtalk_url: str = None
 

@@ -212,6 +212,23 @@ class UserDao(Mapper):
             raise Exception(f"重置{email}密码失败")
 
     @staticmethod
+    @RedisHelper.up_cache("user_list", "user_touch", key_and_suffix=("user_detail", lambda x: x[0]))
+    async def reset_password_by_user_id(user_id: int, password: str, operator_user_id: int = 0):
+        pwd = UserToken.add_salt(password)
+        try:
+            async with async_session() as session:
+                async with session.begin():
+                    query = await session.execute(select(User).where(User.id == user_id, User.deleted_at == 0))
+                    user = query.scalars().first()
+                    if user is None:
+                        raise Exception("用户不存在")
+                    user.password = pwd
+                    user.update_user = operator_user_id or user.update_user
+        except Exception as e:
+            UserDao.log.error(f"重置用户: {user_id}密码失败: {str(e)}")
+            raise Exception(f"重置用户{user_id}密码失败")
+
+    @staticmethod
     async def query_user_by_email(email: str):
         async with async_session() as session:
             sql = select(User).where(User.email == email, User.is_valid == True)
