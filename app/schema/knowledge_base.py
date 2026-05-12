@@ -8,6 +8,7 @@ class KnowledgeBaseForm(BaseModel):
     title: str
     summary: str = ""
     content: str
+    category: str = ""
 
     @validator("title", "content")
     def required_not_empty(cls, value):

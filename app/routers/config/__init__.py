@@ -5,5 +5,6 @@ from app.routers.config.redis_config import router
 from app.routers.config.system import router
 from app.routers.config.address import router
 from app.routers.config.knowledge_base import router
+from app.routers.config.knowledge_base_category import router
 from app.routers.config.ai_model import router
 from app.routers.config.mq_config import router
