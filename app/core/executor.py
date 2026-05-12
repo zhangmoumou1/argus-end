@@ -72,7 +72,7 @@ class Executor(object):
     _snowflake_seq = 0
     _snowflake_lock = threading.Lock()
 
-    def __init__(self, log: CaseLog = None):
+    def __init__(self, log: CaseLog = None, runtime_user_id: int = 0):
         # 这里是一个彩蛋, 奔驰大G LB（括弧1.3T）
         self.glb = None
         if log is None:
@@ -83,6 +83,7 @@ class Executor(object):
             self._main = False
         self._runtime_env = None
         self._runtime_project_id = None
+        self._runtime_user_id = runtime_user_id or 0
 
     @property
     def logger(self):
@@ -151,7 +152,7 @@ class Executor(object):
                                         source_name: str = None, source_id: int = None):
         if not variables:
             return
-        user_id = getattr(case_info, "update_user", None) or getattr(case_info, "create_user", None) or 0
+        user_id = self._runtime_user_id or getattr(case_info, "update_user", None) or getattr(case_info, "create_user", None) or 0
         await GConfigDao.upsert_runtime_variables(
             env=self._runtime_env,
             project_id=self._runtime_project_id,
@@ -395,15 +396,27 @@ class Executor(object):
         """获取构造数据"""
         return await TestCaseDao.async_select_constructor(case_id)
 
+    @staticmethod
+    def _suffix_flag(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return int(value) == 1
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "y", "on")
+        return bool(value)
+
     async def execute_constructors(self, env: int, path, params, constructors: List[Constructor], case_info=None, suffix=False):
         """开始构造数据"""
         if len(constructors) == 0:
             self.append("前后置条件为空, 跳出该环节")
             return
         current = 0
+        target_suffix = Executor._suffix_flag(suffix)
         for i, c in enumerate(constructors):
-            if c.suffix == suffix:
-                await self.execute_constructor(env, current, path, params, c, case_info=case_info, suffix=suffix)
+            constructor_suffix = Executor._suffix_flag(getattr(c, "suffix", False))
+            if constructor_suffix == target_suffix:
+                await self.execute_constructor(env, current, path, params, c, case_info=case_info, suffix=constructor_suffix)
                 current += 1
 
     async def execute_constructor(self, env, index, path, params, constructor: Constructor, case_info=None, suffix=False):
@@ -418,16 +431,20 @@ class Executor(object):
         constructor.constructor_json = await self.render_with_runtime_vars(params, constructor.constructor_json,
                                                                     case_info.id if case_info is not None else None)
         resp = await construct.run(self, env, index, path, params, constructor, executor_class=Executor)
-        if constructor.value and resp is not None:
+        var_name = (constructor.value or "").strip()
+        if resp is not None:
+            if not var_name:
+                var_name = (constructor.name or "").strip() or f"constructor_{constructor.id}_result"
+                self.append(f"未设置返回变量名，已自动使用变量: {var_name}")
             value = Executor.normalize_variable_value(resp)
-            params[constructor.value] = value
+            params[var_name] = value
             if case_info is not None:
                 try:
                     stage = "post_constructor" if suffix else "pre_constructor"
                     await self.persist_runtime_variables(
                         case_info=case_info,
                         stage=stage,
-                        variables={constructor.value: value},
+                        variables={var_name: value},
                         path=path,
                         source_name=constructor.name,
                         source_id=constructor.id,
@@ -494,8 +511,12 @@ class Executor(object):
             # 请求参数优先级最高
             case_params.update(req_params)
             response_info['case_id'] = case_info.id
-            response_info["case_name"] = case_info.name
-            method = case_info.request_method.upper()
+            raw_method = (case_info.request_method or "").strip()
+            if not raw_method:
+                if self._main:
+                    response_info["logs"] = self.logger.join()
+                return response_info, "执行用例失败: 请求方法为空，请先在用例中选择请求方法"
+            method = raw_method.upper()
             response_info["request_method"] = method
 
             # Step1: 获取构造数据
@@ -515,6 +536,20 @@ class Executor(object):
 
             if case_info.request_headers and case_info.request_headers != "":
                 headers = json.loads(case_info.request_headers)
+                # 兼容新结构: [{"key":"k","value":"v","description":"..."}]
+                # 执行请求时仅需要 key/value
+                if isinstance(headers, list):
+                    temp_headers = {}
+                    for item in headers:
+                        if not isinstance(item, dict):
+                            continue
+                        key = str(item.get("key") or "").strip()
+                        if not key:
+                            continue
+                        temp_headers[key] = item.get("value")
+                    headers = temp_headers
+                elif not isinstance(headers, dict):
+                    headers = dict()
             else:
                 headers = dict()
 
@@ -593,12 +628,13 @@ class Executor(object):
 
     @staticmethod
     async def run_with_test_data(env, data, report_id, case_id, params_pool: dict = None, request_param: dict = None,
-                                 path='主case', name: str = "", data_id: int = None, retry_minutes: int = 0):
+                                 path='主case', name: str = "", data_id: int = None, retry_minutes: int = 0,
+                                 runtime_user_id: int = 0):
         retry_times = Config.RETRY_TIMES if retry_minutes > 0 else 0
         times = 0
         for i in range(retry_times + 1):
             start_at = datetime.now()
-            executor = Executor()
+            executor = Executor(runtime_user_id=runtime_user_id)
             result, err = await executor.run(env, case_id, params_pool, request_param, path)
             finished_at = datetime.now()
             cost = "{}s".format((finished_at - start_at).seconds)
@@ -635,16 +671,19 @@ class Executor(object):
             break
 
     @staticmethod
-    async def run_single(env: int, data, report_id, case_id, params_pool: dict = None, path="主case", retry_minutes=0):
+    async def run_single(env: int, data, report_id, case_id, params_pool: dict = None, path="主case", retry_minutes=0,
+                         runtime_user_id: int = 0):
         test_data = await PityTestcaseDataDao.list_testcase_data_by_env(env, case_id)
         if not test_data:
             await Executor.run_with_test_data(env, data, report_id, case_id, params_pool, dict(), path,
-                                              "默认数据", retry_minutes=retry_minutes)
+                                              "默认数据", retry_minutes=retry_minutes,
+                                              runtime_user_id=runtime_user_id)
         else:
             await asyncio.gather(
                 *(Executor.run_with_test_data(env, data, report_id, case_id, params_pool,
                                               Executor.get_dict(x.json_data),
-                                              path, x.name, x.id, retry_minutes=retry_minutes)
+                                              path, x.name, x.id, retry_minutes=retry_minutes,
+                                              runtime_user_id=runtime_user_id)
                   for x in test_data))
 
     @staticmethod
@@ -870,14 +909,15 @@ class Executor(object):
             # step4: 执行用例并搜集数据
             if not ordered:
                 await asyncio.gather(
-                    *(Executor.run_single(env, result_data, report_id, c, retry_minutes=retry_minutes) for c in
+                    *(Executor.run_single(env, result_data, report_id, c, retry_minutes=retry_minutes,
+                                          runtime_user_id=executor) for c in
                       case_list))
             else:
                 # 顺序执行，后一个接口可以复用前一个接口提取变量
                 shared_params = dict()
                 for c in case_list:
                     await Executor.run_single(env, result_data, report_id, c, params_pool=shared_params,
-                                              retry_minutes=retry_minutes)
+                                              retry_minutes=retry_minutes, runtime_user_id=executor)
             ok, fail, skip, error = 0, 0, 0, 0
             for case_id, status in result_data.items():
                 for s in status:
@@ -911,3 +951,5 @@ class Executor(object):
             return report_id
         except Exception as e:
             raise Exception(f"批量执行用例失败: {e}")
+
+

@@ -34,6 +34,8 @@ class PityTestPlan(PityBase):
     retry_minutes = Column(SMALLINT, nullable=False, default=0)
     # 测试计划是否正在执行中
     state = Column(SMALLINT, default=0, comment="0: 未开始 1: 运行中")
+    # 测试计划是否开启
+    enabled = Column(BOOLEAN, default=True, nullable=False, comment="是否开启计划调度")
 
     __table_args__ = (
         UniqueConstraint('project_id', 'name', 'deleted_at'),
@@ -47,7 +49,7 @@ class PityTestPlan(PityBase):
                      pass_rate="通过率", msg_type="通知类型", retry_minutes="重试时间", receiver="通知人", case_list="用例列表")
 
     def __init__(self, project_id, env, case_list, name, priority, cron, ordered, pass_rate, receiver, msg_type,
-                 user, state=0, retry_minutes=0, id=None):
+                 user, state=0, retry_minutes=0, enabled=True, id=None):
         super().__init__(user, id)
         self.env = ",".join(map(str, env))
         self.case_list = ",".join(map(str, case_list))
@@ -61,6 +63,7 @@ class PityTestPlan(PityBase):
         self.msg_type = ",".join(map(str, msg_type))
         self.retry_minutes = retry_minutes
         self.state = state
+        self.enabled = enabled
 
     @staticmethod
     def get_msg_type(msg_type):

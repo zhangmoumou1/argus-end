@@ -129,6 +129,22 @@ class PityTestPlanDao(Mapper):
             raise Exception(f"编辑失败: {str(e)}")
 
     @staticmethod
+    async def update_test_plan_enabled(id: int, enabled: bool, user_id: int):
+        try:
+            async with async_session() as session:
+                async with session.begin():
+                    query = await session.execute(
+                        select(PityTestPlan).where(PityTestPlan.id == id, PityTestPlan.deleted_at == 0))
+                    data = query.scalars().first()
+                    if data is None:
+                        raise Exception("测试计划不存在")
+                    data.enabled = bool(enabled)
+                    data.update_user = user_id
+        except Exception as e:
+            PityTestPlanDao.__log__.error(f"更新测试计划启用状态失败: {str(e)}")
+            raise Exception(f"更新启用状态失败: {str(e)}")
+
+    @staticmethod
     async def query_test_plan(id: int) -> PityTestPlan:
         try:
             async with async_session() as session:

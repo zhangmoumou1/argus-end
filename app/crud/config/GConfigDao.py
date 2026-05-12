@@ -280,6 +280,29 @@ class GConfigDao(Mapper):
                     item["project_name"] = project_name
                     item["create_user_name"] = create_user_name
                     rows.append(item)
+
+                # 运行时变量按“每个用户一份最新值”展示（同维度去重，只保留最新一条）
+                if var_type is None or int(var_type) == int(GConfigVariableType.runtime_var):
+                    latest_rows = []
+                    runtime_keys = set()
+                    for item in rows:
+                        if int(item.get("type", 0)) != int(GConfigVariableType.runtime_var):
+                            latest_rows.append(item)
+                            continue
+                        dedupe_key = (
+                            item.get("env"),
+                            item.get("project_id"),
+                            item.get("case_id"),
+                            item.get("key"),
+                            item.get("create_user"),
+                        )
+                        if dedupe_key in runtime_keys:
+                            continue
+                        runtime_keys.add(dedupe_key)
+                        latest_rows.append(item)
+                    rows = latest_rows
+                    total = len(rows)
+
                 return rows, total
         except Exception as e:
             raise Exception(f"分页查询全局变量失败: {str(e)}")
@@ -292,10 +315,16 @@ class GConfigDao(Mapper):
         async with async_session() as session:
             async with session.begin():
                 for name, value in variables.items():
+                    var_name = str(name or "").strip()
+                    if not var_name:
+                        continue
                     key_type = int(
                         GConfigParserEnum.json if isinstance(value, (dict, list, tuple))
                         else GConfigParserEnum.string
                     )
+                    text_val = cls._value_to_text(value)
+
+                    # 命中历史同维度数据时，先软删除旧记录，再插入新记录，保证每次执行都有新增版本
                     query = await session.execute(
                         select(GConfig).where(
                             GConfig.deleted_at == 0,
@@ -303,31 +332,43 @@ class GConfigDao(Mapper):
                             GConfig.env == env,
                             GConfig.project_id == project_id,
                             GConfig.case_id == case_id,
-                            GConfig.key == name
+                            GConfig.key == var_name,
+                            GConfig.create_user == (user_id or 0),
                         )
                     )
                     row = query.scalars().first()
-                    text_val = cls._value_to_text(value)
+
                     if row is None:
-                        row = GConfig(
-                            env=env,
-                            key=name,
-                            value=text_val,
-                            key_type=key_type,
-                            enable=True,
-                            user=user_id or 0,
-                            type=int(GConfigVariableType.runtime_var),
-                            project_id=project_id,
-                            case_id=case_id,
-                            case_name=case_name
+                        fallback = await session.execute(
+                            select(GConfig).where(
+                                GConfig.deleted_at == 0,
+                                GConfig.type == int(GConfigVariableType.runtime_var),
+                                GConfig.env == env,
+                                GConfig.case_id == case_id,
+                                GConfig.key == var_name,
+                                GConfig.create_user == (user_id or 0),
+                            ).order_by(desc(GConfig.id))
                         )
-                        session.add(row)
-                        continue
-                    row.value = text_val
-                    row.key_type = key_type
-                    row.case_name = case_name
-                    row.enable = True
-                    row.update_user = user_id or row.update_user
+                        row = fallback.scalars().first()
+
+                    if row is not None:
+                        row.deleted_at = int(datetime.now().timestamp())
+                        row.update_user = user_id or row.update_user
+                        row.updated_at = datetime.now()
+
+                    new_row = GConfig(
+                        env=env,
+                        key=var_name,
+                        value=text_val,
+                        key_type=key_type,
+                        enable=True,
+                        user=user_id or 0,
+                        type=int(GConfigVariableType.runtime_var),
+                        project_id=project_id,
+                        case_id=case_id,
+                        case_name=case_name
+                    )
+                    session.add(new_row)
 
     @staticmethod
     async def latest_runtime_variable_map(env: int, project_id: int, case_id: int, limit: int = 1000) -> Dict[str, str]:

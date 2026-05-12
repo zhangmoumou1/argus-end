@@ -18,6 +18,7 @@ class PityTestPlanForm(BaseModel):
     receiver: List[int] = list()
     msg_type: List[int] = list()
     retry_minutes: int = 0
+    enabled: bool = True
 
     @validator("case_list", "project_id", "env", "cron", "ordered", "priority", "name", "pass_rate")
     def name_not_empty(cls, v):

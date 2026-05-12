@@ -50,9 +50,9 @@ async def http_request(cert: CertType):
 
 
 @router.get("/run")
-async def execute_case(env: int, case_id: int, _=Depends(Permission())):
+async def execute_case(env: int, case_id: int, user_info=Depends(Permission())):
     try:
-        executor = Executor()
+        executor = Executor(runtime_user_id=user_info.get("id", 0))
         test_data = await PityTestcaseDataDao.list_testcase_data_by_env(env, case_id)
         ans = dict()
         if not test_data:
@@ -71,9 +71,9 @@ async def execute_case(env: int, case_id: int, _=Depends(Permission())):
 
 
 @router.get("/retry", summary="根据测试数据重新运行测试用例")
-async def re_run_case(env: int, case_id: int, data_id: int = 0, _=Depends(Permission())):
+async def re_run_case(env: int, case_id: int, data_id: int = 0, user_info=Depends(Permission())):
     try:
-        executor = Executor()
+        executor = Executor(runtime_user_id=user_info.get("id", 0))
         params = dict()
         if data_id != 0:
             # if data_id not exists, use original params (empty dict)
@@ -89,7 +89,7 @@ async def re_run_case(env: int, case_id: int, data_id: int = 0, _=Depends(Permis
 async def execute_case(env: int, case_id: List[int], user_info=Depends(Permission())):
     data = dict()
     # s = time.perf_counter()
-    await asyncio.gather(*(run_single(env, c, data) for c in case_id))
+    await asyncio.gather(*(run_single(env, c, data, user_info.get("id", 0)) for c in case_id))
     # elapsed = time.perf_counter() - s
     # print(f"async executed in {elapsed:0.2f} seconds.")
     return PityResponse.success()
@@ -102,7 +102,7 @@ async def execute_case(env: int, case_id: List[int], user_info=Depends(Permissio
 
     # s = time.perf_counter()
     for c in case_id:
-        executor = Executor()
+        executor = Executor(runtime_user_id=user_info.get("id", 0))
         data[c] = await executor.run(env, c)
     # elapsed = time.perf_counter() - s
     # print(f"sync executed in {elapsed:0.2f} seconds.")
@@ -129,6 +129,6 @@ async def execute_as_report(env: int, case_id: List[int], user_info=Depends(Perm
 #     return PityResponse.success(data=random_id, msg="操作已停止")
 
 
-async def run_single(env: int, case_id: int, data: Dict[int, tuple]):
-    executor = Executor()
+async def run_single(env: int, case_id: int, data: Dict[int, tuple], runtime_user_id: int = 0):
+    executor = Executor(runtime_user_id=runtime_user_id)
     data[case_id] = await executor.run(env, case_id)
