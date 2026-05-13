@@ -25,6 +25,19 @@ async def list_knowledge_category(_=Depends(Permission())):
         return PityResponse.success(PityResponse.model_to_list(data))
 
 
+@router.get("/knowledge/category/public/list")
+async def list_public_knowledge_category():
+    async with async_session() as session:
+        sql = (
+            select(PityKnowledgeBaseCategory)
+            .where(PityKnowledgeBaseCategory.deleted_at == 0)
+            .order_by(PityKnowledgeBaseCategory.sort_order, PityKnowledgeBaseCategory.id.desc())
+        )
+        result = await session.execute(sql)
+        data = result.scalars().all()
+        return PityResponse.success(PityResponse.model_to_list(data))
+
+
 @router.post("/knowledge/category/insert")
 async def insert_knowledge_category(data: KnowledgeBaseCategoryForm, user_info=Depends(Permission(Config.ADMIN))):
     async with async_session() as session:
@@ -87,3 +100,4 @@ async def delete_knowledge_category(id: int, user_info=Depends(Permission(Config
             model.update_user = user_info['id']
             model.updated_at = datetime.now()
     return PityResponse.success()
+
