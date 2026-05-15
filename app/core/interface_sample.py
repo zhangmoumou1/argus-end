@@ -8,6 +8,9 @@ from sqlalchemy import select, text
 from app.models.interface_manage import PityApiEndpoint, PityApiEndpointSample, PityApiService
 
 
+MANUAL_SAMPLE_SOURCES = {"manual", "manual_associate", "manual_input"}
+
+
 SAMPLE_CREATE_SQL = (
     "CREATE TABLE IF NOT EXISTS pity_api_endpoint_sample ("
     "id INT PRIMARY KEY AUTO_INCREMENT,"
@@ -82,7 +85,12 @@ def is_dynamic_segment(segment: str):
 
 
 def _parse_record_url(url: str):
-    parsed = urlparse(str(url or "").strip())
+    raw_url = str(url or "").strip()
+    parsed = urlparse(raw_url)
+    if not parsed.scheme and not parsed.netloc:
+        first_segment = raw_url.split("/", 1)[0].strip()
+        if first_segment and re.match(r"^([a-zA-Z0-9.-]+|\d{1,3}(?:\.\d{1,3}){3})(:\d+)?$", first_segment):
+            parsed = urlparse(f"http://{raw_url}")
     host = str(parsed.netloc or "").strip().lower()
     path = normalize_api_path(parsed.path or "/")
     query = {
@@ -176,6 +184,17 @@ def _score_candidate(request_host: str, request_path: str, endpoint: PityApiEndp
 
 async def ensure_interface_sample_schema(session):
     await session.execute(text(SAMPLE_CREATE_SQL))
+    for column_sql in [
+        "ALTER TABLE pity_api_endpoint_sample MODIFY COLUMN request_query LONGTEXT NULL",
+        "ALTER TABLE pity_api_endpoint_sample MODIFY COLUMN request_headers LONGTEXT NULL",
+        "ALTER TABLE pity_api_endpoint_sample MODIFY COLUMN request_body LONGTEXT NULL",
+        "ALTER TABLE pity_api_endpoint_sample MODIFY COLUMN response_headers LONGTEXT NULL",
+        "ALTER TABLE pity_api_endpoint_sample MODIFY COLUMN response_body LONGTEXT NULL",
+    ]:
+        try:
+            await session.execute(text(column_sql))
+        except Exception:
+            pass
 
 
 async def match_endpoint_for_record(session, request_data: dict):
@@ -218,22 +237,53 @@ async def upsert_endpoint_sample_by_record(session, request_data: dict, user_id:
     endpoint, service, matched_variant = await match_endpoint_for_record(session, request_data)
     if endpoint is None or service is None:
         return None
-    parsed = _parse_record_url(request_data.get("url"))
-    sample = (
+    sample = await get_endpoint_sample(session, endpoint.id)
+    if sample is not None and str(getattr(sample, "sample_source", "") or "").lower() in MANUAL_SAMPLE_SOURCES:
+        logger.bind(name=None).info(
+            f"record sample skipped endpoint_id={endpoint.id}, service_id={service.id}, reason=manual_sample_locked"
+        )
+        return sample
+    return await save_endpoint_sample(
+        session=session,
+        endpoint=endpoint,
+        service=service,
+        request_data=request_data,
+        user_id=user_id,
+        sample_source="record",
+        matched_variant=matched_variant,
+        sample=sample,
+    )
+
+
+async def get_endpoint_sample(session, endpoint_id: int):
+    return (
         await session.execute(
             select(PityApiEndpointSample).where(
-                PityApiEndpointSample.endpoint_id == endpoint.id,
+                PityApiEndpointSample.endpoint_id == endpoint_id,
                 PityApiEndpointSample.deleted_at == 0,
             )
         )
     ).scalars().first()
+
+
+async def save_endpoint_sample(
+    session,
+    endpoint: PityApiEndpoint,
+    service: PityApiService,
+    request_data: dict,
+    user_id: int = 0,
+    sample_source: str = "record",
+    matched_variant: str = "",
+    sample: PityApiEndpointSample = None,
+):
+    parsed = _parse_record_url(request_data.get("url"))
     sample_name = f"最近录制实例-{datetime_now_text(request_data.get('created_at'))}"
     payload = {
         "project_id": int(getattr(service, "project_id", 0) or 0),
         "service_id": int(getattr(service, "id", 0) or 0),
         "endpoint_id": int(getattr(endpoint, "id", 0) or 0),
         "api_version_id": int(getattr(endpoint, "current_version_id", 0) or 0),
-        "sample_source": "record",
+        "sample_source": str(sample_source or "record").strip() or "record",
         "sample_name": sample_name,
         "request_url": str(request_data.get("url") or ""),
         "request_path": matched_variant or parsed["path"],
@@ -254,7 +304,8 @@ async def upsert_endpoint_sample_by_record(session, request_data: dict, user_id:
         sample.update_user = user_id or sample.update_user
     endpoint.update_user = user_id or endpoint.update_user
     logger.bind(name=None).info(
-        f"record sample upserted endpoint_id={endpoint.id}, service_id={service.id}, recorded_at={payload['recorded_at']}"
+        f"endpoint sample saved endpoint_id={endpoint.id}, service_id={service.id}, "
+        f"source={payload['sample_source']}, recorded_at={payload['recorded_at']}"
     )
     return sample
 

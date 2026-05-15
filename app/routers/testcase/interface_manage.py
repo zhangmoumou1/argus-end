@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs, urljoin
 
@@ -11,7 +12,7 @@ from app.handler.fatcory import PityResponse
 from app.core.configuration import SystemConfiguration
 from app.models import async_session
 from app.models.interface_manage import PityApiService, PityApiEndpoint, PityApiEndpointVersion, PityApiEndpointSample
-from app.core.interface_sample import ensure_interface_sample_schema
+from app.core.interface_sample import ensure_interface_sample_schema, get_endpoint_sample as load_endpoint_sample, save_endpoint_sample
 from app.routers import Permission
 from app.utils.json_compare import JsonCompare
 
@@ -536,6 +537,7 @@ async def list_endpoints(service_id: int, keyword: str = "", module_name: str = 
                     PityApiEndpointSample.endpoint_id,
                     PityApiEndpointSample.recorded_at,
                     PityApiEndpointSample.status_code,
+                    PityApiEndpointSample.sample_source,
                 ).where(
                     PityApiEndpointSample.endpoint_id.in_(endpoint_ids),
                     PityApiEndpointSample.deleted_at == 0,
@@ -557,6 +559,7 @@ async def list_endpoints(service_id: int, keyword: str = "", module_name: str = 
                 "sample_available": 1 if sample else 0,
                 "sample_recorded_at": sample.recorded_at if sample else None,
                 "sample_status_code": sample.status_code if sample else None,
+                "sample_source": sample.sample_source if sample else None,
             })
         module_result = await session.execute(
             select(PityApiEndpoint.module_name).where(
@@ -613,6 +616,131 @@ async def get_endpoint_sample(endpoint_id: int, _=Depends(Permission())):
             return PityResponse.success(None)
         data = serialize_model(record)
     return PityResponse.success(data)
+
+
+@router.post("/endpoint/sample/associate")
+async def associate_endpoint_sample(form: dict, user_info=Depends(Permission())):
+    endpoint_id = int(form.get("endpoint_id") or 0)
+    if not endpoint_id:
+        return PityResponse.failed("endpoint_id不能为空")
+    async with async_session() as session:
+        await ensure_interface_schema(session)
+        endpoint = (
+            await session.execute(
+                select(PityApiEndpoint).where(
+                    PityApiEndpoint.id == endpoint_id,
+                    PityApiEndpoint.deleted_at == 0,
+                )
+            )
+        ).scalars().first()
+        if endpoint is None:
+            return PityResponse.failed("接口不存在")
+        service = (
+            await session.execute(
+                select(PityApiService).where(
+                    PityApiService.id == endpoint.service_id,
+                    PityApiService.deleted_at == 0,
+                )
+            )
+        ).scalars().first()
+        if service is None:
+            return PityResponse.failed("接口所属服务不存在")
+        sample = await load_endpoint_sample(session, endpoint_id)
+        request_data = {
+            "url": str(form.get("url") or endpoint.full_url or ""),
+            "request_method": str(form.get("request_method") or endpoint.method or "GET").upper(),
+            "request_headers": form.get("request_headers") or {},
+            "body": form.get("body") or "",
+            "response_headers": form.get("response_headers") or {},
+            "response_content": form.get("response_content") or "",
+            "status_code": int(form.get("status_code") or 0),
+            "created_at": str(form.get("created_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        }
+        await save_endpoint_sample(
+            session=session,
+            endpoint=endpoint,
+            service=service,
+            request_data=request_data,
+            user_id=user_info["id"],
+            sample_source="manual_associate",
+            sample=sample,
+        )
+        await session.commit()
+        record = await load_endpoint_sample(session, endpoint_id)
+    return PityResponse.success(serialize_model(record) if record else None)
+
+
+@router.post("/endpoint/sample/manual-input")
+async def manual_input_endpoint_sample(form: dict, user_info=Depends(Permission())):
+    endpoint_id = int(form.get("endpoint_id") or 0)
+    if not endpoint_id:
+        return PityResponse.failed("endpoint_id不能为空")
+    async with async_session() as session:
+        await ensure_interface_schema(session)
+        endpoint = (
+            await session.execute(
+                select(PityApiEndpoint).where(
+                    PityApiEndpoint.id == endpoint_id,
+                    PityApiEndpoint.deleted_at == 0,
+                )
+            )
+        ).scalars().first()
+        if endpoint is None:
+            return PityResponse.failed("接口不存在")
+        service = (
+            await session.execute(
+                select(PityApiService).where(
+                    PityApiService.id == endpoint.service_id,
+                    PityApiService.deleted_at == 0,
+                )
+            )
+        ).scalars().first()
+        if service is None:
+            return PityResponse.failed("接口所属服务不存在")
+        sample = await load_endpoint_sample(session, endpoint_id)
+        request_data = {
+            "url": str(form.get("request_url") or endpoint.full_url or endpoint.path or ""),
+            "request_method": str(form.get("request_method") or endpoint.method or "GET").upper(),
+            "request_headers": form.get("request_headers") or {},
+            "body": form.get("request_body") or "",
+            "response_headers": form.get("response_headers") or {},
+            "response_content": form.get("response_body") or "",
+            "status_code": int(form.get("status_code") or 200),
+            "created_at": str(form.get("recorded_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        }
+        record = await save_endpoint_sample(
+            session=session,
+            endpoint=endpoint,
+            service=service,
+            request_data=request_data,
+            user_id=user_info["id"],
+            sample_source="manual_input",
+            matched_variant=str(form.get("request_path") or endpoint.path or ""),
+            sample=sample,
+        )
+        record.sample_name = str(form.get("sample_name") or record.sample_name or "").strip() or record.sample_name
+        if form.get("request_query") is not None:
+            record.request_query = safe_json_dumps(form.get("request_query") or {})
+        await session.commit()
+        record = await load_endpoint_sample(session, endpoint_id)
+    return PityResponse.success(serialize_model(record) if record else None)
+
+
+@router.post("/endpoint/sample/clear")
+async def clear_endpoint_sample(form: dict, user_info=Depends(Permission())):
+    endpoint_id = int(form.get("endpoint_id") or 0)
+    if not endpoint_id:
+        return PityResponse.failed("endpoint_id不能为空")
+    async with async_session() as session:
+        await ensure_interface_schema(session)
+        record = await load_endpoint_sample(session, endpoint_id)
+        if record is None:
+            return PityResponse.success(True)
+        record.deleted_at = int(time.time())
+        record.update_user = user_info["id"]
+        record.updated_at = datetime.now()
+        await session.commit()
+    return PityResponse.success(True)
 
 
 @router.get("/endpoint/version/compare")
