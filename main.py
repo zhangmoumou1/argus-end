@@ -24,6 +24,7 @@ from app.routers.notification import router as msg_router
 from app.routers.online import router as online_router
 from app.routers.operation import router as operation_router
 from app.routers.oss import router as oss_router
+from app.routers.performance import router as performance_router
 from app.routers.project import project
 from app.routers.request import http
 from app.routers.testcase import router as testcase_router
@@ -99,6 +100,7 @@ pity.include_router(oss_router, dependencies=[Depends(request_info)])
 pity.include_router(operation_router, dependencies=[Depends(request_info)])
 pity.include_router(msg_router, dependencies=[Depends(request_info)])
 pity.include_router(workspace_router, dependencies=[Depends(request_info)])
+pity.include_router(performance_router, dependencies=[Depends(request_info)])
 
 pity.mount("/statics", StaticFiles(directory="statics"), name="statics")
 

@@ -553,6 +553,10 @@ class Executor(object):
             else:
                 headers = dict()
 
+            override_headers = req_params.get("request_headers")
+            if isinstance(override_headers, dict):
+                headers = {**override_headers, **headers}
+
             body = case_info.body if case_info.body != '' else None
 
             # Step6: 替换base_path
@@ -561,7 +565,10 @@ class Executor(object):
                 case_info.url = f"{base_path}{case_info.url}"
 
             response_info["url"] = case_info.url
+            response_info["request_url"] = case_info.url
             response_info["request_data"] = body
+            response_info["request_body"] = body
+            response_info["request_headers"] = headers
 
             # Step7: 完成http请求
             request_obj = await AsyncRequest.client(url=case_info.url, body_type=case_info.body_type, headers=headers,
