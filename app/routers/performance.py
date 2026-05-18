@@ -708,6 +708,27 @@ def build_text_preview(value, limit=5000):
     return f"{text[:limit]}\n... 已截断 {len(text) - limit} 个字符"
 
 
+def normalize_executor_asserts(value):
+    raw_value = safe_json_loads(value, default=[])
+    if isinstance(raw_value, list):
+        return raw_value
+    if not isinstance(raw_value, dict):
+        return []
+    rows = []
+    for key, item in raw_value.items():
+        if not isinstance(item, dict):
+            item = {"msg": str(item)}
+        rows.append({
+            "name": str(key),
+            "type": "assert",
+            "passed": bool(item.get("status")),
+            "actual": item.get("actually") or item.get("actual") or "-",
+            "expected": item.get("expected") or "-",
+            "message": item.get("msg") or ("断言通过" if item.get("status") else "断言失败"),
+        })
+    return rows
+
+
 def compact_step_record(step):
     if not isinstance(step, dict):
         return step
@@ -728,6 +749,7 @@ def compact_step_record(step):
             "body": build_text_preview(request_block.get("body"), limit=MAX_REPORT_REQUEST_BODY_LENGTH),
         },
         "response_sample": build_text_preview(step.get("response_sample"), limit=MAX_REPORT_RESPONSE_SAMPLE_LENGTH),
+        "assertion_results": normalize_executor_asserts(step.get("assertion_results") or step.get("asserts")),
     }
 
 
@@ -1237,6 +1259,7 @@ async def execute_case_link(plan, executor, variables=None, global_headers=None)
                 "body": result.get("request_body"),
             },
             "response_sample": result.get("response"),
+            "assertion_results": normalize_executor_asserts(result.get("assertion_results") or result.get("asserts")),
         }
         if err is not None or not result.get("status"):
             step_record["status"] = "error"
