@@ -2,6 +2,7 @@ import asyncio
 import csv
 import json
 import math
+import os
 import random
 import re
 import time
@@ -41,6 +42,24 @@ MAX_REPORT_REQUEST_RECORDS = 10
 MAX_REPORT_RESPONSE_SAMPLE_LENGTH = 1500
 MAX_REPORT_REQUEST_BODY_LENGTH = 600
 MAX_REPORT_ASSERTION_RESULTS = 5
+
+
+def resolve_grafana_url():
+    env_value = os.getenv("GRAFANA_URL")
+    if env_value:
+        return env_value.strip().strip('"').strip("'")
+
+    env_name = "pro.env" if str(os.getenv("PITY_ENV") or "").lower() == "pro" else "dev.env"
+    env_path = Path(__file__).resolve().parents[2] / "conf" / env_name
+    if env_path.exists():
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key.strip() == "GRAFANA_URL":
+                return value.strip().strip('"').strip("'")
+    return ""
 
 
 async def ensure_performance_schema(session):
@@ -1918,6 +1937,13 @@ async def list_performance_report(page: int, size: int, start_time: str, end_tim
                 "load_mode": getattr(plan, "load_mode", "concurrency"),
             }, ensure_ascii=False)
         return PityResponse.success_with_size(records, total=total)
+
+
+@router.get("/monitor/config")
+async def query_performance_monitor_config(_=Depends(Permission())):
+    return PityResponse.success({
+        "grafana_url": resolve_grafana_url(),
+    })
 
 
 @router.get("/report")

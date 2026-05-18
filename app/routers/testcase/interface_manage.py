@@ -8,6 +8,7 @@ import requests
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, text, func
 
+from app import pity
 from app.handler.fatcory import PityResponse
 from app.core.configuration import SystemConfiguration
 from app.models import async_session
@@ -53,6 +54,67 @@ def safe_json_loads(text_value):
         return {}
 
 
+def resolve_openapi_ref(payload: dict, ref: str):
+    if not isinstance(payload, dict) or not isinstance(ref, str) or not ref.startswith("#/"):
+        return None
+    current = payload
+    for part in ref[2:].split("/"):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def expand_openapi_node(payload: dict, node, seen_refs=None):
+    if seen_refs is None:
+        seen_refs = set()
+
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            if ref in seen_refs:
+                return {"$ref": ref}
+            target = resolve_openapi_ref(payload, ref)
+            if target is None:
+                return {"$ref": ref}
+            merged = dict(target) if isinstance(target, dict) else target
+            if isinstance(merged, dict):
+                for key, value in node.items():
+                    if key != "$ref":
+                        merged[key] = value
+            return expand_openapi_node(payload, merged, seen_refs | {ref})
+        return {key: expand_openapi_node(payload, value, seen_refs) for key, value in node.items()}
+
+    if isinstance(node, list):
+        return [expand_openapi_node(payload, item, seen_refs) for item in node]
+
+    return node
+
+
+def extract_change_points(compare_rows):
+    ans = []
+    for row in compare_rows or []:
+        text_value = str(row or "").strip()
+        if not text_value:
+            continue
+        point = text_value.split(" ", 1)[0].strip()
+        if point and point not in ans:
+            ans.append(point)
+    return ans
+
+
+def normalize_structured_text(value):
+    if isinstance(value, (dict, list)):
+        return value
+    text_value = str(value or "").strip()
+    if not text_value:
+        return ""
+    try:
+        return json.loads(text_value)
+    except Exception:
+        return text_value
+
+
 def parse_swagger_payload(payload):
     paths = payload.get("paths") or {}
     ans = []
@@ -63,18 +125,21 @@ def parse_swagger_payload(payload):
             op = item.get(method)
             if not isinstance(op, dict):
                 continue
+            resolved_parameters = expand_openapi_node(payload, op.get("parameters") or [])
+            resolved_request_body = expand_openapi_node(payload, op.get("requestBody") or {})
+            resolved_responses = expand_openapi_node(payload, op.get("responses") or {})
             ans.append({
                 "name": op.get("summary") or op.get("operationId") or f"{method.upper()} {raw_path}",
                 "method": method.upper(),
                 "module_name": ((op.get("tags") or ["默认模块"])[0] if isinstance(op.get("tags"), list) else "默认模块"),
                 "endpoint_status": "deprecated" if bool(op.get("deprecated")) else "available",
                 "path": normalize_path(raw_path),
-                "request_headers": [x for x in (op.get("parameters") or []) if isinstance(x, dict) and str(x.get("in")) == "header"],
+                "request_headers": [x for x in resolved_parameters if isinstance(x, dict) and str(x.get("in")) == "header"],
                 "request_params": {
-                    "parameters": op.get("parameters") or [],
-                    "requestBody": op.get("requestBody") or {},
+                    "parameters": resolved_parameters,
+                    "requestBody": resolved_request_body,
                 },
-                "response_body": op.get("responses") or {},
+                "response_body": resolved_responses,
             })
     return ans
 
@@ -93,28 +158,49 @@ def parse_yapi_payload(payload):
             continue
         method = str(item.get("method") or "GET").upper()
         raw_path = item.get("path") or item.get("url") or ""
+        req_headers = item.get("req_headers") or []
+        req_query = item.get("req_query") or []
+        req_body_other = normalize_structured_text(item.get("req_body_other") or "")
+        req_body_form = item.get("req_body_form") or []
+        res_body = normalize_structured_text(item.get("res_body") or "")
         ans.append({
             "name": item.get("title") or f"{method} {raw_path}",
             "method": method,
             "module_name": item.get("cat_name") or "默认模块",
             "endpoint_status": "deprecated" if str(item.get("status") or "").lower() in ("deprecated", "disable", "disabled") else "available",
             "path": normalize_path(raw_path),
-            "request_headers": item.get("req_headers") or [],
+            "request_headers": req_headers,
             "request_params": {
-                "req_query": item.get("req_query") or [],
-                "req_headers": item.get("req_headers") or [],
-                "req_body_other": item.get("req_body_other") or "",
-                "req_body_form": item.get("req_body_form") or [],
+                "req_query": req_query,
+                "req_headers": req_headers,
+                "req_body_other": req_body_other,
+                "req_body_form": req_body_form,
             },
-            "response_body": item.get("res_body") or "",
+            "response_body": res_body,
         })
     return ans
+
+
+def resolve_local_openapi_payload(source_url: str):
+    parsed = urlparse(str(source_url or "").strip())
+    host = str(parsed.hostname or "").strip().lower()
+    path = normalize_path(parsed.path or "")
+    if host not in {"localhost", "127.0.0.1", "0.0.0.0"}:
+        return None
+    if path in {"/openapi.json", "/docs", "/redoc", "/swagger-ui.html", "/swagger-ui/index.html"}:
+        payload = pity.openapi()
+        if isinstance(payload, dict) and (payload.get("openapi") or payload.get("swagger")):
+            return payload
+    return None
 
 
 def resolve_swagger_payload(source_url: str):
     source_url = str(source_url or "").strip()
     if not source_url:
         raise ValueError("source_url不能为空")
+    local_payload = resolve_local_openapi_payload(source_url)
+    if isinstance(local_payload, dict):
+        return local_payload
     direct_resp = requests.get(source_url, timeout=120)
     if direct_resp.ok:
         try:
@@ -775,15 +861,24 @@ async def compare_endpoint_version(left_version_id: int, right_version_id: int, 
         ]
         diff = {}
         changed_fields = []
+        change_points = {}
+        left_values = {}
+        right_values = {}
         for field_name, l_val, r_val in fields:
+            left_values[field_name] = l_val
+            right_values[field_name] = r_val
             compare_rows = comparer.compare(l_val, r_val)
             diff[field_name] = compare_rows
             if compare_rows:
                 changed_fields.append(field_name)
+                change_points[field_name] = extract_change_points(compare_rows)
     return PityResponse.success({
         "left_version_id": left_version_id,
         "right_version_id": right_version_id,
         "changed_fields": changed_fields,
+        "change_points": change_points,
+        "left_values": left_values,
+        "right_values": right_values,
         "diff": diff,
     })
 
