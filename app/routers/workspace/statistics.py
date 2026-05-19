@@ -30,6 +30,55 @@ def _parse_date(value: str, field_name: str):
         raise ValueError(f"{field_name}格式错误，应为YYYY-MM-DD") from exc
 
 
+def _get_previous_period_range(start: datetime, end: datetime):
+    current_start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    current_end = end.replace(hour=0, minute=0, second=0, microsecond=0)
+    days = (current_end - current_start).days + 1
+    prev_end = current_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=days - 1)
+    return prev_start, prev_end
+
+
+def _calc_change(current_value, previous_value):
+    current_num = float(current_value or 0)
+    previous_num = float(previous_value or 0)
+
+    if previous_num == 0:
+        if current_num == 0:
+            return {"direction": "flat", "percent": 0.0, "previous_value": previous_num}
+        return {"direction": "up", "percent": 100.0, "previous_value": previous_num}
+
+    percent = round(abs((current_num - previous_num) / previous_num) * 100, 2)
+    if current_num > previous_num:
+        direction = "up"
+    elif current_num < previous_num:
+        direction = "down"
+    else:
+        direction = "flat"
+    return {"direction": direction, "percent": percent, "previous_value": previous_num}
+
+
+def _build_overview_change(current_overview: dict, previous_overview: dict):
+    return {
+        "api_case_total": _calc_change(
+            current_overview.get("api_case_total"),
+            previous_overview.get("api_case_total"),
+        ),
+        "functional_case_total": _calc_change(
+            current_overview.get("functional_case_total"),
+            previous_overview.get("functional_case_total"),
+        ),
+        "api_coverage_rate": _calc_change(
+            current_overview.get("api_coverage_rate"),
+            previous_overview.get("api_coverage_rate"),
+        ),
+        "api_pass_rate": _calc_change(
+            current_overview.get("api_pass_rate"),
+            previous_overview.get("api_pass_rate"),
+        ),
+    }
+
+
 @router.get("/statistics", description="获取看板统计数据", summary="获取看板统计数据")
 async def query_statistics(
     period: str = "week",
@@ -47,11 +96,17 @@ async def query_statistics(
         if start > end:
             return PityResponse.failed("开始时间不能大于结束时间")
         data = await DashboardDao.get_case_dashboard(start, end)
+        previous_start, previous_end = _get_previous_period_range(start, end)
+        previous_data = await DashboardDao.get_case_dashboard(previous_start, previous_end)
         data["range"] = {
             "period": period_key,
             "start_date": start.strftime("%Y-%m-%d"),
             "end_date": end.strftime("%Y-%m-%d"),
         }
+        data["overview_change"] = _build_overview_change(
+            data.get("overview", {}),
+            previous_data.get("overview", {}),
+        )
         return PityResponse.success(data)
     except ValueError as exc:
         return PityResponse.failed(str(exc))
