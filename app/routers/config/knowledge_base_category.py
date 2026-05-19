@@ -3,6 +3,8 @@ from datetime import datetime
 from fastapi import Depends
 from sqlalchemy import select
 
+from app.crud.operation.PityOperationDao import PityOperationDao
+from app.enums.OperationEnum import OperationType
 from app.handler.fatcory import PityResponse
 from app.models import async_session
 from app.models.knowledge_base_category import PityKnowledgeBaseCategory
@@ -54,6 +56,8 @@ async def insert_knowledge_category(data: KnowledgeBaseCategoryForm, user_info=D
                 user=user_info['id']
             )
             session.add(model)
+            await session.flush()
+            await PityOperationDao.insert_log(session, user_info['id'], OperationType.INSERT, model, key=model.id)
     return PityResponse.success()
 
 
@@ -79,10 +83,23 @@ async def update_knowledge_category(data: KnowledgeBaseCategoryForm, user_info=D
             model = result.scalars().first()
             if model is None:
                 return PityResponse.failed("分类不存在")
+            old = PityKnowledgeBaseCategory(model.name, model.sort_order or 0, model.create_user, id=model.id)
+            old.parent = getattr(model, "parent", None)
+            old.project_id = getattr(model, "project_id", None)
             model.name = data.name.strip()
             model.sort_order = data.sort_order or 0
             model.update_user = user_info['id']
             model.updated_at = datetime.now()
+            await session.flush()
+            await PityOperationDao.insert_log(
+                session,
+                user_info['id'],
+                OperationType.UPDATE,
+                model,
+                old,
+                model.id,
+                changed=["name", "sort_order"],
+            )
     return PityResponse.success()
 
 
@@ -99,5 +116,7 @@ async def delete_knowledge_category(id: int, user_info=Depends(Permission(Config
             model.deleted_at = int(datetime.now().timestamp())
             model.update_user = user_info['id']
             model.updated_at = datetime.now()
+            await session.flush()
+            await PityOperationDao.insert_log(session, user_info['id'], OperationType.DELETE, model, key=id)
     return PityResponse.success()
 

@@ -18,6 +18,21 @@ class PityApiService(PityBase):
     last_sync_status = Column(String(32), nullable=True, comment="最近同步状态")
     last_sync_at = Column(String(32), nullable=True, comment="最近同步时间")
 
+    __fields__ = [name]
+    __tag__ = "接口服务"
+    __alias__ = dict(
+        project_id="所属项目",
+        name="服务名称",
+        base_url="基础地址",
+        developer="开发人员",
+        tester="测试人员",
+        source_type="来源类型",
+        source_config="来源配置",
+        sync_enabled="同步开关",
+        sync_cron="同步表达式",
+    )
+    __show__ = 1
+
     def __init__(self, project_id, name, user, base_url="", developer="", tester="", source_type="manual", source_config=None):
         super().__init__(user)
         self.project_id = project_id
@@ -45,6 +60,23 @@ class PityApiEndpoint(PityBase):
     endpoint_key = Column(String(768), index=True, nullable=False, comment="唯一键")
     current_version_id = Column(INT, nullable=False, default=0, comment="当前版本ID")
     current_version_no = Column(String(32), nullable=False, default="v1", comment="当前版本号")
+
+    __fields__ = [name, method, path]
+    __tag__ = "接口端点"
+    __alias__ = dict(
+        service_id="所属服务",
+        name="接口名称",
+        method="请求方法",
+        module_name="功能模块",
+        endpoint_status="接口状态",
+        path="接口路径",
+        full_url="完整地址",
+        request_headers="请求头",
+        request_params="请求参数",
+        response_body="响应示例",
+        current_version_no="当前版本",
+    )
+    __show__ = 1
 
     def __init__(self, service_id, name, method, path, user, endpoint_key, full_url="", request_headers=None, request_params=None, response_body=None, module_name="默认模块", endpoint_status="available"):
         super().__init__(user)
@@ -109,6 +141,27 @@ class PityApiEndpointSample(PityBase):
     response_body = Column(TEXT, nullable=True, comment="响应体")
     status_code = Column(INT, nullable=False, default=0, comment="状态码")
     recorded_at = Column(String(32), nullable=True, comment="录制时间")
+
+    __fields__ = [sample_name, endpoint_id]
+    __tag__ = "接口样本"
+    __alias__ = dict(
+        project_id="所属项目",
+        service_id="所属服务",
+        endpoint_id="所属接口",
+        api_version_id="接口版本",
+        sample_source="样本来源",
+        sample_name="样本名称",
+        request_url="请求地址",
+        request_path="请求路径",
+        request_query="请求Query",
+        request_headers="请求头",
+        request_body="请求体",
+        response_headers="响应头",
+        response_body="响应体",
+        status_code="状态码",
+        recorded_at="录制时间",
+    )
+    __show__ = 1
 
     def __init__(self, project_id, service_id, endpoint_id, api_version_id, user, sample_source="record", sample_name="", request_url="", request_path="", request_query=None, request_headers=None, request_body="", response_headers=None, response_body="", status_code=0, recorded_at=""):
         super().__init__(user)

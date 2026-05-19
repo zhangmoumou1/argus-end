@@ -1,9 +1,11 @@
 from collections import defaultdict
+from copy import deepcopy
 from typing import List
 
 from sqlalchemy import select
 
 from app.crud import Mapper, ModelWrapper
+from app.enums.OperationEnum import OperationType
 from app.models import async_session, DatabaseHelper
 from app.models.testcase_data import PityTestcaseData
 from app.schema.testcase_data import PityTestcaseDataForm
@@ -28,6 +30,7 @@ class PityTestcaseDataDao(Mapper):
                     data = PityTestcaseData(**form.dict(), user_id=user_id)
                     session.add(data)
                     await session.flush()
+                    await cls.insert_log(session, user_id, OperationType.INSERT, data, key=data.id)
                     await session.refresh(data)
                     session.expunge(data)
                     return data
@@ -46,8 +49,11 @@ class PityTestcaseDataDao(Mapper):
                     query = result.scalars().first()
                     if query is None:
                         raise Exception("测试数据不存在")
-                    cls.update_model(query, form, user)
+                    old = deepcopy(query)
+                    changed = cls.update_model(query, form, user)
                     await session.flush()
+                    if changed:
+                        await cls.insert_log(session, user, OperationType.UPDATE, query, old, query.id, changed)
                     session.expunge(query)
                     return query
         except Exception as e:
@@ -66,6 +72,8 @@ class PityTestcaseDataDao(Mapper):
                     if query is None:
                         raise Exception("测试数据不存在")
                     cls.delete_model(query, user)
+                    await session.flush()
+                    await cls.insert_log(session, user, OperationType.DELETE, query, key=id)
         except Exception as e:
             cls.__log__.error(f"删除测试数据失败, error: {str(e)}")
             raise Exception(f"删除测试数据失败, {str(e)}")

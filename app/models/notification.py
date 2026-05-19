@@ -13,6 +13,18 @@ class PityNotification(PityBase):
     receiver = Column(INT, comment="消息接收人, 系统消息则该字段为空")
 
     __tablename__ = "pity_notification"
+    __fields__ = [msg_title, receiver]
+    __tag__ = "消息通知"
+    __alias__ = dict(
+        msg_type="消息类型",
+        msg_title="消息标题",
+        msg_content="消息内容",
+        msg_link="消息链接",
+        msg_status="消息状态",
+        sender="发送人",
+        receiver="接收人",
+    )
+    __show__ = 1
 
     def __init__(self, msg_type, msg_title, msg_content, sender, receiver, user, msg_link=None, msg_status=0):
         super().__init__(user)

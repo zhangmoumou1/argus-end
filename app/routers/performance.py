@@ -8,13 +8,17 @@ import re
 import time
 import uuid
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy import desc, select, text
 
 from app.core.executor import Executor
+from app.crud.operation.PityOperationDao import PityOperationDao
+from app.enums.OperationEnum import OperationType
 from app.handler.fatcory import PityResponse
 from app.middleware.AsyncHttpClient import AsyncRequest
 from app.models import async_session
@@ -1843,6 +1847,7 @@ async def insert_performance_plan(form: PityPerformancePlanForm, user_info=Depen
             model = PityPerformancePlan(user_info["id"], **payload)
             session.add(model)
             await session.flush()
+            await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
             plan_id = model.id
     return PityResponse.success({"id": plan_id})
 
@@ -1861,6 +1866,7 @@ async def update_performance_plan(form: PityPerformancePlanForm, user_info=Depen
             model = row.scalars().first()
             if model is None:
                 return PityResponse.failed("性能计划不存在")
+            old = deepcopy(model)
             payload = normalize_plan_payload(form.dict(exclude_unset=True))
             for key, value in payload.items():
                 if key == "id":
@@ -1868,6 +1874,8 @@ async def update_performance_plan(form: PityPerformancePlanForm, user_info=Depen
                 setattr(model, key, value)
             model.update_user = user_info["id"]
             model.updated_at = datetime.now()
+            await session.flush()
+            await PityOperationDao.insert_log(session, user_info["id"], OperationType.UPDATE, model, old, model.id, changed=[k for k in payload.keys() if k != "id"])
     return PityResponse.success()
 
 
@@ -1887,6 +1895,8 @@ async def delete_performance_plan(id: int, user_info=Depends(Permission())):
             model.deleted_at = int(time.time() * 1000)
             model.update_user = user_info["id"]
             model.updated_at = datetime.now()
+            await session.flush()
+            await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, model, key=id)
     return PityResponse.success()
 
 
@@ -1903,6 +1913,29 @@ async def execute_performance_plan(id: int, user_info=Depends(Permission())):
         plan = row.scalars().first()
         if plan is None:
             return PityResponse.failed("性能计划不存在")
+    log_model = SimpleNamespace(
+        name=plan.name,
+        action="执行性能测试计划",
+        source_type=getattr(plan, "source_type", "single"),
+        __fields__=[SimpleNamespace(name="name"), SimpleNamespace(name="action"), SimpleNamespace(name="source_type")],
+        __tag__="性能测试",
+        __alias__={
+            "name": "计划名称",
+            "action": "执行动作",
+            "source_type": "来源类型",
+        },
+        __show__=1,
+    )
+    async with async_session() as log_session:
+        async with log_session.begin():
+            await PityOperationDao.insert_log(
+                log_session,
+                user_info["id"],
+                OperationType.UPDATE,
+                log_model,
+                key=plan.id,
+                changed=["action", "source_type"],
+            )
     report_id = await create_report(plan, user_info["id"], status=0)
     await append_run_log(report_id, user_info["id"], "INFO", "创建执行记录", {
         "plan_id": id,
@@ -2057,6 +2090,7 @@ async def upload_performance_parameter_file(
             )
             session.add(model)
             await session.flush()
+            await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
             return PityResponse.success({
                 "id": model.id,
                 "file_name": model.file_name,
@@ -2106,6 +2140,8 @@ async def delete_performance_parameter_file(id: int, user_info=Depends(Permissio
             record.deleted_at = int(time.time() * 1000)
             record.updated_at = datetime.now()
             record.update_user = user_info["id"]
+            await session.flush()
+            await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, record, key=id)
         return PityResponse.success()
 
 

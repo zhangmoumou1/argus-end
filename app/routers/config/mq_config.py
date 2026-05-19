@@ -2,12 +2,15 @@ import asyncio
 from functools import partial
 import json
 import ssl
+from copy import deepcopy
 from datetime import datetime
 from math import ceil
 
 from fastapi import Depends
 from sqlalchemy import select, text
 
+from app.crud.operation.PityOperationDao import PityOperationDao
+from app.enums.OperationEnum import OperationType
 from app.handler.fatcory import PityResponse
 from app.models.mq_config import PityMQConfig
 from app.routers import Permission, get_session
@@ -513,6 +516,8 @@ async def insert_mq_config(form: MQConfigForm, user_info=Depends(Permission(Conf
             return PityResponse.failed("数据已存在, 请勿重复添加")
         model = PityMQConfig(**form.dict(), user=user_info["id"])
         session.add(model)
+        await session.flush()
+        await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
         await session.commit()
         await session.refresh(model)
         return PityResponse.success(model)
@@ -529,11 +534,22 @@ async def update_mq_config(form: MQConfigForm, user_info=Depends(Permission(Conf
         )).scalars().first()
         if model is None:
             return PityResponse.failed("记录不存在")
+        old = deepcopy(model)
         for key, value in form.dict().items():
             if key != "id":
                 setattr(model, key, value)
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
+        await session.flush()
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE,
+            model,
+            old,
+            model.id,
+            changed=[key for key in form.dict().keys() if key != "id"],
+        )
         await session.commit()
         await session.refresh(model)
         return PityResponse.success(model)
@@ -553,6 +569,8 @@ async def delete_mq_config(id: int, user_info=Depends(Permission(Config.ADMIN)),
         model.deleted_at = int(datetime.now().timestamp())
         model.updated_at = datetime.now()
         model.update_user = user_info["id"]
+        await session.flush()
+        await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, model, key=model.id)
         await session.commit()
         return PityResponse.success()
     except Exception as err:

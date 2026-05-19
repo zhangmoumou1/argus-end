@@ -10,6 +10,10 @@ class PitySQLHistory(PityBase):
     elapsed = Column(INT, comment="请求耗时")
     database_id = Column(INT, comment="操作数据库id")
     database: PityDatabase
+    __fields__ = [sql, elapsed, database_id]
+    __tag__ = "SQL历史"
+    __alias__ = dict(sql="SQL语句", elapsed="耗时", database_id="数据库")
+    __show__ = 1
 
     def __init__(self, sql, elapsed, database_id, user):
         super().__init__(user)

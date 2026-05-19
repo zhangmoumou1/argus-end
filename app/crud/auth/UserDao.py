@@ -1,11 +1,15 @@
 import random
 import time
+from copy import deepcopy
 from datetime import datetime
+from types import SimpleNamespace
 
 from sqlalchemy import or_, select, func
 from sqlalchemy import update
 
 from app.crud import Mapper
+from app.enums.OperationEnum import OperationType
+from app.enums.OperationEnum import OperationType
 from app.middleware.Jwt import UserToken
 from app.middleware.RedisManager import RedisHelper
 from app.models import async_session
@@ -24,8 +28,16 @@ class UserDao(Mapper):
         try:
             async with async_session() as session:
                 async with session.begin():
-                    sql = update(User).where(User.id == user_id).values(avatar=avatar_url)
-                    await session.execute(sql)
+                    query = await session.execute(select(User).where(User.id == user_id, User.deleted_at == 0))
+                    user = query.scalars().first()
+                    if user is None:
+                        raise Exception("用户不存在")
+                    old = deepcopy(user)
+                    user.avatar = avatar_url
+                    user.updated_at = datetime.now()
+                    await session.flush()
+                    setattr(user, "__tag__", "用户管理")
+                    await UserDao.insert_log(session, user_id, OperationType.UPDATE, user, old, user.id, ["avatar"])
         except Exception as e:
             UserDao.log.error(f"修改用户头像失败: {str(e)}")
             raise Exception(e)
@@ -47,8 +59,12 @@ class UserDao(Mapper):
                     if not user:
                         raise Exception("该用户不存在, 请检查")
                     # 开启not_null，这样只有非空字段才修改
-                    UserDao.update_model(user, user_info, user_id, True)
+                    old = deepcopy(user)
+                    changed = UserDao.update_model(user, user_info, user_id, True)
                     await session.flush()
+                    if changed:
+                        setattr(user, "__tag__", "用户管理")
+                        await UserDao.insert_log(session, user_id, OperationType.UPDATE, user, old, user.id, changed)
                     session.expunge(user)
                     return user
         except Exception as e:
@@ -75,6 +91,10 @@ class UserDao(Mapper):
                         raise Exception("你不能删除超级管理员")
                     user.update_user = user_id
                     user.deleted_at = int(time.time() * 1000)
+                    user.updated_at = datetime.now()
+                    await session.flush()
+                    setattr(user, "__tag__", "用户管理")
+                    await UserDao.insert_log(session, user_id, OperationType.DELETE, user, key=id)
         except Exception as e:
             UserDao.log.error(f"修改用户信息失败: {str(e)}")
             raise Exception(e)
@@ -90,14 +110,21 @@ class UserDao(Mapper):
                         select(User).where(or_(User.username == username, User.email == email)))
                     user = query.scalars().first()
                     if user:
+                        old = deepcopy(user)
                         # 如果存在，则给用户更新信息
                         user.last_login_at = datetime.now()
                         user.name = name
                         user.avatar = avatar
+                        await session.flush()
+                        setattr(user, "__tag__", "用户管理")
+                        await UserDao.insert_log(session, user.id, OperationType.UPDATE, user, old, user.id, ["last_login_at", "name", "avatar"])
                     else:
                         random_pwd = random.randint(100000, 999999)
                         user = User(username, name, UserToken.add_salt(str(random_pwd)), email, avatar)
                         session.add(user)
+                        await session.flush()
+                        setattr(user, "__tag__", "用户管理")
+                        await UserDao.insert_log(session, user.id, OperationType.INSERT, user, key=user.id)
                     await session.flush()
                     session.expunge(user)
                     return user
@@ -132,6 +159,8 @@ class UserDao(Mapper):
                     user.last_login_at = datetime.now()
                     session.add(user)
                     await session.flush()
+                    setattr(user, "__tag__", "用户管理")
+                    await UserDao.insert_log(session, user.id, OperationType.INSERT, user, key=user.id)
                     session.expunge(user)
                     return user
         except Exception as e:
@@ -207,6 +236,14 @@ class UserDao(Mapper):
                 async with session.begin():
                     sql = update(User).where(User.email == email).values(password=pwd)
                     await session.execute(sql)
+                    user = (await session.execute(select(User).where(User.email == email))).scalars().first()
+                    if user is not None:
+                        old = deepcopy(user)
+                        user.password = pwd
+                        user.updated_at = datetime.now()
+                        setattr(user, "__tag__", "用户管理")
+                        await session.flush()
+                        await UserDao.insert_log(session, user.id, OperationType.UPDATE, user, old, user.id, ["password"])
         except Exception as e:
             UserDao.log.error(f"重置用户: {email}密码失败: {str(e)}")
             raise Exception(f"重置{email}密码失败")
@@ -222,8 +259,13 @@ class UserDao(Mapper):
                     user = query.scalars().first()
                     if user is None:
                         raise Exception("用户不存在")
+                    old = deepcopy(user)
                     user.password = pwd
                     user.update_user = operator_user_id or user.update_user
+                    user.updated_at = datetime.now()
+                    await session.flush()
+                    setattr(user, "__tag__", "用户管理")
+                    await UserDao.insert_log(session, operator_user_id or user_id, OperationType.UPDATE, user, old, user.id, ["password"])
         except Exception as e:
             UserDao.log.error(f"重置用户: {user_id}密码失败: {str(e)}")
             raise Exception(f"重置用户{user_id}密码失败")

@@ -4,6 +4,7 @@ from typing import List
 from sqlalchemy import select, and_, or_, update
 
 from app.crud import Mapper, ModelWrapper
+from app.enums.OperationEnum import OperationType
 from app.enums.MessageEnum import MessageTypeEnum, MessageStateEnum
 from app.models import async_session
 from app.models.broadcast_read_user import PityBroadcastReadUser
@@ -67,12 +68,22 @@ class PityNotificationDao(Mapper):
     @classmethod
     async def delete_message(cls, session, msg_id: List[int], receiver: int):
         async with session.begin():
+            result = await session.execute(
+                select(PityNotification).where(
+                    PityNotification.id.in_(msg_id),
+                    PityNotification.receiver == receiver,
+                    PityNotification.deleted_at == 0,
+                )
+            )
+            rows = result.scalars().all()
             await session.execute(
                 update(PityNotification).where(
                     PityNotification.id.in_(msg_id),
                     PityNotification.receiver == receiver,
                     PityNotification.deleted_at == 0)) \
                 .values(
-                deleted_at=0,
+                deleted_at=int(datetime.now().timestamp()),
                 updated_at=datetime.now(),
                 update_user=receiver)
+            for row in rows:
+                await cls.insert_log(session, receiver, OperationType.DELETE, row, key=row.id)

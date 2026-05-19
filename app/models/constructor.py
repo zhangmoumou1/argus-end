@@ -23,6 +23,21 @@ class Constructor(PityBase):
     index = Column(INT, comment="前置条件顺序")
     suffix = Column(BOOLEAN, default=False, comment="是否是后置条件，默认为否")
 
+    __fields__ = [name, case_id, type, enable, public, suffix, value]
+    __tag__ = "前后置条件"
+    __alias__ = dict(
+        name="名称",
+        case_id="测试用例",
+        type="类型",
+        enable="启用",
+        public="共享",
+        suffix="后置条件",
+        value="返回值",
+        constructor_json="配置",
+        index="顺序",
+    )
+    __show__ = 1
+
     def __init__(self, type, name, enable, constructor_json, case_id, public, user_id, value="", suffix=False, id=None,
                  index=0):
         super().__init__(user_id, id)

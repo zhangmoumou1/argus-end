@@ -7,10 +7,13 @@ import shutil
 import subprocess
 import sys
 import time
+from copy import deepcopy
 from datetime import datetime
 
 import requests
 from app.crud.config.GConfigDao import GConfigDao
+from app.crud.operation.PityOperationDao import PityOperationDao
+from app.enums.OperationEnum import OperationType
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
@@ -1143,6 +1146,8 @@ async def insert_skill_doc(form: FunctionalCaseSkillDocForm, user_info=Depends(P
             user=user_info["id"],
         )
         session.add(model)
+        await session.flush()
+        await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
         await session.commit()
         await session.refresh(model)
     data = serialize_model(model)
@@ -1177,6 +1182,7 @@ async def update_skill_doc(form: FunctionalCaseSkillDocForm, user_info=Depends(P
         )
         if duplicate_result.scalars().first() is not None:
             return PityResponse.failed("文档名称已存在，请更换后重试")
+        old = deepcopy(model)
         model.title = form.title
         model.description = form.description
         model.doc_type = form.doc_type
@@ -1184,6 +1190,16 @@ async def update_skill_doc(form: FunctionalCaseSkillDocForm, user_info=Depends(P
         model.is_shared = form.is_shared
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
+        await session.flush()
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE,
+            model,
+            old,
+            model.id,
+            changed=["title", "description", "doc_type", "content", "is_shared"],
+        )
         await session.commit()
         await session.refresh(model)
     return PityResponse.success(serialize_model(model))
@@ -1204,9 +1220,12 @@ async def delete_skill_doc(id: int, user_info=Depends(Permission())):
             return PityResponse.failed("文档不存在")
         if model.create_user != user_info["id"]:
             return PityResponse.failed("只能删除自己的文档")
+        old = deepcopy(model)
         model.deleted_at = int(datetime.now().timestamp())
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
+        await session.flush()
+        await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, old, key=model.id)
         await session.commit()
     return PityResponse.success()
 
@@ -1245,6 +1264,8 @@ async def create_skill_task(form: FunctionalCaseSkillTaskForm, user_info=Depends
             "requirement_group_count": len(requirement_items),
         }, ensure_ascii=False)
         session.add(task)
+        await session.flush()
+        await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, task, key=task.id)
         await session.commit()
         await session.refresh(task)
 

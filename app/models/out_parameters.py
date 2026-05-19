@@ -23,6 +23,17 @@ class PityTestCaseOutParameters(PityBase):
     # 获取结果索引, 可以是random，也可以是all，还可以是数字
     match_index = Column(String(16))
 
+    __fields__ = [name, case_id, source, expression, match_index]
+    __tag__ = "出参变量"
+    __alias__ = dict(
+        case_id="测试用例",
+        name="变量名",
+        source="来源类型",
+        expression="表达式",
+        match_index="匹配索引",
+    )
+    __show__ = 1
+
     def __init__(self, name, source, case_id, user_id, expression=None, match_index=None, id=None):
         super().__init__(user_id, id)
         self.name = name

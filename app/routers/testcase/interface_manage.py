@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from copy import deepcopy
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs, urljoin
 
@@ -9,6 +10,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select, text, func
 
 from app import pity
+from app.crud.operation.PityOperationDao import PityOperationDao
+from app.enums.OperationEnum import OperationType
 from app.handler.fatcory import PityResponse
 from app.core.configuration import SystemConfiguration
 from app.models import async_session
@@ -380,7 +383,7 @@ async def create_version(session, endpoint: PityApiEndpoint, user_id: int):
     endpoint.update_user = user_id
 
 
-async def upsert_endpoints(session, service: PityApiService, user_id: int, endpoint_items):
+async def upsert_endpoints(session, service: PityApiService, user_id: int, endpoint_items, log_endpoints: bool = False):
     result = {"created": 0, "updated": 0, "unchanged": 0}
     existing_sql = await session.execute(
         select(PityApiEndpoint).where(
@@ -422,10 +425,13 @@ async def upsert_endpoints(session, service: PityApiService, user_id: int, endpo
             session.add(endpoint)
             await session.flush()
             await create_version(session, endpoint, user_id)
+            if log_endpoints:
+                await PityOperationDao.insert_log(session, user_id, OperationType.INSERT, endpoint, key=endpoint.id)
             result["created"] += 1
             continue
 
         changed = False
+        old = deepcopy(exists)
         if exists.name != name:
             exists.name = name
             changed = True
@@ -462,6 +468,16 @@ async def upsert_endpoints(session, service: PityApiService, user_id: int, endpo
                 "endpoint_id": exists.id,
                 "current_version_id": exists.current_version_id,
             })
+            if log_endpoints:
+                await PityOperationDao.insert_log(
+                    session,
+                    user_id,
+                    OperationType.UPDATE,
+                    exists,
+                    old,
+                    exists.id,
+                    changed=["name", "module_name", "endpoint_status", "request_params", "request_headers", "response_body", "full_url", "current_version_no"],
+                )
             result["updated"] += 1
         else:
             result["unchanged"] += 1
@@ -516,6 +532,8 @@ async def insert_service(form: dict, user_info=Depends(Permission())):
         model.sync_enabled = 0 if source_type == "manual" else int(form.get("sync_enabled") or 0)
         model.sync_cron = DEFAULT_SYNC_CRON if model.sync_enabled and not form.get("sync_cron") else str(form.get("sync_cron") or "").strip() or None
         session.add(model)
+        await session.flush()
+        await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
         await session.commit()
         await session.refresh(model)
     return PityResponse.success(serialize_model(model))
@@ -534,6 +552,7 @@ async def update_service(form: dict, user_info=Depends(Permission())):
         model = result.scalars().first()
         if model is None:
             return PityResponse.failed("服务不存在")
+        old = deepcopy(model)
         name = str(form.get("name") or model.name).strip()
         if not name:
             return PityResponse.failed("服务名称不能为空")
@@ -554,6 +573,16 @@ async def update_service(form: dict, user_info=Depends(Permission())):
             model.sync_cron = DEFAULT_SYNC_CRON if model.sync_enabled and not form.get("sync_cron") else str(form.get("sync_cron") or model.sync_cron or "").strip() or None
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
+        await session.flush()
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE,
+            model,
+            old,
+            model.id,
+            changed=["project_id", "name", "base_url", "developer", "tester", "source_type", "source_config", "sync_enabled", "sync_cron"],
+        )
         await session.commit()
         await session.refresh(model)
     return PityResponse.success(serialize_model(model))
@@ -573,6 +602,7 @@ async def delete_service(id: int, user_info=Depends(Permission())):
         service.deleted_at = now_deleted
         service.update_user = user_info["id"]
         service.updated_at = datetime.now()
+        await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, service, key=service.id)
         endpoints = (await session.execute(
             select(PityApiEndpoint).where(PityApiEndpoint.service_id == id, PityApiEndpoint.deleted_at == 0)
         )).scalars().all()
@@ -742,6 +772,7 @@ async def associate_endpoint_sample(form: dict, user_info=Depends(Permission()))
             "status_code": int(form.get("status_code") or 0),
             "created_at": str(form.get("created_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         }
+        old_sample = deepcopy(sample) if sample else None
         await save_endpoint_sample(
             session=session,
             endpoint=endpoint,
@@ -751,8 +782,18 @@ async def associate_endpoint_sample(form: dict, user_info=Depends(Permission()))
             sample_source="manual_associate",
             sample=sample,
         )
-        await session.commit()
         record = await load_endpoint_sample(session, endpoint_id)
+        if record is not None:
+            await PityOperationDao.insert_log(
+                session,
+                user_info["id"],
+                OperationType.UPDATE if sample else OperationType.INSERT,
+                record,
+                old_sample,
+                record.id,
+                changed=["sample_source", "request_url", "request_headers", "request_body", "response_headers", "response_body", "status_code", "recorded_at"],
+            )
+        await session.commit()
     return PityResponse.success(serialize_model(record) if record else None)
 
 
@@ -807,6 +848,17 @@ async def manual_input_endpoint_sample(form: dict, user_info=Depends(Permission(
         record.sample_name = str(form.get("sample_name") or record.sample_name or "").strip() or record.sample_name
         if form.get("request_query") is not None:
             record.request_query = safe_json_dumps(form.get("request_query") or {})
+        old_sample = deepcopy(sample) if sample else None
+        await session.flush()
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE if sample else OperationType.INSERT,
+            record,
+            old_sample,
+            record.id,
+            changed=["sample_name", "request_url", "request_path", "request_query", "request_headers", "request_body", "response_headers", "response_body", "status_code", "recorded_at"],
+        )
         await session.commit()
         record = await load_endpoint_sample(session, endpoint_id)
     return PityResponse.success(serialize_model(record) if record else None)
@@ -822,9 +874,12 @@ async def clear_endpoint_sample(form: dict, user_info=Depends(Permission())):
         record = await load_endpoint_sample(session, endpoint_id)
         if record is None:
             return PityResponse.success(True)
+        old = deepcopy(record)
         record.deleted_at = int(time.time())
         record.update_user = user_info["id"]
         record.updated_at = datetime.now()
+        await session.flush()
+        await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, old, key=record.id)
         await session.commit()
     return PityResponse.success(True)
 
@@ -909,6 +964,7 @@ async def import_swagger(form: dict, user_info=Depends(Permission())):
         )).scalars().first()
         if service is None:
             return PityResponse.failed("服务不存在")
+        old = deepcopy(service)
         service.source_type = "swagger"
         service.source_config = safe_json_dumps({"source_url": source_url})
         service.last_sync_status = "success"
@@ -916,6 +972,16 @@ async def import_swagger(form: dict, user_info=Depends(Permission())):
         service.update_user = user_info["id"]
         service.updated_at = datetime.now()
         summary = await upsert_endpoints(session, service, user_info["id"], endpoint_items)
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE,
+            service,
+            old,
+            service.id,
+            changed=["source_type", "source_config", "last_sync_status", "last_sync_at"],
+        )
+        await session.commit()
     return PityResponse.success({"count": len(endpoint_items), **summary})
 
 
@@ -959,6 +1025,7 @@ async def import_yapi(form: dict, user_info=Depends(Permission())):
         )).scalars().first()
         if service is None:
             return PityResponse.failed("服务不存在")
+        old = deepcopy(service)
         service.source_type = "yapi"
         service.source_config = safe_json_dumps({"source_url": source_url})
         service.last_sync_status = "success"
@@ -966,6 +1033,16 @@ async def import_yapi(form: dict, user_info=Depends(Permission())):
         service.update_user = user_info["id"]
         service.updated_at = datetime.now()
         summary = await upsert_endpoints(session, service, user_info["id"], endpoint_items)
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE,
+            service,
+            old,
+            service.id,
+            changed=["source_type", "source_config", "last_sync_status", "last_sync_at"],
+        )
+        await session.commit()
     return PityResponse.success({"count": len(endpoint_items), **summary})
 
 
@@ -1009,9 +1086,20 @@ async def deprecate_endpoint(form: dict, user_info=Depends(Permission())):
         )).scalars().first()
         if endpoint is None:
             return PityResponse.failed("接口不存在")
+        old = deepcopy(endpoint)
         endpoint.endpoint_status = "deprecated"
         endpoint.update_user = user_info["id"]
         endpoint.updated_at = datetime.now()
         await create_version(session, endpoint, user_info["id"])
+        await session.flush()
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE,
+            endpoint,
+            old,
+            endpoint.id,
+            changed=["endpoint_status", "current_version_no"],
+        )
         await session.commit()
     return PityResponse.success()

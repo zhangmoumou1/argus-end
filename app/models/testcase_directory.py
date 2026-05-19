@@ -11,21 +11,19 @@ class PityTestcaseDirectory(PityBase):
     用例目录表
     """
     __tablename__ = 'pity_testcase_directory'
-    # 联合索引，防止同一层次出现同名目录
     __table_args__ = (
         UniqueConstraint('project_id', 'name', 'parent', 'deleted_at'),
     )
     id = Column(INT, primary_key=True)
     project_id = Column(INT, index=True)
-
-    # 目录名称
     name = Column(String(18), nullable=False)
-
-    # 目录上级目录，如果没有则为None
     parent = Column(INT)
-
-    # 同级目录排序，值越小越靠前
     sort_index = Column(INT, nullable=False, default=0)
+
+    __fields__ = [name]
+    __tag__ = "用例目录"
+    __alias__ = dict(name="目录名称", parent="上级目录", sort_index="排序", project_id="项目")
+    __show__ = 1
 
     def __init__(self, form: PityTestcaseDirectoryForm, user):
         super().__init__(user)

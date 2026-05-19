@@ -1,5 +1,6 @@
 import json
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import List, Dict
 
@@ -13,6 +14,7 @@ from app.crud.test_case.TestCaseAssertsDao import TestCaseAssertsDao
 from app.crud.test_case.TestCaseDirectory import PityTestcaseDirectoryDao
 from app.crud.test_case.TestCaseOutParametersDao import PityTestCaseOutParametersDao
 from app.crud.test_case.TestcaseDataDao import PityTestcaseDataDao
+from app.enums.OperationEnum import OperationType
 from app.enums.ConstructorEnum import ConstructorType
 from app.middleware.RedisManager import RedisHelper
 from app.models import async_session
@@ -99,6 +101,7 @@ class TestCaseDao(Mapper):
         cs = TestCase(**data.case.dict(), create_user=user_id)
         session.add(cs)
         await session.flush()
+        await TestCaseDao.insert_log(session, user_id, OperationType.INSERT, cs, key=cs.id)
         session.expunge(cs)
         await TestCaseDao._insert(session, cs.id, user_id, data, constructor=(ConstructorDao, Constructor),
                                   asserts=(TestCaseAssertsDao, TestCaseAsserts),
@@ -242,8 +245,11 @@ class TestCaseDao(Mapper):
                     data = query.scalars().first()
                     if data is None:
                         raise Exception("用例不存在")
-                    cls.update_model(data, test_case, user_id)
+                    old = deepcopy(data)
+                    changed = cls.update_model(data, test_case, user_id)
                     await session.flush()
+                    if changed:
+                        await cls.insert_log(session, user_id, OperationType.UPDATE, data, old, data.id, changed)
                     session.expunge(data)
                     return data
         except Exception as e:

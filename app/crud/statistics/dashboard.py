@@ -110,22 +110,26 @@ class DashboardDao(Mapper):
     async def _leaderboard(cls, session: AsyncSession, model, start: datetime, end: datetime):
         query = await session.execute(
             select(
-                model.create_user.label("user_id"),
+                User.id.label("user_id"),
                 User.name.label("name"),
                 User.username.label("username"),
                 User.avatar.label("avatar"),
                 User.email.label("email"),
                 func.count(model.id).label("count"),
             )
-            .outerjoin(User, and_(User.id == model.create_user, User.deleted_at == 0))
-            .where(
-                model.deleted_at == 0,
-                model.created_at >= start,
-                model.created_at <= end,
+            .select_from(User)
+            .outerjoin(
+                model,
+                and_(
+                    User.id == model.create_user,
+                    model.deleted_at == 0,
+                    model.created_at >= start,
+                    model.created_at <= end,
+                ),
             )
-            .group_by(model.create_user, User.name, User.username, User.avatar, User.email)
-            .order_by(func.count(model.id).desc(), model.create_user.asc())
-            .limit(20)
+            .where(User.deleted_at == 0)
+            .group_by(User.id, User.name, User.username, User.avatar, User.email)
+            .order_by(func.count(model.id).desc(), User.id.asc())
         )
         data = []
         rank = 1

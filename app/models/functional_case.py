@@ -11,6 +11,11 @@ class PityFunctionalCaseDirectory(PityBase):
     parent = Column(INT, nullable=True, comment="父目录")
     sort_index = Column(INT, nullable=False, default=0, comment="排序")
 
+    __fields__ = [name]
+    __tag__ = "功能用例目录"
+    __alias__ = dict(project_id="所属项目", name="目录名称", parent="父目录", sort_index="排序")
+    __show__ = 1
+
     def __init__(self, project_id, name, user, parent=None, sort_index=0):
         super().__init__(user)
         self.project_id = project_id
@@ -28,6 +33,11 @@ class PityFunctionalCaseFile(PityBase):
     file_path = Column(String(255), nullable=False, comment="功能用例JSON文件路径")
     case_data = Column(TEXT, nullable=True, comment="功能用例JSON内容")
     sort_index = Column(INT, nullable=False, default=0, comment="排序")
+
+    __fields__ = [title]
+    __tag__ = "功能用例"
+    __alias__ = dict(project_id="所属项目", title="标题", directory_id="所属目录", sort_index="排序", case_data="用例内容")
+    __show__ = 1
 
     def __init__(self, project_id, title, directory_id, file_path, user, sort_index=0, case_data=None):
         super().__init__(user)
@@ -75,6 +85,11 @@ class PityFunctionalCaseSkillDoc(PityBase):
     content = Column(TEXT, nullable=False, comment="Markdown内容")
     is_shared = Column(INT, nullable=False, default=1, comment="是否共享")
 
+    __fields__ = [title]
+    __tag__ = "技能文档"
+    __alias__ = dict(title="文档名称", description="文档描述", doc_type="文档类型", content="文档内容", is_shared="是否共享")
+    __show__ = 1
+
     def __init__(self, title, doc_type, content, user, description="", is_shared=1):
         super().__init__(user)
         self.title = title
@@ -109,6 +124,22 @@ class PityFunctionalCaseSkillTask(PityBase):
     result_payload = Column(TEXT, nullable=True, comment="结果JSON")
     error_message = Column(TEXT, nullable=True, comment="失败原因")
     finished_at = Column(BIGINT, nullable=False, default=0, comment="完成时间戳")
+
+    __fields__ = [title]
+    __tag__ = "技能任务"
+    __alias__ = dict(
+        project_id="所属项目",
+        title="任务标题",
+        status="状态",
+        requirement_text="需求文本",
+        instruction_text="额外提示",
+        selected_doc_ids="选中文档",
+        stage="阶段",
+        progress="进度",
+        result_case_count="结果用例数",
+        error_message="失败原因",
+    )
+    __show__ = 1
 
     def __init__(self, project_id, title, user, requirement_text="", instruction_text="", selected_doc_ids=""):
         super().__init__(user)

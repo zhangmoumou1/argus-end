@@ -1,10 +1,12 @@
 import time
+from copy import deepcopy
 from datetime import datetime
 from typing import List
 
 from sqlalchemy import select, update
 
 from app.crud import Mapper, ModelWrapper
+from app.enums.OperationEnum import OperationType
 from app.middleware.RedisManager import RedisHelper
 from app.models import async_session
 from app.models.out_parameters import PityTestCaseOutParameters
@@ -55,7 +57,10 @@ class PityTestCaseOutParametersDao(Mapper):
                             # 走新增逻辑
                             temp = PityTestCaseOutParameters(**item.dict(), case_id=case_id, user_id=user_id)
                             session.add(temp)
+                            await session.flush()
+                            await cls.insert_log(session, user_id, OperationType.INSERT, temp, key=temp.id)
                         else:
+                            old = deepcopy(temp)
                             temp.name = item.name
                             # temp.case_id = case_id
                             temp.expression = item.expression
@@ -63,15 +68,35 @@ class PityTestCaseOutParametersDao(Mapper):
                             temp.match_index = item.match_index
                             temp.update_user = user_id
                             temp.updated_at = datetime.now()
-                        await session.flush()
+                            await session.flush()
+                            await cls.insert_log(
+                                session,
+                                user_id,
+                                OperationType.UPDATE,
+                                temp,
+                                old,
+                                temp.id,
+                                changed=["name", "expression", "source", "match_index"],
+                            )
                         session.expunge(temp)
                         result.append(temp)
                     should_remove = await cls.should_remove(before, [x.id for x in result])
                     if should_remove:
+                        remove_query = await session.execute(
+                            select(PityTestCaseOutParameters).where(
+                                PityTestCaseOutParameters.id.in_(should_remove),
+                                PityTestCaseOutParameters.deleted_at == 0,
+                            )
+                        )
+                        remove_rows = remove_query.scalars().all()
                         await session.execute(
                             update(PityTestCaseOutParameters).where(
                                 PityTestCaseOutParameters.id.in_(should_remove)).values(
                                 deleted_at=int(time.time() * 1000)))
+                        await session.flush()
+                        for row in remove_rows:
+                            row.deleted_at = int(time.time() * 1000)
+                            await cls.insert_log(session, user_id, OperationType.DELETE, row, key=row.id)
             return result
         except Exception as e:
             cls.__log__.error(f"批量更新出参数据失败: {e}")

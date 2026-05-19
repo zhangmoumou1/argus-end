@@ -1,10 +1,12 @@
 import json
 from datetime import datetime
+from copy import deepcopy
 from typing import Dict, List, Tuple
 
 from sqlalchemy import select, func, desc, or_
 
 from app.crud import Mapper, ModelWrapper
+from app.enums.OperationEnum import OperationType
 from app.enums.GconfigEnum import GConfigParserEnum, GConfigVariableType
 from app.middleware.RedisManager import RedisHelper
 from app.models import async_session
@@ -167,12 +169,25 @@ class GConfigDao(Mapper):
                         type=int(GConfigVariableType.special_var),
                     )
                     session.add(row)
+                    await session.flush()
+                    await cls.insert_log(session, user_id, OperationType.INSERT, row, key=row.id)
                 else:
+                    old = deepcopy(row)
                     row.value = text_value
                     row.key_type = int(GConfigParserEnum.json)
                     row.enable = True
                     row.update_user = user_id
                     row.updated_at = datetime.now()
+                    await session.flush()
+                    await cls.insert_log(
+                        session,
+                        user_id,
+                        OperationType.UPDATE,
+                        row,
+                        old,
+                        row.id,
+                        changed=["value", "key_type", "enable"],
+                    )
         return cls._public_ai_model_config(next_config)
 
     @classmethod
@@ -190,6 +205,8 @@ class GConfigDao(Mapper):
                         raise Exception(f"变量: {data.key}已存在")
                     config = GConfig(**form.dict(), user=user_id)
                     session.add(config)
+                    await session.flush()
+                    await cls.insert_log(session, user_id, OperationType.INSERT, config, key=config.id)
         except Exception as e:
             cls.__log__.error(f"新增变量失败, {e}")
             raise Exception(f"新增变量失败: {str(e)}")

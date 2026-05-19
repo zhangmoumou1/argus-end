@@ -30,5 +30,5 @@ async def update_gateway(form: PityAddressForm, user_info=Depends(Permission(Con
 
 @router.get("/gateway/delete", summary="删除网关地址", description="根据id删除网关地址，只有组长可以操作")
 async def delete_gateway(id: int, user_info=Depends(Permission(Config.MANAGER)), session=Depends(get_session)):
-    await PityGatewayDao.delete_record_by_id(session, user_info['id'], id)
+    await PityGatewayDao.delete_record_by_id(session, user_info['id'], id, log=True)
     return PityResponse.success()

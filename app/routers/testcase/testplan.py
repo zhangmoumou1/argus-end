@@ -1,11 +1,14 @@
 import asyncio
+from types import SimpleNamespace
 
 from apscheduler.jobstores.base import JobLookupError
 from fastapi import Depends
 from sqlalchemy import text
 
 from app.core.executor import Executor
+from app.crud.operation.PityOperationDao import PityOperationDao
 from app.crud.test_case.TestPlan import PityTestPlanDao
+from app.enums.OperationEnum import OperationType
 from app.handler.fatcory import PityResponse
 from app.models import async_session
 from app.schema.test_plan import PityTestPlanForm
@@ -93,7 +96,7 @@ async def update_test_plan(form: PityTestPlanForm, user_info=Depends(Permission(
 @router.get("/plan/delete")
 async def delete_test_plan(id: int, user_info=Depends(Permission(Config.MANAGER)), session=Depends(get_session)):
     try:
-        await PityTestPlanDao.delete_record_by_id(session, user_info['id'], id)
+        await PityTestPlanDao.delete_record_by_id(session, user_info['id'], id, log=True)
         Scheduler.remove(id)
     except JobLookupError:
         # 说明没找到job
@@ -107,7 +110,7 @@ async def delete_test_plan(id: int, user_info=Depends(Permission(Config.MANAGER)
 async def switch_test_plan(id: int, status: bool, user_info=Depends(Permission(Config.MANAGER))):
     try:
         await ensure_plan_enabled_column()
-        await PityTestPlanDao.update_test_plan_enabled(id, status, user_info['id'])
+        await PityTestPlanDao.update_test_plan_enabled(id, status, user_info['id'], log=True)
         Scheduler.pause_resume_test_plan(id, status)
         return PityResponse.success()
     except Exception as e:
@@ -117,6 +120,24 @@ async def switch_test_plan(id: int, status: bool, user_info=Depends(Permission(C
 @router.get("/plan/execute")
 async def run_test_plan(id: int, user_info=Depends(Permission(Config.MEMBER))):
     try:
+        log_model = SimpleNamespace(
+            id=id,
+            action="执行测试计划",
+            __fields__=[SimpleNamespace(name="id"), SimpleNamespace(name="action")],
+            __tag__="测试计划",
+            __alias__={"id": "计划ID", "action": "执行动作"},
+            __show__=1,
+        )
+        async with async_session() as session:
+            async with session.begin():
+                await PityOperationDao.insert_log(
+                    session,
+                    user_info["id"],
+                    OperationType.EXECUTE,
+                    log_model,
+                    key=id,
+                    changed=["action"],
+                )
         asyncio.create_task(Executor.run_test_plan(id, user_info['id']))
         return PityResponse.success("开始执行，请耐心等待")
     except Exception as e:

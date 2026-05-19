@@ -1,6 +1,8 @@
 from fastapi import Depends
 
 from app.crud.config.DbConfigDao import DbConfigDao
+from app.crud.operation.PityOperationDao import PityOperationDao
+from app.enums.OperationEnum import OperationType
 from app.handler.fatcory import PityResponse
 from app.models import DatabaseHelper, db_helper
 from app.routers import Permission

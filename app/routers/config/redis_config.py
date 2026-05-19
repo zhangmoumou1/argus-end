@@ -60,7 +60,7 @@ async def update_redis_config(form: RedisConfigForm,
 async def delete_redis_config(id: int, background_tasks: BackgroundTasks,
                               user_info=Depends(Permission(Config.ADMIN)), session=Depends(get_session)):
     try:
-        ans = await PityRedisConfigDao.delete_record_by_id(session, user_info['id'], id)
+        ans = await PityRedisConfigDao.delete_record_by_id(session, user_info['id'], id, log=True)
         # 更新缓存
         background_tasks.add_task(PityRedisManager.delete_client, *(id, ans.cluster))
         return PityResponse.success()

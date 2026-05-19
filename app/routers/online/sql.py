@@ -17,7 +17,7 @@ async def execute_sql(data: OnlineSQLForm, user=Depends(Permission())):
     try:
         result, elapsed = await DbConfigDao.online_sql(data.id, data.sql)
         columns, result = PityResponse.parse_sql_result(result)
-        await PitySQLHistoryDao.insert(model=PitySQLHistory(data.sql, elapsed, data.id, user['id']))
+        await PitySQLHistoryDao.insert(model=PitySQLHistory(data.sql, elapsed, data.id, user['id']), log=True)
         return PityResponse.success(data=dict(result=result, columns=columns, elapsed=elapsed))
     except Exception as err:
         return PityResponse.failed(err)

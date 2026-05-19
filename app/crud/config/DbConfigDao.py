@@ -1,11 +1,13 @@
 import json
 import time
+from copy import deepcopy
 
 from sqlalchemy import select, MetaData, text
 from sqlalchemy.exc import ResourceClosedError
 
 from app.crud import Mapper, ModelWrapper
 from app.crud.config.EnvironmentDao import EnvironmentDao
+from app.enums.OperationEnum import OperationType
 from app.handler.encoder import JsonEncoder
 from app.handler.fatcory import PityResponse
 from app.middleware.RedisManager import RedisHelper
@@ -55,7 +57,21 @@ class DbConfigDao(Mapper):
                     query = result.scalars().first()
                     if query is not None:
                         raise Exception("数据库配置已存在")
-                    session.add(PityDatabase(**data.dict(), user=user))
+                    model = PityDatabase(
+                        data.env,
+                        data.name,
+                        data.host,
+                        data.port,
+                        data.username,
+                        data.password,
+                        data.database,
+                        data.sql_type,
+                        user,
+                        id=data.id,
+                    )
+                    session.add(model)
+                    await session.flush()
+                    await DbConfigDao.insert_log(session, user, OperationType.INSERT, model, key=model.id)
         except Exception as e:
             DbConfigDao.log.error(f"新增数据库配置: {data.name}失败, {e}")
             raise Exception("新增数据库配置失败")
@@ -70,8 +86,12 @@ class DbConfigDao(Mapper):
                     query = result.scalars().first()
                     if query is None:
                         raise Exception("数据库配置不存在")
+                    old = deepcopy(query)
                     db_helper.remove_connection(query.host, query.port, query.username, query.password, query.database)
-                    DbConfigDao.update_model(query, data, user)
+                    changed = DbConfigDao.update_model(query, data, user)
+                    await session.flush()
+                    if changed:
+                        await DbConfigDao.insert_log(session, user, OperationType.UPDATE, query, old, query.id, changed)
         except Exception as e:
             DbConfigDao.log.error(f"编辑数据库配置: {data.name}失败, {e}")
             raise Exception("编辑数据库配置失败")
@@ -89,6 +109,8 @@ class DbConfigDao(Mapper):
                         raise Exception("数据库配置不存在或已删除")
                     query.deleted_at = int(time.time() * 1000)
                     query.update_user = user
+                    await session.flush()
+                    await DbConfigDao.insert_log(session, user, OperationType.DELETE, query, key=id)
         except Exception as e:
             DbConfigDao.log.error(f"删除数据库配置: {id}失败, {e}")
             raise Exception("删除数据库配置失败")

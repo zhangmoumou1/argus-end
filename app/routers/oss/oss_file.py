@@ -28,7 +28,7 @@ async def create_oss_file(filepath: str, file: UploadFile = File(...),
             record.file_path = filepath
             record.view_url = file_url
             record.file_size = file_size
-            await PityOssDao.update_record_by_id(user_info['id'], record)
+            await PityOssDao.update_record_by_id(user_info['id'], record, log=True)
         else:
             await PityOssDao.insert(model=model, log=True)
         return PityResponse.success()

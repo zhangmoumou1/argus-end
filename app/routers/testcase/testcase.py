@@ -3,6 +3,7 @@ import re
 import time
 from datetime import datetime
 from typing import List, TypeVar
+from types import SimpleNamespace
 
 import requests
 from fastapi import APIRouter, Depends, UploadFile, File, Request
@@ -11,6 +12,7 @@ from sqlalchemy import select, text
 from app.core.request import get_convertor
 from app.core.request.generator import CaseGenerator
 from app.crud.config.GConfigDao import GConfigDao
+from app.crud.operation.PityOperationDao import PityOperationDao
 from app.crud.project.ProjectRoleDao import ProjectRoleDao
 from app.crud.test_case.ConstructorDao import ConstructorDao
 from app.crud.test_case.TestCaseAssertsDao import TestCaseAssertsDao
@@ -19,10 +21,12 @@ from app.crud.test_case.TestCaseDirectory import PityTestcaseDirectoryDao
 from app.crud.test_case.TestCaseOutParametersDao import PityTestCaseOutParametersDao
 from app.crud.test_case.TestReport import TestReportDao
 from app.crud.test_case.TestcaseDataDao import PityTestcaseDataDao
+from app.enums.OperationEnum import OperationType
 from app.enums.ConvertorEnum import CaseConvertorType
 from app.exception.error import AuthError
 from app.handler.fatcory import PityResponse
 from app.middleware.RedisManager import RedisHelper
+from app.models import async_session
 from app.models.interface_manage import PityApiEndpoint, PityApiEndpointVersion, PityApiEndpointSample, PityApiService
 from app.models.out_parameters import PityTestCaseOutParameters
 from app.models.test_case import TestCase
@@ -830,9 +834,9 @@ async def update_testcase(form: TestCaseForm, user_info=Depends(Permission())):
 async def delete_testcase(id_list: List[int], user_info=Depends(Permission()), session=Depends(get_session)):
     try:
         async with session.begin():
-            await TestCaseDao.delete_records(session, user_info['id'], id_list)
-            await TestCaseAssertsDao.delete_records(session, user_info['id'], id_list, column="case_id")
-            await PityTestcaseDataDao.delete_records(session, user_info['id'], id_list, column="case_id")
+            await TestCaseDao.delete_records(session, user_info['id'], id_list, log=True)
+            await TestCaseAssertsDao.delete_records(session, user_info['id'], id_list, column="case_id", log=True)
+            await PityTestcaseDataDao.delete_records(session, user_info['id'], id_list, column="case_id", log=True)
             return PityResponse.success()
     except Exception as e:
         return PityResponse.failed(e)
@@ -1020,7 +1024,34 @@ async def delete_testcase_data(id: int, user_info=Depends(Permission())):
 async def move_testcase(form: PityMoveTestCaseDto, user_info=Depends(Permission())):
     try:
         await ProjectRoleDao.read_permission(form.project_id, user_info["id"], user_info['role'])
-        await TestCaseDao.update_by_map(user_info['id'], TestCase.id.in_(form.id_list), directory_id=form.directory_id)
+        await TestCaseDao.update_by_map(
+            user_info['id'],
+            TestCase.id.in_(form.id_list),
+            directory_id=form.directory_id,
+            log=True,
+        )
+        async with async_session() as session:
+            async with session.begin():
+                log_model = SimpleNamespace(
+                    target_directory=form.directory_id,
+                    move_count=len(form.id_list or []),
+                    action="移动接口用例",
+                    __fields__=[SimpleNamespace(name="target_directory"), SimpleNamespace(name="move_count")],
+                    __tag__="接口用例",
+                    __alias__={
+                        "target_directory": "目标目录",
+                        "move_count": "移动数量",
+                    },
+                    __show__=2,
+                )
+                await PityOperationDao.insert_log(
+                    session,
+                    user_info["id"],
+                    OperationType.UPDATE,
+                    log_model,
+                    key=form.directory_id,
+                    changed=["target_directory", "move_count"],
+                )
         return PityResponse.success()
     except AuthError:
         return PityResponse.forbidden()
@@ -1040,6 +1071,28 @@ async def copy_testcase(form: dict, user_info=Depends(Permission())):
             return PityResponse.failed("请选择目标项目和目标目录")
         await ProjectRoleDao.read_permission(project_id, user_info["id"], user_info['role'])
         new_ids = await TestCaseDao.copy_test_cases(id_list, directory_id, user_info['id'])
+        async with async_session() as session:
+            async with session.begin():
+                log_model = SimpleNamespace(
+                    target_directory=directory_id,
+                    copy_count=len(new_ids),
+                    action="复制接口用例",
+                    __fields__=[SimpleNamespace(name="target_directory"), SimpleNamespace(name="copy_count")],
+                    __tag__="接口用例",
+                    __alias__={
+                        "target_directory": "目标目录",
+                        "copy_count": "复制数量",
+                    },
+                    __show__=2,
+                )
+                await PityOperationDao.insert_log(
+                    session,
+                    user_info["id"],
+                    OperationType.INSERT,
+                    log_model,
+                    key=directory_id,
+                    changed=["target_directory", "copy_count"],
+                )
         return PityResponse.success({"id_list": new_ids, "count": len(new_ids)})
     except AuthError:
         return PityResponse.forbidden()
@@ -1053,7 +1106,7 @@ async def insert_testcase_out_parameters(form: PityTestCaseParametersDto, user_i
     if query is not None:
         return PityResponse.failed("参数名称已存在")
     data = PityTestCaseOutParameters(**form.dict(), user_id=user_info['id'])
-    data = await PityTestCaseOutParametersDao.insert(model=data)
+    data = await PityTestCaseOutParametersDao.insert(model=data, log=True)
     return PityResponse.success(data)
 
 
@@ -1066,13 +1119,13 @@ async def update_batch_testcase_out_parameters(case_id: int, form: List[PityTest
 
 @router.post("/parameters/update")
 async def update_testcase_out_parameters(form: PityTestCaseOutParametersForm, user_info=Depends(Permission())):
-    data = await PityTestCaseOutParametersDao.update_record_by_id(user_info['id'], form)
+    data = await PityTestCaseOutParametersDao.update_record_by_id(user_info['id'], form, log=True)
     return PityResponse.success(data)
 
 
 @router.get("/parameters/delete")
 async def delete_testcase_out_parameters(id: int, user_info=Depends(Permission()), session=Depends(get_session)):
-    await PityTestCaseOutParametersDao.delete_record_by_id(session, id, user_info['id'], log=False)
+    await PityTestCaseOutParametersDao.delete_record_by_id(session, user_info['id'], id, log=True)
     return PityResponse.success()
 
 

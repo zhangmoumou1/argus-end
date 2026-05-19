@@ -21,6 +21,8 @@ class PityTestcaseData(PityBase):
     __tablename__ = "pity_testcase_data"
 
     __fields__ = [name]
+    __tag__ = "测试数据"
+    __alias__ = dict(env="环境", case_id="测试用例", name="名称", json_data="数据内容")
     __show__ = 1
 
     def __init__(self, env, case_id, name, json_data, user_id, id=None):

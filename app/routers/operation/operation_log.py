@@ -18,8 +18,14 @@ async def list_user_operation(start_time: str, end_time: str, user_id: int, tag:
     try:
         start = datetime.strptime(start_time, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
         end = datetime.strptime(end_time, "%Y-%m-%d").replace(hour=23, minute=59, second=59, microsecond=0)
-        records = await PityOperationDao.select_list(user_id=user_id, tag=tag, condition=[
-            PityOperationLog.operate_time.between(start, end)], _sort=[desc(PityOperationLog.operate_time)])
+        query_kwargs = dict(
+            user_id=user_id,
+            condition=[PityOperationLog.operate_time.between(start, end)],
+            _sort=[desc(PityOperationLog.operate_time)],
+        )
+        if tag:
+            query_kwargs["tag"] = tag
+        records = await PityOperationDao.select_list(**query_kwargs)
         return PityResponse.records(records)
     except Exception as e:
         return PityResponse.failed(e)

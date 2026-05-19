@@ -4,14 +4,18 @@ import random
 import uuid
 from json import JSONDecodeError
 from typing import List, Dict
+from types import SimpleNamespace
 
 from fastapi import Depends, APIRouter
 
 from app.core.executor import Executor
+from app.crud.operation.PityOperationDao import PityOperationDao
+from app.enums.OperationEnum import OperationType
 from app.crud.test_case.TestcaseDataDao import PityTestcaseDataDao
 from app.enums.CertEnum import CertType
 from app.handler.fatcory import PityResponse
 from app.middleware.AsyncHttpClient import AsyncRequest
+from app.models import async_session
 from app.routers import Permission
 from app.routers.request.http_schema import HttpRequestForm
 
@@ -63,6 +67,29 @@ async def execute_case(env: int, case_id: int, user_info=Depends(Permission())):
                 params = json.loads(data.json_data)
                 result, _ = await executor.run(env, case_id, request_param=params)
                 ans[data.name] = result
+        async with async_session() as session:
+            async with session.begin():
+                log_model = SimpleNamespace(
+                    env=env,
+                    case_id=case_id,
+                    action="执行接口用例",
+                    __fields__=[SimpleNamespace(name="env"), SimpleNamespace(name="case_id"), SimpleNamespace(name="action")],
+                    __tag__="接口用例",
+                    __alias__={
+                        "env": "环境",
+                        "case_id": "用例ID",
+                        "action": "执行动作",
+                    },
+                    __show__=2,
+                )
+                await PityOperationDao.insert_log(
+                    session,
+                    user_info["id"],
+                    OperationType.EXECUTE,
+                    log_model,
+                    key=case_id,
+                    changed=["action"],
+                )
         return PityResponse.success(ans)
     except JSONDecodeError:
         return PityResponse.failed("测试数据不为合法的JSON")

@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import datetime
 from typing import List
 
@@ -5,6 +6,7 @@ from sqlalchemy import or_, select, desc
 
 from app.crud import Mapper, ModelWrapper
 from app.crud.project.ProjectRoleDao import ProjectRoleDao
+from app.enums.OperationEnum import OperationType
 from app.models import async_session
 from app.models.project import Project
 from app.models.project_role import ProjectRole
@@ -17,15 +19,6 @@ class ProjectDao(Mapper):
     @classmethod
     async def list_project(cls, user_id: int, role: int, page: int,
                            size: int, name: str = None) -> (List[Project], int):
-        """
-        查询/获取项目列表
-        :param user_id: 当前用户
-        :param role: 当前用户角色
-        :param page: 当前页码
-        :param size: 当前size
-        :param name: 项目名称
-        :return: 项目列表和总数
-        """
         try:
             search = [Project.deleted_at == 0]
             async with async_session() as session:
@@ -46,19 +39,13 @@ class ProjectDao(Mapper):
 
     @classmethod
     async def list_project_id_by_user(cls, session, user, role):
-        """
-        获取用户可见的项目
-        :return:
-        """
         if role == Config.ADMIN:
             return []
         ans = set()
-        # 找到包含用户的角色
         roles = await session.execute(select(ProjectRole.project_id).where(ProjectRole.user_id == user,
                                                                            ProjectRole.deleted_at == 0))
         for r in roles.all():
             ans.add(r[0])
-        # 找到未删除的项目
         roles = await session.execute(select(Project.id).where(
             Project.owner == user, Project.deleted_at == 0))
         for r in roles.all():
@@ -80,6 +67,8 @@ class ProjectDao(Mapper):
                         raise Exception("项目已存在")
                     pr = Project(name, app, owner, user_id, description, dingtalk_url=dingtalk_url)
                     session.add(pr)
+                    await session.flush()
+                    await cls.insert_log(session, user_id, OperationType.INSERT, pr, key=pr.id)
         except Exception as e:
             cls.__log__.error(f"新增项目: {name}失败, {e}")
             raise Exception(f"新增项目: {name}失败, {e}")
@@ -96,10 +85,12 @@ class ProjectDao(Mapper):
                         raise Exception("项目不存在")
                     if data.owner != user_id and user_role < Config.ADMIN:
                         raise Exception("你没有权限修改项目头像")
-                    # 如果修改人不是owner或者超管
+                    old = deepcopy(data)
                     data.avatar = file_url
                     data.updated_at = datetime.now()
                     data.update_user = user_id
+                    await session.flush()
+                    await cls.insert_log(session, user_id, OperationType.UPDATE, data, old, data.id, ["avatar"])
         except Exception as e:
             cls.__log__.error(f"修改项目头像失败, 项目: {project_id}, error: {e}")
             raise Exception(e)
@@ -107,18 +98,6 @@ class ProjectDao(Mapper):
     @classmethod
     async def update_project(cls, id: int, user_id, role: int, name: str, app: str, owner: int,
                              description: str, dingtalk_url: str = '') -> None:
-        """
-        修改项目
-        :param id:
-        :param user_id: 修改人
-        :param role: 修改者角色
-        :param name:
-        :param app:
-        :param owner:
-        :param description:
-        :param dingtalk_url:
-        :return:
-        """
         try:
             async with async_session() as session:
                 async with session.begin():
@@ -126,9 +105,9 @@ class ProjectDao(Mapper):
                     data = query.scalars().first()
                     if data is None:
                         raise Exception("项目不存在")
+                    old = deepcopy(data)
                     data.name = name
                     data.app = app
-                    # 如果修改人不是owner或者超管
                     if data.owner != owner and role < Config.ADMIN and user_id != data.owner:
                         raise Exception("您没有权限修改项目负责人")
                     data.owner = owner
@@ -136,6 +115,16 @@ class ProjectDao(Mapper):
                     data.updated_at = datetime.now()
                     data.update_user = user_id
                     data.dingtalk_url = dingtalk_url
+                    await session.flush()
+                    await cls.insert_log(
+                        session,
+                        user_id,
+                        OperationType.UPDATE,
+                        data,
+                        old,
+                        data.id,
+                        ["name", "app", "owner", "description", "dingtalk_url"],
+                    )
         except Exception as e:
             cls.__log__.error(f"编辑项目: {name}失败, {e}")
             raise Exception(f"编辑项目: {name}失败, {e}")
@@ -156,25 +145,14 @@ class ProjectDao(Mapper):
 
     @staticmethod
     async def query_user_project(user_id: int) -> int:
-        """
-        查询用户有多少项目
-        :param user_id: 用户id
-        :return: 返回项目数量
-        """
         ans = set()
         async with async_session() as session:
             async with session.begin():
-                # 先选出未被删除的用户
                 project_sql = select(Project).where(Project.deleted_at == 0)
                 projects = await session.execute(project_sql)
-                project_list = []
-                # 将数据放入列表，把owner等于该用户的放入列表
                 for r in projects.scalars().all():
-                    project_list.append(r.id)
                     if r.owner == user_id:
                         ans.add(r.id)
-                # 接着查询项目角色表有该用户的角色，把角色的项目id放入列表
-                # 由于是set，所以不会重复
                 query = await session.execute(
                     select(ProjectRole).where(ProjectRole.deleted_at == 0, ProjectRole.user_id == user_id))
                 for q in query.scalars().all():

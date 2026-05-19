@@ -1,6 +1,10 @@
+from copy import deepcopy
+
 from sqlalchemy import select
 
 from app.crud import ModelWrapper, Mapper
+from app.crud.operation.PityOperationDao import PityOperationDao
+from app.enums.OperationEnum import OperationType
 from app.models import async_session
 from app.models.environment import Environment
 from app.schema.environment import EnvironmentForm
@@ -33,9 +37,35 @@ class EnvironmentDao(Mapper):
                         raise Exception(f"环境已存在")
                     env = Environment(**data.dict(), user=user)
                     session.add(env)
+                    await session.flush()
+                    await cls.insert_log(session, user, OperationType.INSERT, env, key=env.id)
         except Exception as e:
             EnvironmentDao.__log__.error(f"新增环境: {data.name}失败, {e}")
             raise Exception(f"添加失败: {str(e)}")
+
+    @classmethod
+    async def update_env_enabled(cls, data: EnvironmentForm, user: int):
+        async with async_session() as session:
+            async with session.begin():
+                query = await session.execute(
+                    select(Environment).where(Environment.id == data.id, Environment.deleted_at == 0)
+                )
+                env = query.scalars().first()
+                if env is None:
+                    raise Exception("环境不存在")
+                old = deepcopy(env)
+                changed = cls.update_model(env, data, user, True)
+                await session.flush()
+                if changed:
+                    await PityOperationDao.insert_log(
+                        session,
+                        user,
+                        OperationType.UPDATE,
+                        env,
+                        old,
+                        env.id,
+                        changed=changed,
+                    )
 
     @classmethod
     async def list_env(cls, page, size, name=None, exactly=False):

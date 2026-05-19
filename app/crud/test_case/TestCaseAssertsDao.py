@@ -1,8 +1,10 @@
+from copy import deepcopy
 from typing import List
 
 from sqlalchemy import asc, select
 
 from app.crud import Mapper, ModelWrapper
+from app.enums.OperationEnum import OperationType
 from app.models import async_session, DatabaseHelper
 from app.models.testcase_asserts import TestCaseAsserts
 from app.schema.testcase_schema import TestCaseAssertsForm
@@ -13,11 +15,6 @@ class TestCaseAssertsDao(Mapper):
 
     @classmethod
     async def list_test_case_asserts(cls, case_id: int) -> List[TestCaseAsserts]:
-        """
-        通过用例id获取断言数据
-        :param case_id:
-        :return:
-        """
         try:
             async with async_session() as session:
                 query = await session.execute(select(TestCaseAsserts)
@@ -57,6 +54,7 @@ class TestCaseAssertsDao(Mapper):
                     new_assert = TestCaseAsserts(**form.dict(), user_id=user_id)
                     session.add(new_assert)
                     await session.flush()
+                    await TestCaseAssertsDao.insert_log(session, user_id, OperationType.INSERT, new_assert, key=new_assert.id)
                     await session.refresh(new_assert)
                     session.expunge(new_assert)
                     return new_assert
@@ -67,12 +65,6 @@ class TestCaseAssertsDao(Mapper):
 
     @classmethod
     async def update_test_case_asserts(cls, form: TestCaseAssertsForm, user_id: int) -> TestCaseAsserts:
-        """
-        更新用例断言
-        :param form:
-        :param user_id:
-        :return:
-        """
         try:
             async with async_session() as session:
                 async with session.begin():
@@ -82,8 +74,11 @@ class TestCaseAssertsDao(Mapper):
                     data = result.scalars().first()
                     if data is None:
                         raise Exception("断言信息不存在, 请检查")
-                    cls.update_model(data, form, user_id)
+                    old = deepcopy(data)
+                    changed = cls.update_model(data, form, user_id)
                     await session.flush()
+                    if changed:
+                        await cls.insert_log(session, user_id, OperationType.UPDATE, data, old, data.id, changed)
                     session.expunge(data)
                     return data
         except Exception as e:
@@ -102,6 +97,8 @@ class TestCaseAssertsDao(Mapper):
                     if data is None:
                         raise Exception("断言信息不存在, 请检查")
                     cls.delete_model(data, user_id)
+                    await session.flush()
+                    await cls.insert_log(session, user_id, OperationType.DELETE, data, key=id)
         except Exception as e:
             cls.__log__.error(f"删除用例断言失败, error: {e}")
             raise Exception(f"删除用例断言失败, {e}")

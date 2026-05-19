@@ -4,6 +4,7 @@ import re
 import time
 import asyncio
 import hashlib
+from copy import deepcopy
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
@@ -12,6 +13,8 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import OperationalError
 
 from app.crud.config.GConfigDao import GConfigDao
+from app.crud.operation.PityOperationDao import PityOperationDao
+from app.enums.OperationEnum import OperationType
 from app.handler.fatcory import PityResponse
 from app.models import async_session
 from app.models.functional_case import PityFunctionalCaseDirectory, PityFunctionalCaseFile, PityFunctionalCaseItem
@@ -876,6 +879,8 @@ async def insert_directory(form: FunctionalCaseDirectoryForm, user_info=Depends(
             user=user_info["id"],
         )
         session.add(model)
+        await session.flush()
+        await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
         await session.commit()
         await session.refresh(model)
     return PityResponse.success(serialize_model(model))
@@ -897,6 +902,7 @@ async def update_directory(form: FunctionalCaseDirectoryForm, user_info=Depends(
         model = result.scalars().first()
         if model is None:
             return PityResponse.failed("目录不存在")
+        old = deepcopy(model)
         if form.parent:
             parent_result = await session.execute(
                 select(PityFunctionalCaseDirectory).where(
@@ -912,6 +918,16 @@ async def update_directory(form: FunctionalCaseDirectoryForm, user_info=Depends(
         model.sort_index = form.sort_index
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
+        await session.flush()
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE,
+            model,
+            old,
+            model.id,
+            changed=["name", "parent", "sort_index"],
+        )
         await session.commit()
         await session.refresh(model)
     return PityResponse.success(serialize_model(model))
@@ -937,10 +953,21 @@ async def move_directory(form: FunctionalCaseDirectoryMoveForm, user_info=Depend
         model = result.scalars().first()
         if model is None:
             return PityResponse.failed("目录不存在")
+        old = deepcopy(model)
         model.parent = form.parent
         model.sort_index = form.sort_index
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
+        await session.flush()
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE,
+            model,
+            old,
+            model.id,
+            changed=["parent", "sort_index"],
+        )
         await session.commit()
         await session.refresh(model)
     return PityResponse.success(serialize_model(model))
@@ -972,10 +999,12 @@ async def delete_directory(id: int, project_id: int, user_info=Depends(Permissio
             item.deleted_at = now_deleted
             item.update_user = user_info["id"]
             item.updated_at = datetime.now()
+            await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, item, key=item.id)
         for item in files:
             item.deleted_at = now_deleted
             item.update_user = user_info["id"]
             item.updated_at = datetime.now()
+            await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, item, key=item.id)
 
         for item in files:
             await session.execute(
@@ -1095,6 +1124,7 @@ async def insert_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
         )
         session.add(model)
         await session.flush()
+        await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
         await session.refresh(model)
         await session.commit()
         user_result = await session.execute(select(User).where(User.id == model.create_user))
@@ -1139,6 +1169,7 @@ async def update_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
         model = result.scalars().first()
         if model is None:
             return PityResponse.failed("功能用例不存在")
+        old = deepcopy(model)
         directory_result = await session.execute(
             select(PityFunctionalCaseDirectory).where(
                 PityFunctionalCaseDirectory.id == form.directory_id,
@@ -1164,6 +1195,17 @@ async def update_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
         model.sort_index = form.sort_index
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
+        changed_fields = ["title", "project_id", "directory_id", "case_data", "sort_index"]
+        await session.flush()
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE,
+            model,
+            old,
+            model.id,
+            changed=changed_fields,
+        )
 
         file_meta_changed = (
             old_title != model.title
@@ -1239,6 +1281,7 @@ async def move_file(form: FunctionalCaseFileMoveForm, user_info=Depends(Permissi
         model = result.scalars().first()
         if model is None:
             return PityResponse.failed("功能用例不存在")
+        old = deepcopy(model)
         directory_result = await session.execute(
             select(PityFunctionalCaseDirectory).where(
                 PityFunctionalCaseDirectory.id == form.directory_id,
@@ -1253,6 +1296,16 @@ async def move_file(form: FunctionalCaseFileMoveForm, user_info=Depends(Permissi
         model.sort_index = form.sort_index
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
+        await session.flush()
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE,
+            model,
+            old,
+            model.id,
+            changed=["directory_id", "project_id", "sort_index"],
+        )
         await session.commit()
         await session.refresh(model)
     return PityResponse.success(serialize_model(model))
@@ -1272,6 +1325,7 @@ async def delete_file(id: int, project_id: int = None, user_info=Depends(Permiss
         model.deleted_at = int(datetime.now().timestamp())
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
+        await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, model, key=model.id)
         await session.execute(
             text(
                 "UPDATE pity_functional_case_item "

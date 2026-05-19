@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import text
@@ -16,12 +17,47 @@ from app.core.mock_rule import (
     safe_json_dumps,
     safe_json_loads,
 )
+from app.crud.operation.PityOperationDao import PityOperationDao
+from app.enums.OperationEnum import OperationType
 from app.handler.fatcory import PityResponse
 from app.models import async_session
 from app.routers import Permission, get_session
 from config import Config
 
 router = APIRouter()
+
+
+def _mock_log_model(row, user_id):
+    model = SimpleNamespace()
+    model.id = row.get("id")
+    model.name = row.get("name")
+    model.method = row.get("method")
+    model.path_suffix = row.get("path_suffix")
+    model.enabled = row.get("enabled")
+    model.priority = row.get("priority")
+    model.response_status = row.get("response_status")
+    model.remark = row.get("remark")
+    model.create_user = user_id
+    model.update_user = user_id
+    model.__fields__ = [
+        SimpleNamespace(name="name"),
+        SimpleNamespace(name="method"),
+        SimpleNamespace(name="path_suffix"),
+        SimpleNamespace(name="enabled"),
+        SimpleNamespace(name="priority"),
+        SimpleNamespace(name="response_status"),
+    ]
+    model.__tag__ = "Mock规则"
+    model.__alias__ = dict(
+        name="规则名称",
+        method="请求方法",
+        path_suffix="路径后缀",
+        enabled="启用",
+        priority="优先级",
+        response_status="响应状态码",
+        remark="备注",
+    )
+    return model
 
 
 def _text_or_none(value):
@@ -91,9 +127,10 @@ async def save_mock_config(form: dict, user_info=Depends(Permission()), session=
         now = datetime.now()
         mock_id = int(form.get("id") or 0)
         if mock_id:
-            exists = (await session.execute(text(
-                "SELECT id FROM pity_mock_config WHERE id = :id AND deleted_at = 0"
-            ), {"id": mock_id})).first()
+            exists_row = (await session.execute(text(
+                "SELECT * FROM pity_mock_config WHERE id = :id AND deleted_at = 0"
+            ), {"id": mock_id})).mappings().first()
+            exists = exists_row
             if exists is None:
                 return PityResponse.failed("Mock规则不存在")
             await session.execute(text(
@@ -104,6 +141,18 @@ async def save_mock_config(form: dict, user_info=Depends(Permission()), session=
                 "response_delay_ms=:response_delay_ms, remark=:remark, updated_at=:updated_at, update_user=:user_id "
                 "WHERE id=:id AND deleted_at = 0"
             ), {**payload, "updated_at": now, "user_id": user_info["id"], "id": mock_id})
+            new_row = dict(exists_row)
+            new_row.update(payload)
+            new_row["id"] = mock_id
+            await PityOperationDao.insert_log(
+                session,
+                user_info["id"],
+                OperationType.UPDATE,
+                _mock_log_model(new_row, user_info["id"]),
+                _mock_log_model(dict(exists_row), user_info["id"]),
+                mock_id,
+                changed=list(payload.keys()),
+            )
         else:
             await session.execute(text(
                 "INSERT INTO pity_mock_config "
@@ -115,6 +164,16 @@ async def save_mock_config(form: dict, user_info=Depends(Permission()), session=
                 ":response_status, :response_headers, :response_body, :response_delay_ms, :remark, "
                 ":created_at, :updated_at, 0, :user_id, :user_id)"
             ), {**payload, "created_at": now, "updated_at": now, "user_id": user_info["id"]})
+            inserted = (await session.execute(text("SELECT * FROM pity_mock_config ORDER BY id DESC LIMIT 1"))).mappings().first()
+            if inserted:
+                await PityOperationDao.insert_log(
+                    session,
+                    user_info["id"],
+                    OperationType.INSERT,
+                    _mock_log_model(dict(inserted), user_info["id"]),
+                    key=inserted.get("id"),
+                    changed=list(payload.keys()),
+                )
         await session.commit()
         invalidate_mock_rule_cache()
         return PityResponse.success()
@@ -130,10 +189,25 @@ async def toggle_mock_config(form: dict, user_info=Depends(Permission()), sessio
     if not mock_id:
         return PityResponse.failed("id不能为空")
     await ensure_mock_config_schema(session)
+    old_row = (await session.execute(text(
+        "SELECT * FROM pity_mock_config WHERE id=:id AND deleted_at = 0"
+    ), {"id": mock_id})).mappings().first()
     await session.execute(text(
         "UPDATE pity_mock_config SET enabled=:enabled, updated_at=:updated_at, update_user=:user_id "
         "WHERE id=:id AND deleted_at = 0"
     ), {"enabled": enabled, "updated_at": datetime.now(), "user_id": user_info["id"], "id": mock_id})
+    if old_row:
+        new_row = dict(old_row)
+        new_row["enabled"] = enabled
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE,
+            _mock_log_model(new_row, user_info["id"]),
+            _mock_log_model(dict(old_row), user_info["id"]),
+            mock_id,
+            changed=["enabled"],
+        )
     await session.commit()
     invalidate_mock_rule_cache()
     return PityResponse.success()
@@ -142,10 +216,17 @@ async def toggle_mock_config(form: dict, user_info=Depends(Permission()), sessio
 @router.get("/mock-config/delete", summary="删除Mock规则")
 async def delete_mock_config(id: int, user_info=Depends(Permission()), session=Depends(get_session)):
     await ensure_mock_config_schema(session)
+    old_row = (await session.execute(text(
+        "SELECT * FROM pity_mock_config WHERE id=:id AND deleted_at = 0"
+    ), {"id": id})).mappings().first()
     await session.execute(text(
         "UPDATE pity_mock_config SET deleted_at=:deleted_at, updated_at=:updated_at, update_user=:user_id "
         "WHERE id=:id AND deleted_at = 0"
     ), {"deleted_at": int(datetime.now().timestamp()), "updated_at": datetime.now(), "user_id": user_info["id"], "id": id})
+    if old_row:
+        deleted_row = dict(old_row)
+        deleted_row["deleted_at"] = int(datetime.now().timestamp())
+        await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, _mock_log_model(deleted_row, user_info["id"]), key=id)
     await session.commit()
     invalidate_mock_rule_cache()
     return PityResponse.success()

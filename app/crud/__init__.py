@@ -140,25 +140,6 @@ class Mapper(object):
             return f"%{s}"
         return s
 
-    # @classmethod
-    # @RedisHelper.cache("dao")
-    # async def list_record(cls, condition=None, **kwargs):
-    #     """
-    #     通过查询条件获取数据，kwargs的key为参数名, value为参数值
-    #     :param condition:
-    #     :param kwargs:
-    #     :return:
-    #     """
-    #     try:
-    #         async with async_session() as session:
-    #             sql = cls.query_wrapper(condition, **kwargs)
-    #             result = await session.execute(sql)
-    #             return result.scalars().all()
-    #     except Exception as e:
-    #         # 这边调用cls本身的log参数，写入日志+抛出异常
-    #         cls.__log__.error(f"获取{cls.__model__}列表失败, error: {e}")
-    #         raise Exception(f"获取数据失败")
-
     @staticmethod
     async def pagination(page: int, size: int, session, sql: str, scalars=True, **kwargs):
         """
@@ -195,7 +176,6 @@ class Mapper(object):
                 if value is None:
                     continue
                 if isinstance(value, bool) or isinstance(value, int) or value:
-                    # 如果是bool值或者int, false和0也是可以接受的
                     if not hasattr(dist, var):
                         continue
                     if getattr(dist, var) != value:
@@ -229,25 +209,10 @@ class Mapper(object):
     @RedisHelper.cache("dao")
     @connect
     async def list_with_pagination(cls, page, size, /, *, session=None, **kwargs):
-        """
-        通过分页获取数据
-        :param session:
-        :param page:
-        :param size:
-        :param kwargs:
-        :return:
-        """
         return await cls.pagination(page, size, session, cls.query_wrapper(**kwargs), **kwargs)
 
     @classmethod
     def where(cls, param: Any, sentence, condition: list):
-        """
-        根据where语句的内容，决定是否生成对应的sql
-        :param param:
-        :param sentence:
-        :param condition:
-        :return:
-        """
         if param is None:
             return cls
         if isinstance(param, bool):
@@ -262,27 +227,17 @@ class Mapper(object):
 
     @classmethod
     def query_wrapper(cls, condition=None, **kwargs):
-        """
-        包装查询条件，支持like, == 和自定义条件(condition)
-        :param condition:
-        :param kwargs:
-        :return:
-        """
         conditions = condition if condition else list()
         if getattr(cls.__model__, "deleted_at", None):
             conditions.append(getattr(cls.__model__, "deleted_at") == 0)
         _sort = kwargs.pop("_sort", None)
         _select = kwargs.pop("_select", list())
         _join = kwargs.pop("_join", None)
-        # 遍历参数，当参数不为None的时候传递
         for k, v in kwargs.items():
-            # 判断是否是like的情况
             like = isinstance(v, str) and (v.startswith("%") or v.endswith("%"))
             if like and v == "%%":
                 continue
-            # 如果是like模式，则使用Model.字段.like 否则用 Model.字段 等于
-            cls.where(v, getattr(cls.__model__, k).like(v) if like else getattr(cls.__model__, k) == v,
-                      conditions)
+            cls.where(v, getattr(cls.__model__, k).like(v) if like else getattr(cls.__model__, k) == v, conditions)
         sql = select(cls.__model__, *_select)
         if isinstance(_join, Iterable):
             for j in _join:
@@ -309,55 +264,40 @@ class Mapper(object):
         session.expunge(model)
         if log:
             await asyncio.create_task(
-                cls.insert_log(session, model.create_user, OperationType.INSERT, model,
-                               key=model.id))
+                cls.insert_log(session, model.create_user, OperationType.INSERT, model, key=model.id)
+            )
         return model
-
-    # @classmethod
-    # @RedisHelper.up_cache("dao")
-    # async def insert_record(cls, *, model, log=False, ss=None):
-    #     try:
-    #         if ss is None:
-    #             async with async_session() as session:
-    #                 async with session.begin():
-    #                     session.add(model)
-    #                     await session.flush()
-    #                     session.expunge(model)
-    #                 if log:
-    #                     async with session.begin():
-    #                         await asyncio.create_task(
-    #                             cls.insert_log(session, model.create_user, OperationType.INSERT, model,
-    #                                            key=model.id))
-    #                 # 这里直接return了，不会继续走下面的add
-    #                 return model
-    #         ss.add(model)
-    #         await ss.flush()
-    #         ss.expunge(model)
-    #         if log:
-    #             await asyncio.create_task(
-    #                 cls.insert_log(ss, model.create_user, OperationType.INSERT, model,
-    #                                key=model.id))
-    #         return model
-    #     except Exception as e:
-    #         cls.__log__.error(f"添加{cls.__model__}记录失败, error: {e}")
-    #         raise Exception(f"添加记录失败")
 
     @classmethod
     @RedisHelper.up_cache("dao")
     @connect(True)
-    async def update_by_map(cls, user, *condition, session=None, **kwargs):
-        sql = update(cls.__model__).where(*condition).values(**kwargs, updated_at=datetime.now(),
-                                                             update_user=user)
+    async def update_by_map(cls, user, *condition, session=None, log=False, key=None, **kwargs):
+        old_records = []
+        if log:
+            query = await session.execute(select(cls.__model__).where(*condition))
+            old_records = [deepcopy(item) for item in query.scalars().all()]
+        sql = update(cls.__model__).where(*condition).values(**kwargs, updated_at=datetime.now(), update_user=user)
         await session.execute(sql)
-        # try:
-        #     async with async_session() as session:
-        #         async with session.begin():
-        #             sql = update(cls.__model__).where(*condition).values(**kwargs, updated_at=datetime.now(),
-        #                                                                  update_user=user)
-        #             await session.execute(sql)
-        # except Exception as e:
-        #     cls.__log__.error(f"更新数据失败: {e}")
-        #     raise Exception("更新数据失败")
+        if log and old_records:
+            fresh = await session.execute(select(cls.__model__).where(*condition))
+            fresh_map = {getattr(item, 'id', None): item for item in fresh.scalars().all()}
+            changed_fields = list(kwargs.keys())
+            for old in old_records:
+                current = fresh_map.get(getattr(old, 'id', None))
+                if current is None:
+                    continue
+                changed = [field for field in changed_fields if getattr(old, field, None) != getattr(current, field, None)]
+                if not changed:
+                    continue
+                await cls.insert_log(
+                    session,
+                    user,
+                    OperationType.UPDATE,
+                    current,
+                    old,
+                    key=getattr(current, 'id', None) or key,
+                    changed=changed,
+                )
 
     @classmethod
     @RedisHelper.up_cache("dao")
@@ -374,7 +314,8 @@ class Mapper(object):
         session.expunge_all()
         if log:
             await asyncio.create_task(
-                cls.insert_log(session, user, OperationType.UPDATE, now, old, model.id, changed=changed))
+                cls.insert_log(session, user, OperationType.UPDATE, now, old, model.id, changed=changed)
+            )
         return now
 
     @classmethod
@@ -390,34 +331,20 @@ class Mapper(object):
         await session.flush()
         session.expunge(original)
         if log:
-            await asyncio.create_task(
-                cls.insert_log(session, user, OperationType.DELETE, original, key=value))
+            await asyncio.create_task(cls.insert_log(session, user, OperationType.DELETE, original, key=value))
             return original
 
     @classmethod
     @RedisHelper.up_cache("dao")
-    async def delete_record_by_id(cls, session, user: int, value: int, log=True, key='id', exists=True,
-                                  session_begin=False):
-        """
-        逻辑删除
-        :param session_begin: 事务是否已经开始
-        :param key:
-        :param log:
-        :param session: 默认的session，如果传入则使用传入的session
-        :param user:
-        :param value:
-        :param exists: 是否一定需要记录存在，默认为True
-        :return:
-        """
+    async def delete_record_by_id(cls, session, user: int, value: int, log=True, key='id', exists=True, session_begin=False):
         try:
             if session_begin:
-                # 说明在外面已经开启了session
                 return await cls._inner_delete(session, user, value, log, key, exists)
             async with session.begin():
                 return await cls._inner_delete(session, user, value, log, key, exists)
         except Exception as e:
             cls.__log__.exception(f"删除{cls.__model__.__name__}记录失败: \n{e}")
-            raise Exception(f"删除失败")
+            raise Exception("删除失败")
 
     @classmethod
     @RedisHelper.up_cache("dao")
@@ -429,30 +356,17 @@ class Mapper(object):
                 original = result.scalars().first()
                 if original is None:
                     continue
-                    # raise Exception("记录不存在")
                 cls.delete_model(original, user)
                 await session.flush()
                 session.expunge(original)
                 if log:
-                    await asyncio.create_task(
-                        cls.insert_log(session, user, OperationType.DELETE, original, key=id_))
+                    await asyncio.create_task(cls.insert_log(session, user, OperationType.DELETE, original, key=id_))
         except Exception as e:
             cls.__log__.exception(f"删除{cls.__model__}记录失败, error: {e}")
-            raise Exception(f"删除记录失败")
+            raise Exception("删除记录失败")
 
     @classmethod
     async def insert_log(cls, session, user, mode, now, old=None, key=None, changed=None):
-        """
-        根据relation插入日志
-        :param changed:
-        :param user:
-        :param now:
-        :param old:
-        :param session:
-        :param mode:
-        :param key:
-        :return:
-        """
         diff, title = await cls.get_diff(session, mode, now, old, changed)
         tag = getattr(now, Config.TABLE_TAG, '未设置')
         diff_data = json.dumps(diff, ensure_ascii=False)
@@ -461,20 +375,9 @@ class Mapper(object):
 
     @classmethod
     async def get_diff(cls, session, mode, now, old, changed):
-        """
-        根据新旧model获取2者的diff
-        :param session:
-        :param mode:
-        :param now:
-        :param old:
-        :param changed:
-        :return:
-        """
         fields = getattr(now, Config.FIELD, None)
-        # 根据要展示的字段数量(__show__)获取title数据
         fields_number = getattr(now, Config.SHOW_FIELD, 1)
         if fields:
-            # 必须要展示至少1个字段
             fields = [f.name for f in fields[:fields_number]]
         else:
             fields = ['id']
@@ -485,8 +388,7 @@ class Mapper(object):
                 changed_fields = []
         else:
             changed_fields = changed
-        detail_fields = [c for c in changed_fields if
-                         c not in fields] if mode != OperationType.UPDATE else changed_fields
+        detail_fields = [c for c in changed_fields if c not in fields] if mode != OperationType.UPDATE else changed_fields
         result = []
         title = []
         for f in detail_fields:
@@ -502,7 +404,6 @@ class Mapper(object):
         if ids == "":
             return []
         if isinstance(ids, int):
-            # 说明是多个id
             id_list = [ids]
         else:
             id_list = list(map(int, ids.split(",")))
@@ -510,15 +411,6 @@ class Mapper(object):
 
     @classmethod
     async def fetch_id_with_name(cls, session, id_field, name_field, old_id, new_id):
-        """
-        通用方法，通过id查询name等字段数据
-        :param session:
-        :param id_field:
-        :param name_field:
-        :param old_id:
-        :param new_id:
-        :return:
-        """
         cls_ = id_field.parent.class_
         if old_id is None:
             id_list = await cls.get_id_list(new_id)
@@ -534,15 +426,10 @@ class Mapper(object):
         old_list = await cls.get_id_list(old_id)
         id_list = old_list + new_list
         data = await session.execute(select(cls_).where(getattr(cls_, id_field.name).in_(id_list)))
-        # old_value, new_value = old_id, new_id
         old_ans, new_ans = [], []
         mp = dict()
         for d in data.scalars():
             mp[getattr(d, id_field.name, None)] = getattr(d, name_field.name, None)
-            # if getattr(d, id_field.name, None) == old_id:
-            #     new_value = getattr(d, name_field.name, old_value)
-            # else:
-            #     old_value = getattr(d, name_field.name, new_value)
         for t in old_list:
             old_ans.append(mp.get(t, t))
         for i in new_list:
@@ -551,26 +438,12 @@ class Mapper(object):
 
     @classmethod
     def get_json_field(cls, field):
-        """
-        遇到datetime等类型，进行转换
-        :param field:
-        :return:
-        """
         if isinstance(field, datetime):
             return field.strftime("%Y-%m-%d %H:%M:%S")
         return field
 
     @classmethod
     async def get_field_alias(cls, session, relation: Tuple[PityRelationField], name, now, old=None):
-        """
-        获取别名操作，如果字段是别的表的主键，则还需要根据此字段查询别的表的对应字段
-        :param session:
-        :param relation: relation有2个值，第一个值是别的表对应的主键，第二个值是要显示的字段
-        :param name:
-        :param now:
-        :param old:
-        :return:
-        """
         alias = getattr(now, Config.ALIAS, {})
         current_value = getattr(now, name, None)
         current_value = cls.get_json_field(current_value)
@@ -579,16 +452,12 @@ class Mapper(object):
         if relation is not None:
             for r in relation:
                 if r.field.name == name:
-                    # 说明是id类型，需要转换为中文
                     if r.foreign is None:
                         return dict(name=alias.get(name, name), old=old_value, now=current_value)
                     if callable(r.foreign):
-                        # foreign支持方法和数据库其他表，如果callable为True 说明是function
-                        # 参考 ProjectRoleEnum.name方法 里面将int转为具体角色的方法
                         real_value = r.foreign(current_value)
                         real_old_value = r.foreign(old_value)
                         return dict(name=alias.get(name, name), old=real_old_value, now=real_value)
-                    # 更新字段
                     id_field, name_field = r.foreign
                     current, old = await cls.fetch_id_with_name(session, id_field, name_field, old_value, current_value)
                     return dict(name=alias.get(name, name), old=old, now=current)
@@ -596,11 +465,6 @@ class Mapper(object):
 
     @classmethod
     async def get_fields(cls, model):
-        """
-        遍历字段，排除掉被忽略的字段
-        :param model:
-        :return:
-        """
         ans = []
         fields = getattr(model, Config.FIELD, None)
         fields = [x.name for x in fields] if fields else list()
@@ -614,11 +478,6 @@ class Mapper(object):
     @RedisHelper.up_cache("dao")
     @connect(True)
     async def delete_by_id(cls, id, session=None):
-        """
-        物理删除
-        :param id:
-        :return:
-        """
         query = cls.query_wrapper(id=id)
         result = await session.execute(query)
         original = result.scalars().first()
@@ -628,14 +487,10 @@ class Mapper(object):
 
 
 def get_dao_path():
-    """获取dao目录下所有的xxxDao.py"""
     for f in os.listdir(Config.DAO_PATH):
-        # 拼接目录
         file_path = os.path.join(Config.DAO_PATH, f)
-        # 判断过滤, 取有效目录
         if os.path.isdir(file_path) and '__pycache__' not in f:
             path_dict = defaultdict(list)
-            # 获取目录下所有的xxxDao.py
             for py_file in os.listdir(file_path):
                 if py_file.endswith('.py') and '__init__' not in py_file:
                     path_dict[f].append(py_file.split('.')[0])
@@ -644,12 +499,9 @@ def get_dao_path():
 
 for path in get_dao_path():
     for file, pys in path.items():
-        # 拼接对应的dao目录
         son_dao_path = os.path.join(Config.DAO_PATH, file)
-        # 导包时, 默认在这个路径下查找
         sys.path.append(son_dao_path)
         for py in pys:
-            # 动态导包进去
             importlib.import_module(py)
 
 
@@ -658,7 +510,6 @@ async def create_table():
         await conn.run_sync(Base.metadata.create_all)
 
 
-# 设置项目角色映射关系
 init_relation(ProjectRole, PityRelationField(ProjectRole.user_id, (User.id, User.name)),
               PityRelationField(ProjectRole.project_id, (Project.id, Project.name)),
               PityRelationField(ProjectRole.project_role, ProjectRoleEnum.name))

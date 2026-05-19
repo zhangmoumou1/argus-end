@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends
 
 from app.crud.config.EnvironmentDao import EnvironmentDao
+from app.crud.operation.PityOperationDao import PityOperationDao
+from app.enums.OperationEnum import OperationType
 from app.handler.fatcory import PityResponse
 from app.routers import Permission, get_session
 from app.schema.environment import EnvironmentForm
@@ -24,11 +26,11 @@ async def insert_environment(data: EnvironmentForm, user_info=Depends(Permission
 
 @router.post("/environment/update")
 async def update_environment(data: EnvironmentForm, user_info=Depends(Permission(Config.ADMIN))):
-    ans = await EnvironmentDao.update_record_by_id(user_info['id'], data, True, True)
+    ans = await EnvironmentDao.update_env_enabled(data, user_info['id'])
     return PityResponse.success(ans)
 
 
 @router.get("/environment/delete")
 async def delete_environment(id: int, user_info=Depends(Permission(Config.ADMIN)), session=Depends(get_session)):
-    await EnvironmentDao.delete_record_by_id(session, user_info['id'], id)
+    await EnvironmentDao.delete_record_by_id(session, user_info['id'], id, log=True)
     return PityResponse.success()

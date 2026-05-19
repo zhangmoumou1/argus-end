@@ -1,10 +1,12 @@
 import time
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime
 
 from sqlalchemy import select, asc, or_, func, update
 
 from app.crud import Mapper
+from app.enums.OperationEnum import OperationType
 from app.models import async_session
 from app.schema.testcase_directory import PityTestcaseDirectoryForm, PityTestcaseDirectoryUpdateForm
 from app.models.testcase_directory import PityTestcaseDirectory
@@ -72,7 +74,10 @@ class PityTestcaseDirectoryDao(Mapper):
                             )
                             .values(sort_index=PityTestcaseDirectory.sort_index + 1)
                         )
-                    session.add(PityTestcaseDirectory(form, user))
+                    model = PityTestcaseDirectory(form, user)
+                    session.add(model)
+                    await session.flush()
+                    await PityTestcaseDirectoryDao.insert_log(session, user, OperationType.INSERT, model, key=model.id)
         except Exception as e:
             PityTestcaseDirectoryDao.log.error(f"创建目录失败, error: {e}")
             raise Exception(f"创建目录失败: {e}")
@@ -91,6 +96,7 @@ class PityTestcaseDirectoryDao(Mapper):
                     current = result.scalars().first()
                     if current is None:
                         raise Exception("目录不存在")
+                    old = deepcopy(current)
 
                     old_parent = current.parent
                     old_index = current.sort_index or 0
@@ -196,6 +202,16 @@ class PityTestcaseDirectoryDao(Mapper):
                     current.sort_index = new_index
                     current.update_user = user
                     current.updated_at = datetime.now()
+                    await session.flush()
+                    await PityTestcaseDirectoryDao.insert_log(
+                        session,
+                        user,
+                        OperationType.UPDATE,
+                        current,
+                        old,
+                        current.id,
+                        changed=["name", "parent", "sort_index"],
+                    )
         except Exception as e:
             PityTestcaseDirectoryDao.log.error(f"更新目录失败, error: {e}")
             raise Exception(f"更新目录失败: {e}")
@@ -213,6 +229,8 @@ class PityTestcaseDirectoryDao(Mapper):
                         raise Exception("目录不存在")
                     query.deleted_at = int(time.time() * 1000)
                     query.update_user = user
+                    await session.flush()
+                    await PityTestcaseDirectoryDao.insert_log(session, user, OperationType.DELETE, query, key=id)
         except Exception as e:
             PityTestcaseDirectoryDao.log.error(f"删除目录失败, error: {e}")
             raise Exception(f"删除目录失败: {e}")
