@@ -43,6 +43,7 @@ services:
         - pity_server
     volumes:
       - ./dev.env.ops:/pity/conf/dev.env
+      - ../statics/knowledge:/pity/statics/knowledge
 
 networks:
   pity_net:

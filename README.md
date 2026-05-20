@@ -153,6 +153,15 @@ pity是一款专注于api自动化的工具，采用`Python`+`FastApi`+`React`�
 docker-compose -f .\ops\docker-compose.yaml up
 ```
 
+4. 知识库附件挂载说明
+
+```bash
+# Docker 部署时请确保宿主机目录已挂载到容器内
+# statics/knowledge -> /pity/statics/knowledge
+```
+
+5. 如需 Nginx 反向代理和静态资源直出，可参考 `ops/nginx.conf`
+
 ### 🎉 二次开发
 
 1. 拉取代码

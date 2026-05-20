@@ -1,4 +1,9 @@
-from fastapi import Depends
+import os
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import Depends, File, Form, UploadFile
 from sqlalchemy import select, func
 
 from app.crud.config.KnowledgeBaseDao import KnowledgeBaseDao
@@ -10,6 +15,50 @@ from app.routers import Permission, get_session
 from app.routers.config.environment import router
 from app.schema.knowledge_base import KnowledgeBaseForm
 from config import Config
+
+KNOWLEDGE_UPLOAD_ROOT = os.path.join("statics", "knowledge")
+KNOWLEDGE_MAX_UPLOAD_SIZE = 20 * 1024 * 1024
+KNOWLEDGE_ALLOWED_SUFFIXES = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".svg",
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".txt",
+    ".md",
+    ".csv",
+    ".zip",
+    ".rar",
+}
+
+
+def _build_knowledge_url(relative_path: str):
+    return f"/statics/{str(relative_path or '').replace(os.sep, '/')}"
+
+
+def _build_knowledge_storage_path(filename: str):
+    now = datetime.now()
+    relative_dir = os.path.join("knowledge", f"{now:%Y}", f"{now:%m}")
+    upload_dir = os.path.join("statics", relative_dir)
+    os.makedirs(upload_dir, exist_ok=True)
+
+    suffix = Path(str(filename or "")).suffix.lower()
+    if suffix not in KNOWLEDGE_ALLOWED_SUFFIXES:
+        suffix = ".bin"
+
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    absolute_path = os.path.join(upload_dir, stored_name)
+    relative_path = os.path.join(relative_dir, stored_name)
+    return absolute_path, relative_path
 
 
 @router.get("/knowledge/list")
@@ -101,4 +150,30 @@ async def update_knowledge(data: KnowledgeBaseForm, user_info=Depends(Permission
 async def delete_knowledge(id: int, user_info=Depends(Permission(Config.ADMIN)), session=Depends(get_session)):
     await KnowledgeBaseDao.delete_record_by_id(session, user_info['id'], id, log=True)
     return PityResponse.success()
+
+
+@router.post("/knowledge/upload")
+async def upload_knowledge_file(
+    file: UploadFile = File(...),
+    kind: str = Form("file"),
+    user_info=Depends(Permission(Config.ADMIN)),
+):
+    try:
+        content = await file.read()
+        if not content:
+            return PityResponse.failed("文件不能为空")
+        if len(content) > KNOWLEDGE_MAX_UPLOAD_SIZE:
+            return PityResponse.failed("文件不能超过20MB")
+        absolute_path, relative_path = _build_knowledge_storage_path(file.filename)
+        with open(absolute_path, "wb") as f:
+            f.write(content)
+        return PityResponse.success({
+            "file_name": file.filename,
+            "stored_name": os.path.basename(absolute_path),
+            "kind": kind or "file",
+            "size": len(content),
+            "url": _build_knowledge_url(relative_path),
+        })
+    except Exception as exc:
+        return PityResponse.failed(f"上传失败: {exc}")
 
