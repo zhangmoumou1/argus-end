@@ -4,15 +4,60 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 
 from app.crud.project.ProjectDao import ProjectDao
+from app.models.interface_manage import PityApiService
 from app.crud.test_case.TestCaseDao import TestCaseDao
 from app.crud.test_case.TestPlan import PityTestPlanDao
 from app.handler.fatcory import PityResponse
 from app.models import async_session
 from app.models.functional_case import PityFunctionalCaseItem
+from app.models.project import Project
 from app.models.test_case import TestCase
 from app.routers import Permission
 
 router = APIRouter(prefix="/workspace")
+
+
+async def _get_top3_distribution(session, model, join_field, user_id: int):
+    query = await session.execute(
+        select(
+            Project.name.label("label"),
+            func.count(model.id).label("count"),
+        ).where(
+            model.create_user == user_id,
+            model.deleted_at == 0,
+            join_field > 0,
+        ).join(
+            Project,
+            Project.id == join_field,
+        ).group_by(Project.id, Project.name).order_by(func.count(model.id).desc()).limit(3)
+    )
+    return [
+        {"label": str(row.label or "未设置"), "value": int(row.count or 0)}
+        for row in query.all()
+    ]
+
+
+async def _get_api_case_distribution(session, user_id: int):
+    query = await session.execute(
+        select(
+            Project.name.label("label"),
+            func.count(TestCase.id).label("count"),
+        ).where(
+            TestCase.create_user == user_id,
+            TestCase.deleted_at == 0,
+            TestCase.api_service_id > 0,
+        ).join(
+            PityApiService,
+            PityApiService.id == TestCase.api_service_id,
+        ).join(
+            Project,
+            Project.id == PityApiService.project_id,
+        ).group_by(Project.id, Project.name).order_by(func.count(TestCase.id).desc()).limit(3)
+    )
+    return [
+        {"label": str(row.label or "未设置"), "value": int(row.count or 0)}
+        for row in query.all()
+    ]
 
 
 @router.get("/", description="获取工作台用户统计数据")
@@ -59,6 +104,11 @@ async def query_user_statistics(user_info=Depends(Permission())):
                 PityFunctionalCaseItem.created_at <= now,
             )
         )).scalar() or 0
+
+        api_case_distribution = await _get_api_case_distribution(session, user_id)
+        functional_case_distribution = await _get_top3_distribution(
+            session, PityFunctionalCaseItem, PityFunctionalCaseItem.project_id, user_id
+        )
 
         api_daily_rows = (await session.execute(
             select(
@@ -123,6 +173,8 @@ async def query_user_statistics(user_info=Depends(Permission())):
         functional_case_count=int(functional_case_count),
         weekly_new_api_case=int(weekly_new_api_case),
         weekly_new_functional_case=int(weekly_new_functional_case),
+        api_case_distribution=api_case_distribution,
+        functional_case_distribution=functional_case_distribution,
         month_case=month_case,
         weekly_case=weekly_case,
         user_rank=user_rank,
