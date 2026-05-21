@@ -19,6 +19,9 @@ from app.models.interface_manage import PityApiService, PityApiEndpoint, PityApi
 from app.core.interface_sample import ensure_interface_sample_schema, get_endpoint_sample as load_endpoint_sample, save_endpoint_sample
 from app.routers import Permission
 from app.utils.json_compare import JsonCompare
+from app.models.test_case import TestCase
+from app.models.testcase_directory import PityTestcaseDirectory
+from app.models.user import User
 
 router = APIRouter(prefix="/interface-management")
 DEFAULT_SYNC_CRON = "0 0 * * *"
@@ -55,6 +58,251 @@ def safe_json_loads(text_value):
         return json.loads(text_value or "{}")
     except Exception:
         return {}
+
+
+def safe_json_loads_any(text_value, fallback=None):
+    if fallback is None:
+        fallback = {}
+    if text_value is None:
+        return fallback
+    if isinstance(text_value, (dict, list)):
+        return text_value
+    try:
+        return json.loads(text_value)
+    except Exception:
+        return fallback
+
+
+def normalize_url_for_fill(base_url: str, path: str, query: dict = None):
+    query = query or {}
+    base_value = str(base_url or "").strip().rstrip("/")
+    path_value = normalize_path(path or "")
+    url = f"{base_value}{path_value}" if base_value else path_value
+    pairs = []
+    for key, value in (query or {}).items():
+        k = str(key or "").strip()
+        if not k:
+            continue
+        if value is None:
+            pairs.append(f"{k}=")
+        else:
+            pairs.append(f"{k}={value}")
+    if pairs:
+        glue = "&" if "?" in url else "?"
+        url = f"{url}{glue}{'&'.join(pairs)}"
+    return url
+
+
+def build_defaults_from_request_params(request_params):
+    req = safe_json_loads_any(request_params, {})
+    query_obj = {}
+    body_value = ""
+
+    parameters = req.get("parameters") if isinstance(req, dict) else []
+    if not isinstance(parameters, list):
+        parameters = req.get("req_query") if isinstance(req, dict) else []
+    if isinstance(parameters, list):
+        for item in parameters:
+            if not isinstance(item, dict):
+                continue
+            in_value = str(item.get("in") or "").lower()
+            if in_value and in_value != "query":
+                continue
+            key = str(item.get("name") or "").strip()
+            if not key:
+                continue
+            schema = item.get("schema") if isinstance(item.get("schema"), dict) else {}
+            t = str(schema.get("type") or "").lower()
+            if t in ("integer", "number"):
+                query_obj[key] = 0
+            elif t == "boolean":
+                query_obj[key] = False
+            else:
+                query_obj[key] = ""
+
+    request_body = req.get("requestBody") if isinstance(req, dict) else {}
+    content = request_body.get("content") if isinstance(request_body, dict) else {}
+    if isinstance(content, dict) and content:
+        content_node = content.get("application/json")
+        if not isinstance(content_node, dict):
+            first_key = next(iter(content.keys()))
+            content_node = content.get(first_key) if isinstance(content.get(first_key), dict) else {}
+        schema = content_node.get("schema") if isinstance(content_node, dict) else {}
+        if isinstance(schema, dict):
+            if schema.get("type") == "array":
+                body_value = "[]"
+            else:
+                props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+                if props:
+                    body_obj = {}
+                    for k, v in props.items():
+                        prop_schema = v if isinstance(v, dict) else {}
+                        prop_type = str(prop_schema.get("type") or "").lower()
+                        if prop_type in ("integer", "number"):
+                            body_obj[k] = 0
+                        elif prop_type == "boolean":
+                            body_obj[k] = False
+                        elif prop_type == "array":
+                            body_obj[k] = []
+                        elif prop_type == "object":
+                            body_obj[k] = {}
+                        else:
+                            body_obj[k] = ""
+                    body_value = json.dumps(body_obj, ensure_ascii=False, indent=2)
+                else:
+                    body_value = "{}"
+    elif isinstance(req.get("req_body_other"), (dict, list)):
+        body_value = json.dumps(req.get("req_body_other"), ensure_ascii=False, indent=2)
+    elif isinstance(req.get("req_body_other"), str) and str(req.get("req_body_other")).strip():
+        body_value = req.get("req_body_other")
+    elif isinstance(req.get("req_body_form"), list) and req.get("req_body_form"):
+        body_obj = {}
+        for item in req.get("req_body_form"):
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("name") or "").strip()
+            if key:
+                body_obj[key] = ""
+        body_value = json.dumps(body_obj, ensure_ascii=False, indent=2)
+
+    return query_obj, body_value
+
+
+def simplify_request_params(request_params):
+    req = safe_json_loads_any(request_params, {})
+    result = {
+        "request_kind": "none",  # none | params | body
+        "params_type": "none",   # none | query
+        "params_items": [],
+        "body_type": "none",     # none | raw-json | raw-text | form-data | x-www-form-urlencoded
+        "body_items": [],
+        "body_raw_example": "",
+    }
+    if not isinstance(req, dict):
+        return result
+
+    # Swagger/OpenAPI query parameters
+    parameters = req.get("parameters")
+    if not isinstance(parameters, list):
+        parameters = req.get("req_query")
+    if isinstance(parameters, list):
+        for item in parameters:
+            if not isinstance(item, dict):
+                continue
+            in_value = str(item.get("in") or "").lower()
+            if in_value and in_value != "query":
+                continue
+            key = str(item.get("name") or "").strip()
+            if not key:
+                continue
+            schema = item.get("schema") if isinstance(item.get("schema"), dict) else {}
+            item_type = str(schema.get("type") or item.get("type") or "").lower()
+            result["params_items"].append({
+                "key": key,
+                "description": str(item.get("description") or ""),
+                "required": bool(item.get("required")),
+                "data_type": item_type or "string",
+            })
+    if result["params_items"]:
+        result["request_kind"] = "params"
+        result["params_type"] = "query"
+
+    # OpenAPI requestBody
+    request_body = req.get("requestBody") if isinstance(req.get("requestBody"), dict) else {}
+    content = request_body.get("content") if isinstance(request_body.get("content"), dict) else {}
+    if content:
+        if "application/json" in content:
+            node = content.get("application/json") if isinstance(content.get("application/json"), dict) else {}
+            schema = node.get("schema") if isinstance(node.get("schema"), dict) else {}
+            result["body_type"] = "raw-json"
+            body_obj = {}
+            props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+            for k, v in props.items():
+                prop_schema = v if isinstance(v, dict) else {}
+                p_type = str(prop_schema.get("type") or "").lower()
+                if p_type in ("integer", "number"):
+                    body_obj[k] = 0
+                elif p_type == "boolean":
+                    body_obj[k] = False
+                elif p_type == "array":
+                    body_obj[k] = []
+                elif p_type == "object":
+                    body_obj[k] = {}
+                else:
+                    body_obj[k] = ""
+                result["body_items"].append({
+                    "key": k,
+                    "description": str(prop_schema.get("description") or ""),
+                    "required": False,
+                    "data_type": p_type or "string",
+                })
+            result["body_raw_example"] = json.dumps(body_obj if body_obj else {}, ensure_ascii=False, indent=2)
+        elif "multipart/form-data" in content:
+            node = content.get("multipart/form-data") if isinstance(content.get("multipart/form-data"), dict) else {}
+            schema = node.get("schema") if isinstance(node.get("schema"), dict) else {}
+            result["body_type"] = "form-data"
+            props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+            for k, v in props.items():
+                prop_schema = v if isinstance(v, dict) else {}
+                p_type = str(prop_schema.get("type") or "").lower() or "string"
+                result["body_items"].append({
+                    "key": k,
+                    "description": str(prop_schema.get("description") or ""),
+                    "required": False,
+                    "data_type": p_type,
+                })
+        elif "application/x-www-form-urlencoded" in content:
+            node = content.get("application/x-www-form-urlencoded") if isinstance(content.get("application/x-www-form-urlencoded"), dict) else {}
+            schema = node.get("schema") if isinstance(node.get("schema"), dict) else {}
+            result["body_type"] = "x-www-form-urlencoded"
+            props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+            for k, v in props.items():
+                prop_schema = v if isinstance(v, dict) else {}
+                p_type = str(prop_schema.get("type") or "").lower() or "string"
+                result["body_items"].append({
+                    "key": k,
+                    "description": str(prop_schema.get("description") or ""),
+                    "required": False,
+                    "data_type": p_type,
+                })
+        else:
+            # fallback any other content type -> treat as raw text
+            result["body_type"] = "raw-text"
+            result["body_raw_example"] = ""
+
+    # YAPI request body
+    if result["body_type"] == "none":
+        req_body_other = req.get("req_body_other")
+        req_body_form = req.get("req_body_form")
+        if isinstance(req_body_form, list) and req_body_form:
+            result["body_type"] = "form-data"
+            for item in req_body_form:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("name") or "").strip()
+                if not key:
+                    continue
+                result["body_items"].append({
+                    "key": key,
+                    "description": str(item.get("desc") or item.get("description") or ""),
+                    "required": str(item.get("required") or "") in ("1", "true", "True"),
+                    "data_type": str(item.get("type") or "string"),
+                })
+        elif isinstance(req_body_other, (dict, list)):
+            result["body_type"] = "raw-json"
+            result["body_raw_example"] = json.dumps(req_body_other, ensure_ascii=False, indent=2)
+        elif isinstance(req_body_other, str) and req_body_other.strip():
+            parsed = safe_json_loads_any(req_body_other, None)
+            if isinstance(parsed, (dict, list)):
+                result["body_type"] = "raw-json"
+                result["body_raw_example"] = json.dumps(parsed, ensure_ascii=False, indent=2)
+            else:
+                result["body_type"] = "raw-text"
+                result["body_raw_example"] = req_body_other
+
+    if result["body_type"] != "none":
+        result["request_kind"] = "body"
+    return result
 
 
 def resolve_openapi_ref(payload: dict, ref: str):
@@ -145,6 +393,28 @@ def parse_swagger_payload(payload):
                 "response_body": resolved_responses,
             })
     return ans
+
+
+def resolve_swagger_base_url(payload: dict, source_url: str = ""):
+    payload = payload or {}
+    # OpenAPI 3.x: only keep path part
+    servers = payload.get("servers") or []
+    if isinstance(servers, list):
+        for server in servers:
+            if not isinstance(server, dict):
+                continue
+            server_url = str(server.get("url") or "").strip()
+            if not server_url:
+                continue
+            parsed_server = urlparse(server_url)
+            if parsed_server.path:
+                return normalize_path(parsed_server.path)
+            if server_url.startswith("/"):
+                return normalize_path(server_url)
+
+    # Swagger 2.0: basePath only
+    base_path = normalize_path(payload.get("basePath") or "/")
+    return base_path
 
 
 def parse_yapi_payload(payload):
@@ -268,6 +538,7 @@ async def ensure_interface_schema(session):
         "project_id INT NOT NULL DEFAULT 0,"
         "name VARCHAR(128) NOT NULL,"
         "base_url VARCHAR(255) NULL,"
+        "owner TEXT NULL,"
         "developer VARCHAR(128) NULL,"
         "tester VARCHAR(128) NULL,"
         "source_type VARCHAR(32) NOT NULL DEFAULT 'manual',"
@@ -335,6 +606,7 @@ async def ensure_interface_schema(session):
         "ALTER TABLE pity_api_endpoint_version ADD COLUMN endpoint_status VARCHAR(16) NOT NULL DEFAULT 'available' COMMENT '接口状态'",
         "ALTER TABLE pity_api_endpoint ADD COLUMN request_headers LONGTEXT NULL COMMENT '请求头'",
         "ALTER TABLE pity_api_endpoint_version ADD COLUMN request_headers LONGTEXT NULL COMMENT '请求头'",
+        "ALTER TABLE pity_api_service ADD COLUMN owner TEXT NULL COMMENT '负责人'",
         "ALTER TABLE pity_api_service ADD COLUMN developer VARCHAR(128) NULL COMMENT '开发人员'",
         "ALTER TABLE pity_api_service ADD COLUMN tester VARCHAR(128) NULL COMMENT '测试人员'",
         "ALTER TABLE pity_testcase ADD COLUMN api_service_id INT NOT NULL DEFAULT 0 COMMENT '绑定服务ID'",
@@ -520,6 +792,7 @@ async def insert_service(form: dict, user_info=Depends(Permission())):
             project_id=int(form.get("project_id") or 0),
             name=str(form.get("name") or "").strip(),
             base_url=str(form.get("base_url") or "").strip(),
+            owner=safe_json_dumps(form.get("owner") or []),
             developer=str(form.get("developer") or "").strip(),
             tester=str(form.get("tester") or "").strip(),
             source_type=str(form.get("source_type") or "manual").strip() or "manual",
@@ -559,7 +832,9 @@ async def update_service(form: dict, user_info=Depends(Permission())):
         if form.get("project_id") is not None:
             model.project_id = int(form.get("project_id") or 0)
         model.name = name
-        model.base_url = str(form.get("base_url") or model.base_url or "").strip()
+        if "base_url" in form:
+            model.base_url = str(form.get("base_url") or "").strip()
+        model.owner = safe_json_dumps(form.get("owner") or [])
         model.developer = str(form.get("developer") or "").strip()
         model.tester = str(form.get("tester") or "").strip()
         model.source_type = str(form.get("source_type") or model.source_type or "manual").strip() or "manual"
@@ -581,7 +856,7 @@ async def update_service(form: dict, user_info=Depends(Permission())):
             model,
             old,
             model.id,
-            changed=["project_id", "name", "base_url", "developer", "tester", "source_type", "source_config", "sync_enabled", "sync_cron"],
+            changed=["project_id", "name", "base_url", "owner", "developer", "tester", "source_type", "source_config", "sync_enabled", "sync_cron"],
         )
         await session.commit()
         await session.refresh(model)
@@ -660,6 +935,18 @@ async def list_endpoints(service_id: int, keyword: str = "", module_name: str = 
                 )
             )).all()
             sample_map = {item.endpoint_id: item for item in sample_rows}
+        case_count_map = {}
+        if endpoint_ids:
+            case_rows = await session.execute(
+                select(
+                    TestCase.api_endpoint_id,
+                    func.count(TestCase.id).label("case_total"),
+                ).where(
+                    TestCase.api_endpoint_id.in_(endpoint_ids),
+                    TestCase.deleted_at == 0,
+                ).group_by(TestCase.api_endpoint_id)
+            )
+            case_count_map = {item.api_endpoint_id: int(item.case_total or 0) for item in case_rows.all()}
         data = []
         for item in rows:
             sample = sample_map.get(item.id)
@@ -672,6 +959,7 @@ async def list_endpoints(service_id: int, keyword: str = "", module_name: str = 
                 "path": item.path,
                 "current_version_no": item.current_version_no,
                 "updated_at": item.updated_at,
+                "case_total": int(case_count_map.get(item.id, 0) or 0),
                 "sample_available": 1 if sample else 0,
                 "sample_recorded_at": sample.recorded_at if sample else None,
                 "sample_status_code": sample.status_code if sample else None,
@@ -685,6 +973,101 @@ async def list_endpoints(service_id: int, keyword: str = "", module_name: str = 
         )
         modules = [str(item[0] or "默认模块") for item in module_result.all()]
     return PityResponse.success({"list": data, "modules": sorted(list(set(modules)))})
+
+
+@router.get("/endpoint/lineage")
+async def get_endpoint_lineage(endpoint_id: int, _=Depends(Permission())):
+    async with async_session() as session:
+        await ensure_interface_schema(session)
+        endpoint = (await session.execute(
+            select(PityApiEndpoint).where(
+                PityApiEndpoint.id == endpoint_id,
+                PityApiEndpoint.deleted_at == 0,
+            )
+        )).scalars().first()
+        if endpoint is None:
+            return PityResponse.failed("接口不存在")
+        service = (await session.execute(
+            select(PityApiService).where(
+                PityApiService.id == endpoint.service_id,
+                PityApiService.deleted_at == 0,
+            )
+        )).scalars().first()
+        case_rows = (await session.execute(
+            select(TestCase, User.name.label("create_user_name"))
+            .outerjoin(User, User.id == TestCase.create_user)
+            .where(
+                TestCase.api_endpoint_id == endpoint_id,
+                TestCase.deleted_at == 0,
+            ).order_by(TestCase.updated_at.desc(), TestCase.id.desc())
+        )).all()
+        directory_ids = list({item.directory_id for item, _ in case_rows if item.directory_id})
+        directory_map = {}
+        if directory_ids:
+            directory_rows = (await session.execute(
+                select(PityTestcaseDirectory).where(
+                    PityTestcaseDirectory.id.in_(directory_ids),
+                    PityTestcaseDirectory.deleted_at == 0,
+                )
+            )).scalars().all()
+            directory_lookup = {item.id: item for item in directory_rows}
+            parent_ids = list({item.parent for item in directory_rows if item.parent})
+            while parent_ids:
+                parent_rows = (await session.execute(
+                    select(PityTestcaseDirectory).where(
+                        PityTestcaseDirectory.id.in_(parent_ids),
+                        PityTestcaseDirectory.deleted_at == 0,
+                    )
+                )).scalars().all()
+                next_parent_ids = []
+                for item in parent_rows:
+                    if item.id not in directory_lookup:
+                        directory_lookup[item.id] = item
+                    if item.parent and item.parent not in directory_lookup:
+                        next_parent_ids.append(item.parent)
+                parent_ids = next_parent_ids
+            for directory_id in directory_ids:
+                current = directory_lookup.get(directory_id)
+                names = []
+                while current is not None:
+                    names.append(current.name)
+                    current = directory_lookup.get(current.parent)
+                directory_map[directory_id] = '/'.join(reversed(names)) if names else '-'
+        cases = []
+        for item, create_user_name in case_rows:
+            cases.append({
+                "id": item.id,
+                "name": item.name,
+                "directory_id": item.directory_id,
+                "directory_path": directory_map.get(item.directory_id, '-'),
+                "create_user": item.create_user,
+                "create_user_name": create_user_name or '',
+                "creator_name": create_user_name or '',
+                "request_type": item.request_type,
+                "request_method": item.request_method,
+                "url": item.url,
+                "api_service_id": item.api_service_id,
+                "api_endpoint_id": item.api_endpoint_id,
+                "api_version_id": item.api_version_id,
+                "api_version_no": item.api_version_no,
+                "priority": item.priority,
+                "status": item.status,
+                "updated_at": item.updated_at,
+            })
+        return PityResponse.success({
+            "endpoint": {
+                "id": endpoint.id,
+                "name": endpoint.name,
+                "method": endpoint.method,
+                "path": endpoint.path,
+                "full_url": endpoint.full_url,
+                "service_id": endpoint.service_id,
+                "service_name": service.name if service else "",
+                "current_version_no": endpoint.current_version_no,
+            },
+            "case_total": len(cases),
+            "cases": cases,
+        })
 
 
 @router.get("/endpoint/version/list")
@@ -715,7 +1098,82 @@ async def get_endpoint_version_detail(version_id: int, _=Depends(Permission())):
         if record is None:
             return PityResponse.failed("版本不存在")
         data = serialize_model(record)
+        data["request_params_struct"] = simplify_request_params(record.request_params)
     return PityResponse.success(data)
+
+
+@router.get("/endpoint/source/query")
+async def query_endpoint_source(endpoint_id: int, version_id: int = 0, _=Depends(Permission())):
+    async with async_session() as session:
+        await ensure_interface_schema(session)
+        endpoint = (await session.execute(
+            select(PityApiEndpoint).where(
+                PityApiEndpoint.id == endpoint_id,
+                PityApiEndpoint.deleted_at == 0,
+            )
+        )).scalars().first()
+        if endpoint is None:
+            return PityResponse.failed("接口不存在")
+        service = (await session.execute(
+            select(PityApiService).where(
+                PityApiService.id == endpoint.service_id,
+                PityApiService.deleted_at == 0,
+            )
+        )).scalars().first()
+        if service is None:
+            return PityResponse.failed("接口所属服务不存在")
+
+        record_version = None
+        target_version_id = int(version_id or 0) or int(endpoint.current_version_id or 0)
+        if target_version_id > 0:
+            record_version = (await session.execute(
+                select(PityApiEndpointVersion).where(
+                    PityApiEndpointVersion.id == target_version_id,
+                    PityApiEndpointVersion.deleted_at == 0,
+                )
+            )).scalars().first()
+        if record_version is None:
+            record_version = endpoint
+
+        sample = await load_endpoint_sample(session, endpoint_id)
+        method = str(getattr(record_version, "method", None) or endpoint.method or "GET").upper()
+        path = str(getattr(record_version, "path", None) or endpoint.path or "")
+        request_params = safe_json_loads_any(getattr(record_version, "request_params", None), {})
+        query_from_schema, body_from_schema = build_defaults_from_request_params(request_params)
+
+        sample_query = safe_json_loads_any(getattr(sample, "request_query", None), {}) if sample else {}
+        sample_body = getattr(sample, "request_body", "") if sample else ""
+
+        merged_query = sample_query if isinstance(sample_query, dict) and sample_query else query_from_schema
+        body_value = sample_body
+        if body_value is None:
+            body_value = ""
+        if not str(body_value).strip():
+            body_value = body_from_schema
+        if isinstance(body_value, (dict, list)):
+            body_value = json.dumps(body_value, ensure_ascii=False, indent=2)
+
+        request_url = str(getattr(record_version, "full_url", "") or "").strip()
+        if not request_url:
+            request_url = normalize_url_for_fill(service.base_url or "", path, {})
+        if merged_query:
+            request_url = normalize_url_for_fill(request_url, "", merged_query)
+
+        return PityResponse.success({
+            "endpoint_id": endpoint.id,
+            "version_id": int(getattr(record_version, "id", 0) or 0),
+            "version_no": str(getattr(record_version, "version_no", "") or endpoint.current_version_no or ""),
+            "request_method": method,
+            "request_url": request_url,
+            "request_path": path,
+            "request_headers": {},
+            "request_query": merged_query if isinstance(merged_query, dict) else {},
+            "request_body": str(body_value or ""),
+            "request_params": request_params if isinstance(request_params, dict) else {},
+            "sample_used": 1 if sample else 0,
+            "sample_id": int(getattr(sample, "id", 0) or 0) if sample else 0,
+            "service_base_url": str(service.base_url or ""),
+        })
 
 
 @router.get("/endpoint/sample/query")
@@ -957,6 +1415,7 @@ async def import_swagger(form: dict, user_info=Depends(Permission())):
         return PityResponse.failed(f"Swagger解析失败: {exc}")
 
     endpoint_items = parse_swagger_payload(payload)
+    resolved_base_url = resolve_swagger_base_url(payload, source_url)
     async with async_session() as session:
         await ensure_interface_schema(session)
         service = (await session.execute(
@@ -967,6 +1426,8 @@ async def import_swagger(form: dict, user_info=Depends(Permission())):
         old = deepcopy(service)
         service.source_type = "swagger"
         service.source_config = safe_json_dumps({"source_url": source_url})
+        if resolved_base_url:
+            service.base_url = resolved_base_url
         service.last_sync_status = "success"
         service.last_sync_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         service.update_user = user_info["id"]
@@ -1103,3 +1564,4 @@ async def deprecate_endpoint(form: dict, user_info=Depends(Permission())):
         )
         await session.commit()
     return PityResponse.success()
+

@@ -12,17 +12,35 @@ from app.routers import Permission
 router = APIRouter(prefix="/operation")
 
 
+def parse_datetime_value(value: str, end_of_day: bool = False):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            if fmt == "%Y-%m-%d":
+                if end_of_day:
+                    return parsed.replace(hour=23, minute=59, second=59, microsecond=0)
+                return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+            return parsed
+        except ValueError:
+            continue
+    raise ValueError("时间格式错误，仅支持 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS")
+
+
 # 获取用户操作记录
 @router.get("/list")
-async def list_user_operation(start_time: str, end_time: str, user_id: int, tag: str = None, _=Depends(Permission())):
+async def list_user_operation(start_time: str, end_time: str, user_id: int = None, tag: str = None, _=Depends(Permission())):
     try:
-        start = datetime.strptime(start_time, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
-        end = datetime.strptime(end_time, "%Y-%m-%d").replace(hour=23, minute=59, second=59, microsecond=0)
+        start = parse_datetime_value(start_time, end_of_day=False)
+        end = parse_datetime_value(end_time, end_of_day=True)
         query_kwargs = dict(
-            user_id=user_id,
             condition=[PityOperationLog.operate_time.between(start, end)],
             _sort=[desc(PityOperationLog.operate_time)],
         )
+        if user_id is not None:
+            query_kwargs["user_id"] = user_id
         if tag:
             query_kwargs["tag"] = tag
         records = await PityOperationDao.select_list(**query_kwargs)

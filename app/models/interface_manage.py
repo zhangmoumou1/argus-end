@@ -9,6 +9,7 @@ class PityApiService(PityBase):
     project_id = Column(INT, ForeignKey("pity_project.id"), index=True, nullable=False, default=0, comment="所属项目")
     name = Column(String(128), nullable=False, comment="服务名称")
     base_url = Column(String(255), nullable=True, comment="基础地址")
+    owner = Column(TEXT, nullable=True, comment="负责人")
     developer = Column(String(128), nullable=True, comment="开发人员")
     tester = Column(String(128), nullable=True, comment="测试人员")
     source_type = Column(String(32), nullable=False, default="manual", comment="来源类型 manual/swagger/yapi")
@@ -24,6 +25,7 @@ class PityApiService(PityBase):
         project_id="所属项目",
         name="服务名称",
         base_url="基础地址",
+        owner="负责人",
         developer="开发人员",
         tester="测试人员",
         source_type="来源类型",
@@ -33,11 +35,12 @@ class PityApiService(PityBase):
     )
     __show__ = 1
 
-    def __init__(self, project_id, name, user, base_url="", developer="", tester="", source_type="manual", source_config=None):
+    def __init__(self, project_id, name, user, base_url="", owner=None, developer="", tester="", source_type="manual", source_config=None):
         super().__init__(user)
         self.project_id = project_id
         self.name = name
         self.base_url = base_url
+        self.owner = owner
         self.developer = developer
         self.tester = tester
         self.source_type = source_type
