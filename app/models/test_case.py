@@ -29,6 +29,9 @@ class TestCase(PityBase):
     api_version_no = Column(String(32), nullable=True, comment="绑定接口版本号")
     api_bind_mode = Column(String(16), nullable=False, default="pinned", comment="绑定模式 latest/pinned")
     api_pending_update = Column(INT, nullable=False, default=0, comment="是否待更新 0否1是")
+    api_review_status = Column(String(16), nullable=True, comment="接口版本审查结论")
+    api_review_user = Column(INT, nullable=False, default=0, comment="接口版本审查人")
+    api_review_at = Column(String(32), nullable=True, comment="接口版本审查时间")
 
     out_parameters: List[PityTestCaseOutParameters] = None
     __table_args__ = (
@@ -38,7 +41,8 @@ class TestCase(PityBase):
     __fields__ = (name, request_type, url, request_method,
                   request_headers, body, body_type, directory_id,
                   tag, status, priority, case_type,
-                  api_service_id, api_endpoint_id, api_version_id, api_version_no, api_bind_mode, api_pending_update)
+                  api_service_id, api_endpoint_id, api_version_id, api_version_no, api_bind_mode, api_pending_update,
+                  api_review_status, api_review_user, api_review_at)
     __alias__ = dict(name="名称", request_type="请求协议", url="地址", request_method="请求方式",
                      request_headers="请求头", body="请求体", body_type="请求类型",
                      directory_id="用例目录", tag="标签", status="状态", priority="优先级",
@@ -48,7 +52,8 @@ class TestCase(PityBase):
                  body_type=1, base_path=None, out_parameters=None,
                  tag=None, request_headers=None, case_type=0, body=None, request_method=None, id=None,
                  api_service_id=0, api_endpoint_id=0, api_version_id=0, api_version_no=None,
-                 api_bind_mode="pinned", api_pending_update=0):
+                 api_bind_mode="pinned", api_pending_update=0, api_review_status=None,
+                 api_review_user=0, api_review_at=None):
         super().__init__(create_user, id)
         self.name = name
         self.request_type = request_type
@@ -70,6 +75,9 @@ class TestCase(PityBase):
         self.api_version_no = api_version_no
         self.api_bind_mode = api_bind_mode
         self.api_pending_update = api_pending_update
+        self.api_review_status = api_review_status
+        self.api_review_user = api_review_user
+        self.api_review_at = api_review_at
 
     def __str__(self):
         return f"[用例: {self.name}]({self.id})"

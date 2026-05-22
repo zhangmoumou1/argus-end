@@ -73,6 +73,37 @@ def safe_json_loads_any(text_value, fallback=None):
         return fallback
 
 
+def parse_id_list(raw_value):
+    result = []
+    if raw_value is None:
+        return result
+    if isinstance(raw_value, (list, tuple, set)):
+        source_items = raw_value
+    else:
+        text = str(raw_value).strip()
+        if not text:
+            return result
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                source_items = parsed
+            else:
+                source_items = text.split(",")
+        except Exception:
+            source_items = text.split(",")
+    for item in source_items:
+        value = str(item).strip()
+        if not value:
+            continue
+        if value.startswith("[") and value.endswith("]"):
+            value = value[1:-1].strip()
+        try:
+            result.append(int(value))
+        except Exception:
+            continue
+    return result
+
+
 def normalize_url_for_fill(base_url: str, path: str, query: dict = None):
     query = query or {}
     base_value = str(base_url or "").strip().rstrip("/")
@@ -615,6 +646,9 @@ async def ensure_interface_schema(session):
         "ALTER TABLE pity_testcase ADD COLUMN api_version_no VARCHAR(32) NULL COMMENT '绑定接口版本号'",
         "ALTER TABLE pity_testcase ADD COLUMN api_bind_mode VARCHAR(16) NOT NULL DEFAULT 'pinned' COMMENT '绑定模式'",
         "ALTER TABLE pity_testcase ADD COLUMN api_pending_update INT NOT NULL DEFAULT 0 COMMENT '是否待更新'",
+        "ALTER TABLE pity_testcase ADD COLUMN api_review_status VARCHAR(16) NULL COMMENT '接口版本审查结论'",
+        "ALTER TABLE pity_testcase ADD COLUMN api_review_user INT NOT NULL DEFAULT 0 COMMENT '接口版本审查人'",
+        "ALTER TABLE pity_testcase ADD COLUMN api_review_at VARCHAR(32) NULL COMMENT '接口版本审查时间'",
         "ALTER TABLE pity_api_endpoint ADD INDEX idx_service_deleted_module_status_updated(service_id, deleted_at, module_name, endpoint_status, updated_at)",
         "ALTER TABLE pity_api_endpoint_sample ADD INDEX idx_endpoint_deleted(endpoint_id, deleted_at)",
     ]:
@@ -778,9 +812,89 @@ async def list_services(project_id: int = None, keyword: str = "", _=Depends(Per
                 PityApiEndpoint.deleted_at == 0,
             )
             endpoint_total = (await session.execute(endpoint_total_sql)).scalar() or 0
+            pending_sql = (
+                select(
+                    func.count(func.distinct(PityApiEndpoint.id)),
+                    func.count(TestCase.id),
+                )
+                .select_from(PityApiEndpoint)
+                .join(
+                    TestCase,
+                    (TestCase.api_endpoint_id == PityApiEndpoint.id)
+                    & (TestCase.deleted_at == 0)
+                    & (TestCase.api_pending_update == 1),
+                )
+                .where(
+                    PityApiEndpoint.service_id == item.id,
+                    PityApiEndpoint.deleted_at == 0,
+                )
+            )
+            pending_endpoint_total, pending_case_total = (await session.execute(pending_sql)).first() or (0, 0)
             row = serialize_model(item)
             row["endpoint_total"] = int(endpoint_total)
+            row["pending_endpoint_total"] = int(pending_endpoint_total or 0)
+            row["pending_case_total"] = int(pending_case_total or 0)
+            row["pending_review"] = 1 if int(pending_case_total or 0) > 0 else 0
             data.append(row)
+    return PityResponse.success(data)
+
+
+@router.get("/service/pending-assets")
+async def list_pending_assets(project_id: int = None, service_id: int = None, url: str = "", tester: int = None,
+                              _=Depends(Permission())):
+    async with async_session() as session:
+        await ensure_interface_schema(session)
+        filters = [
+            PityApiService.deleted_at == 0,
+            PityApiEndpoint.deleted_at == 0,
+            TestCase.deleted_at == 0,
+            TestCase.api_pending_update == 1,
+            TestCase.api_endpoint_id == PityApiEndpoint.id,
+            PityApiEndpoint.service_id == PityApiService.id,
+        ]
+        if project_id is not None:
+            filters.append(PityApiService.project_id == project_id)
+        if service_id is not None:
+            filters.append(PityApiService.id == service_id)
+        if url:
+            filters.append(PityApiEndpoint.path.like(f"%{url}%"))
+        rows = (
+            await session.execute(
+                select(
+                    PityApiService.id.label("service_id"),
+                    PityApiService.name.label("service_name"),
+                    PityApiService.tester.label("tester"),
+                    PityApiEndpoint.id.label("endpoint_id"),
+                    PityApiEndpoint.name.label("endpoint_name"),
+                    PityApiEndpoint.path.label("endpoint_path"),
+                    func.count(TestCase.id).label("pending_case_total"),
+                )
+                .where(*filters)
+                .group_by(
+                    PityApiService.id,
+                    PityApiService.name,
+                    PityApiService.tester,
+                    PityApiEndpoint.id,
+                    PityApiEndpoint.name,
+                    PityApiEndpoint.path,
+                )
+                .order_by(PityApiService.name.asc(), PityApiEndpoint.path.asc(), PityApiEndpoint.id.desc())
+            )
+        ).all()
+        data = []
+        for item in rows:
+            tester_ids = parse_id_list(item.tester)
+            if tester is not None and int(tester or 0) not in tester_ids:
+                continue
+            data.append({
+                "service_id": item.service_id,
+                "service_name": item.service_name,
+                "endpoint_id": item.endpoint_id,
+                "endpoint_name": item.endpoint_name,
+                "endpoint_url": item.endpoint_path,
+                "tester": tester_ids,
+                "pending_case_total": int(item.pending_case_total or 0),
+            })
     return PityResponse.success(data)
 
 
@@ -922,6 +1036,7 @@ async def list_endpoints(service_id: int, keyword: str = "", module_name: str = 
         rows = result.all()
         endpoint_ids = [item.id for item in rows]
         sample_map = {}
+        pending_case_count_map = {}
         if endpoint_ids:
             sample_rows = (await session.execute(
                 select(
@@ -935,6 +1050,17 @@ async def list_endpoints(service_id: int, keyword: str = "", module_name: str = 
                 )
             )).all()
             sample_map = {item.endpoint_id: item for item in sample_rows}
+            pending_rows = await session.execute(
+                select(
+                    TestCase.api_endpoint_id,
+                    func.count(TestCase.id).label("pending_case_total"),
+                ).where(
+                    TestCase.api_endpoint_id.in_(endpoint_ids),
+                    TestCase.deleted_at == 0,
+                    TestCase.api_pending_update == 1,
+                ).group_by(TestCase.api_endpoint_id)
+            )
+            pending_case_count_map = {item.api_endpoint_id: int(item.pending_case_total or 0) for item in pending_rows.all()}
         case_count_map = {}
         if endpoint_ids:
             case_rows = await session.execute(
@@ -960,6 +1086,8 @@ async def list_endpoints(service_id: int, keyword: str = "", module_name: str = 
                 "current_version_no": item.current_version_no,
                 "updated_at": item.updated_at,
                 "case_total": int(case_count_map.get(item.id, 0) or 0),
+                "pending_case_total": int(pending_case_count_map.get(item.id, 0) or 0),
+                "pending_review": 1 if int(pending_case_count_map.get(item.id, 0) or 0) > 0 else 0,
                 "sample_available": 1 if sample else 0,
                 "sample_recorded_at": sample.recorded_at if sample else None,
                 "sample_status_code": sample.status_code if sample else None,
@@ -1050,6 +1178,7 @@ async def get_endpoint_lineage(endpoint_id: int, _=Depends(Permission())):
                 "api_endpoint_id": item.api_endpoint_id,
                 "api_version_id": item.api_version_id,
                 "api_version_no": item.api_version_no,
+                "api_pending_update": int(getattr(item, "api_pending_update", 0) or 0),
                 "priority": item.priority,
                 "status": item.status,
                 "updated_at": item.updated_at,
@@ -1564,4 +1693,60 @@ async def deprecate_endpoint(form: dict, user_info=Depends(Permission())):
         )
         await session.commit()
     return PityResponse.success()
+
+
+@router.post("/endpoint/review")
+async def review_endpoint_case(form: dict, user_info=Depends(Permission())):
+    case_id = int(form.get("case_id") or 0)
+    review_status = str(form.get("review_status") or "").strip()
+    if not case_id:
+        return PityResponse.failed("case_id不能为空")
+    if review_status not in {"no_impact", "reviewed"}:
+        return PityResponse.failed("review_status不合法")
+    async with async_session() as session:
+        await ensure_interface_schema(session)
+        record = (
+            await session.execute(
+                select(TestCase).where(
+                    TestCase.id == case_id,
+                    TestCase.deleted_at == 0,
+                )
+            )
+        ).scalars().first()
+        if record is None:
+            return PityResponse.failed("接口用例不存在")
+        endpoint = None
+        if int(getattr(record, "api_endpoint_id", 0) or 0) > 0:
+            endpoint = (
+                await session.execute(
+                    select(PityApiEndpoint).where(
+                        PityApiEndpoint.id == record.api_endpoint_id,
+                        PityApiEndpoint.deleted_at == 0,
+                    )
+                )
+            ).scalars().first()
+        old = deepcopy(record)
+        record.api_pending_update = 0
+        record.api_review_status = review_status
+        record.api_review_user = user_info["id"]
+        record.api_review_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if endpoint is not None:
+            record.api_version_id = int(getattr(endpoint, "current_version_id", 0) or 0)
+            record.api_version_no = str(getattr(endpoint, "current_version_no", "") or record.api_version_no or "")
+        record.update_user = user_info["id"]
+        record.updated_at = datetime.now()
+        await session.flush()
+        await PityOperationDao.insert_log(
+            session,
+            user_info["id"],
+            OperationType.UPDATE,
+            record,
+            old,
+            record.id,
+            changed=["api_pending_update", "api_review_status", "api_review_user", "api_review_at"],
+        )
+        await session.commit()
+    return PityResponse.success({"case_id": case_id, "review_status": review_status})
+
+
 

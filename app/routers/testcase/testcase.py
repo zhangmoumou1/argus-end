@@ -30,6 +30,7 @@ from app.models import async_session
 from app.models.interface_manage import PityApiEndpoint, PityApiEndpointVersion, PityApiEndpointSample, PityApiService
 from app.models.out_parameters import PityTestCaseOutParameters
 from app.models.test_case import TestCase
+from app.models.testcase_directory import PityTestcaseDirectory
 from app.routers import Permission, get_session
 from app.schema.constructor import ConstructorForm, ConstructorIndex
 from app.schema.testcase_data import PityTestcaseDataForm
@@ -76,6 +77,19 @@ def safe_json_dumps(value):
         return json.dumps(value or {}, ensure_ascii=False)
     except Exception:
         return "{}"
+
+
+def parse_case_id_list(raw_value):
+    result = []
+    for item in str(raw_value or "").split(","):
+        value = str(item).strip()
+        if not value:
+            continue
+        try:
+            result.append(int(value))
+        except Exception:
+            continue
+    return result
 
 
 def compact_ai_value(value, limit):
@@ -920,6 +934,33 @@ async def list_case_and_constructor(constructor_type: int, suffix: bool):
 @router.get("/report")
 async def query_report(id: int, user_info=Depends(Permission())):
     report, case_list, plan_name = await TestReportDao.query(id)
+    case_ids = [int(getattr(item, "case_id", 0) or 0) for item in case_list if int(getattr(item, "case_id", 0) or 0) > 0]
+    pending_map = {}
+    case_name_map = {}
+    if case_ids:
+        async with async_session() as session:
+            rows = await session.execute(
+                select(TestCase.id).where(
+                    TestCase.id.in_(case_ids),
+                    TestCase.deleted_at == 0,
+                    TestCase.api_pending_update == 1,
+                )
+            )
+            pending_map = {int(case_id): 1 for case_id, in rows.all()}
+            name_rows = await session.execute(
+                select(TestCase.id, TestCase.name).where(
+                    TestCase.id.in_(case_ids),
+                    TestCase.deleted_at == 0,
+                )
+            )
+            case_name_map = {int(case_id): case_name for case_id, case_name in name_rows.all()}
+    for item in case_list:
+        # 兜底补全 case_name，避免历史报告详情返回缺失
+        if not getattr(item, "case_name", None):
+            item.case_name = case_name_map.get(int(getattr(item, "case_id", 0) or 0), "")
+        item.api_pending_update = int(pending_map.get(int(getattr(item, "case_id", 0) or 0), 0) or 0)
+    if report is not None:
+        report.pending_review = 1 if pending_map else 0
     return PityResponse.success(dict(report=report, plan_name=plan_name, case_list=case_list))
 
 
@@ -929,7 +970,75 @@ async def list_report(page: int, size: int, start_time: str, end_time: str, exec
     start = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
     end = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
     report_list, total = await TestReportDao.list_report(page, size, start, end, executor)
+    report_ids = [int(getattr(item, "id", 0) or 0) for item in report_list if int(getattr(item, "id", 0) or 0) > 0]
+    pending_report_ids = set()
+    if report_ids:
+        async with async_session() as session:
+            result = await session.execute(text(
+                "SELECT DISTINCT r.report_id "
+                "FROM pity_test_result r "
+                "JOIN pity_testcase c ON c.id = r.case_id "
+                "WHERE r.deleted_at = 0 AND c.deleted_at = 0 AND c.api_pending_update = 1 "
+                f"AND r.report_id IN ({','.join([str(x) for x in report_ids])})"
+            ))
+            pending_report_ids = {int(report_id) for report_id, in result.all()}
+    for item in report_list:
+        item.pending_review = 1 if int(getattr(item, "id", 0) or 0) in pending_report_ids else 0
     return PityResponse.success_with_size(data=report_list, total=total)
+
+
+@router.get("/pending-review/list")
+async def list_pending_review_cases(project_id: int = None, url: str = "", create_user: int = None,
+                                    _=Depends(Permission())):
+    try:
+        async with async_session() as session:
+            filters = [
+                TestCase.deleted_at == 0,
+                TestCase.api_pending_update == 1,
+                PityTestcaseDirectory.id == TestCase.directory_id,
+                PityTestcaseDirectory.deleted_at == 0,
+            ]
+            if project_id is not None:
+                filters.append(PityTestcaseDirectory.project_id == project_id)
+            if url:
+                filters.append(TestCase.url.like(f"%{url}%"))
+            if create_user is not None:
+                filters.append(TestCase.create_user == create_user)
+            rows = (
+                await session.execute(
+                    select(
+                        TestCase.id,
+                        TestCase.name,
+                        TestCase.url,
+                        TestCase.create_user,
+                        TestCase.directory_id,
+                        PityTestcaseDirectory.project_id,
+                        PityApiService.name.label("service_name"),
+                        PityApiEndpoint.name.label("endpoint_name"),
+                    )
+                    .select_from(TestCase)
+                    .join(PityTestcaseDirectory, PityTestcaseDirectory.id == TestCase.directory_id)
+                    .outerjoin(PityApiService, PityApiService.id == TestCase.api_service_id)
+                    .outerjoin(PityApiEndpoint, PityApiEndpoint.id == TestCase.api_endpoint_id)
+                    .where(*filters)
+                    .order_by(TestCase.updated_at.desc(), TestCase.id.desc())
+                )
+            ).all()
+            return PityResponse.success([
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "url": item.url,
+                    "create_user": item.create_user,
+                    "directory_id": item.directory_id,
+                    "project_id": item.project_id,
+                    "service_name": item.service_name or "-",
+                    "endpoint_name": item.endpoint_name or item.name,
+                }
+                for item in rows
+            ])
+    except Exception as e:
+        return PityResponse.failed(e)
 
 
 @router.get("/xmind")
@@ -949,7 +1058,19 @@ async def get_directory_and_case(project_id: int, user_info=Depends(Permission()
     try:
         tree_data, cs_map = await PityTestcaseDirectoryDao.get_directory_tree(project_id,
                                                                               TestCaseDao.get_test_case_by_directory_id)
-        return PityResponse.success(dict(tree=tree_data, case_map=cs_map))
+        pending_map = {}
+        case_ids = [int(case_id) for case_id in cs_map.keys()]
+        if case_ids:
+            async with async_session() as session:
+                rows = await session.execute(
+                    select(TestCase.id).where(
+                        TestCase.id.in_(case_ids),
+                        TestCase.deleted_at == 0,
+                        TestCase.api_pending_update == 1,
+                    )
+                )
+                pending_map = {int(case_id): 1 for case_id, in rows.all()}
+        return PityResponse.success(dict(tree=tree_data, case_map=cs_map, pending_map=pending_map))
     except Exception as e:
         return PityResponse.failed(e)
 

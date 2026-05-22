@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from apscheduler.jobstores.base import JobLookupError
 from fastapi import Depends
-from sqlalchemy import text
+from sqlalchemy import text, select
 
 from app.core.executor import Executor
 from app.crud.operation.PityOperationDao import PityOperationDao
@@ -11,6 +11,7 @@ from app.crud.test_case.TestPlan import PityTestPlanDao
 from app.enums.OperationEnum import OperationType
 from app.handler.fatcory import PityResponse
 from app.models import async_session
+from app.models.test_case import TestCase
 from app.schema.test_plan import PityTestPlanForm
 from app.routers import Permission, get_session
 from app.routers.testcase.testcase import router
@@ -30,6 +31,19 @@ def normalize_plan_cron(cron: str) -> str:
         return cron
     normalized = ["*" if f == "?" else f for f in fields]
     return " ".join(normalized)
+
+
+def parse_case_id_list(raw_value):
+    result = []
+    for item in str(raw_value or "").split(","):
+        value = str(item).strip()
+        if not value:
+            continue
+        try:
+            result.append(int(value))
+        except Exception:
+            continue
+    return result
 
 
 async def ensure_plan_enabled_column():
@@ -56,9 +70,28 @@ async def list_test_plan(page: int, size: int, project_id: int = None, name: str
         ans = Scheduler.list_test_plan(data)
         # 兜底补齐 enabled 字段，避免不同版本 scheduler.list_test_plan 未返回该字段
         enabled_map = {d.id: bool(getattr(d, "enabled", True)) for d, _ in data}
+        plan_case_map = {}
+        case_ids = []
+        for item in ans:
+            current_case_ids = parse_case_id_list(item.get("case_list"))
+            plan_case_map[int(item.get("id") or 0)] = current_case_ids
+            case_ids.extend(current_case_ids)
+        pending_case_ids = set()
+        if case_ids:
+            async with async_session() as session:
+                rows = await session.execute(
+                    select(TestCase.id).where(
+                        TestCase.id.in_(list(set(case_ids))),
+                        TestCase.deleted_at == 0,
+                        TestCase.api_pending_update == 1,
+                    )
+                )
+                pending_case_ids = {int(case_id) for case_id, in rows.all()}
         for item in ans:
             if "enabled" not in item:
                 item["enabled"] = enabled_map.get(item.get("id"), True)
+            current_case_ids = plan_case_map.get(int(item.get("id") or 0), [])
+            item["pending_review"] = 1 if any(case_id in pending_case_ids for case_id in current_case_ids) else 0
         return PityResponse.success_with_size(ans, total=total)
     except Exception as e:
         return PityResponse.failed(e)
