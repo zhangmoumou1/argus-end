@@ -106,6 +106,27 @@ def connect(transaction: Transaction = False):
 class Mapper(object):
     __log__ = Log("PityBase")
     __model__ = PityBase
+    __log_description_max_len__ = 3500
+
+    @classmethod
+    def _shrink_log_value(cls, value, max_str_len=600):
+        if isinstance(value, str):
+            if len(value) <= max_str_len:
+                return value
+            return f"{value[:max_str_len]}...(已截断, 原长度={len(value)})"
+        if isinstance(value, list):
+            return [cls._shrink_log_value(item, max_str_len) for item in value]
+        if isinstance(value, dict):
+            return {k: cls._shrink_log_value(v, max_str_len) for k, v in value.items()}
+        return value
+
+    @classmethod
+    def _compact_log_diff(cls, diff):
+        try:
+            compact = cls._shrink_log_value(diff)
+            return json.dumps(compact, ensure_ascii=False)
+        except Exception:
+            return json.dumps([{"name": "日志", "now": "日志内容过长，已省略"}], ensure_ascii=False)
 
     @classmethod
     @RedisHelper.cache("dao")
@@ -370,6 +391,10 @@ class Mapper(object):
         diff, title = await cls.get_diff(session, mode, now, old, changed)
         tag = getattr(now, Config.TABLE_TAG, '未设置')
         diff_data = json.dumps(diff, ensure_ascii=False)
+        if len(diff_data) > cls.__log_description_max_len__:
+            diff_data = cls._compact_log_diff(diff)
+            if len(diff_data) > cls.__log_description_max_len__:
+                diff_data = f"{diff_data[:cls.__log_description_max_len__]}...(日志已截断)"
         model = PityOperationLog(user, mode, "&".join(title), tag, diff_data, key)
         session.add(model)
 

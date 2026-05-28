@@ -4,10 +4,12 @@ import re
 import time
 import asyncio
 import hashlib
+import uuid
 from copy import deepcopy
 from datetime import datetime
+from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, UploadFile
 import requests
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import OperationalError
@@ -34,6 +36,7 @@ router = APIRouter(prefix="/functional-case")
 logger = Log("functional_case_ai")
 
 CASE_FILE_DIR = os.path.join("statics", "functional_cases")
+CASE_IMAGE_DIR = os.path.join("statics", "functional_case_img")
 FUNCTIONAL_CASE_SCHEMA_READY = False
 AI_TEXT_LIMIT = 12000
 AI_INSTRUCTION_LIMIT = 6000
@@ -106,6 +109,15 @@ def summarize_ai_request(form: FunctionalCaseAIGenerateForm, content):
         "prompt_text_preview": preview_text(text_item.get("text") or "", 600),
         "images": summarize_ai_images(sent_images),
     }
+
+
+def build_static_url(path_value: str):
+    normalized = os.path.normpath(path_value)
+    statics_root = os.path.normpath("statics")
+    if not normalized.startswith(statics_root):
+        return ""
+    relative_path = os.path.relpath(normalized, statics_root)
+    return f"/statics/{relative_path.replace(os.sep, '/')}"
 
 
 def build_loggable_kimi_payload(payload):
@@ -1341,4 +1353,35 @@ async def delete_file(id: int, project_id: int = None, user_info=Depends(Permiss
         )
         await session.commit()
     return PityResponse.success()
+
+
+@router.post("/file/image/upload")
+async def upload_functional_case_image(
+    file: UploadFile = File(...),
+    _=Depends(Permission()),
+):
+    try:
+        content_type = str(file.content_type or "").lower()
+        if not content_type.startswith("image/"):
+            return PityResponse.failed("仅支持图片文件上传")
+        suffix = Path(file.filename or "").suffix.lower()
+        allowed_suffix = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg"}
+        if suffix not in allowed_suffix:
+            suffix = ".png"
+        os.makedirs(CASE_IMAGE_DIR, exist_ok=True)
+        stored_name = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}{suffix}"
+        abs_path = os.path.join(CASE_IMAGE_DIR, stored_name)
+        content = await file.read()
+        if not content:
+            return PityResponse.failed("上传失败，图片内容为空")
+        with open(abs_path, "wb") as f:
+            f.write(content)
+        return PityResponse.success({
+            "name": stored_name,
+            "url": build_static_url(abs_path),
+            "size": len(content),
+        })
+    except Exception as e:
+        logger.exception(f"上传功能用例节点图片失败: {e}")
+        return PityResponse.failed("上传节点图片失败")
 
