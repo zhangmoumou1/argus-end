@@ -809,8 +809,8 @@ async def ai_generate_flow_save(form: dict, user_info=Depends(Permission()), ses
 
 
 @router.get("/list")
-async def list_testcase(directory_id: int = None, name: str = "", create_user: str = ''):
-    data = await TestCaseDao.list_test_case(directory_id, name, create_user)
+async def list_testcase(directory_id: int = None, name: str = "", url: str = "", create_user: str = ''):
+    data = await TestCaseDao.list_test_case(directory_id, name, url, create_user)
     return PityResponse.success(data)
 
 

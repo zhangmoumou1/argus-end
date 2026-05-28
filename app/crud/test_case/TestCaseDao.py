@@ -33,7 +33,7 @@ from app.schema.testcase_schema import TestCaseForm, TestCaseInfo
 @ModelWrapper(TestCase)
 class TestCaseDao(Mapper):
     @classmethod
-    async def list_test_case(cls, directory_id: int = None, name: str = "", create_user: str = None):
+    async def list_test_case(cls, directory_id: int = None, name: str = "", url: str = "", create_user: str = None):
         try:
             filters = [TestCase.deleted_at == 0]
             if directory_id:
@@ -41,6 +41,8 @@ class TestCaseDao(Mapper):
                 filters = [TestCase.deleted_at == 0, TestCase.directory_id.in_(parents)]
             if name:
                 filters.append(TestCase.name.like(f"%{name}%"))
+            if url:
+                filters.append(TestCase.url.like(f"%{url}%"))
             if create_user:
                 filters.append(TestCase.create_user == create_user)
             async with async_session() as session:
