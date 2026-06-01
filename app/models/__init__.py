@@ -28,7 +28,13 @@ create_database()
 # 同步engine
 # engine = create_engine(Config.SQLALCHEMY_DATABASE_URI, pool_recycle=1500)
 # 异步engine
-async_engine = create_async_engine(Config.ASYNC_SQLALCHEMY_URI, max_overflow=0, pool_size=50, pool_recycle=1500)
+async_engine = create_async_engine(
+    Config.ASYNC_SQLALCHEMY_URI,
+    max_overflow=0,
+    pool_size=50,
+    pool_recycle=1500,
+    connect_args={"charset": "utf8mb4"},
+)
 
 # Session = sessionmaker(engine)
 
@@ -65,7 +71,7 @@ class DatabaseHelper(object):
         # 获取sqlalchemy需要的jdbc url
         jdbc_url = DatabaseHelper.get_jdbc_url(sql_type, host, port, username, password, database)
         # 创建异步引擎
-        eg = create_async_engine(jdbc_url, pool_recycle=1500)
+        eg = create_async_engine(jdbc_url, pool_recycle=1500, connect_args={"charset": "utf8mb4"})
         ss = sessionmaker(bind=eg, class_=AsyncSession)
         # 将数据缓存起来
         data = dict(engine=eg, session=ss)
@@ -83,7 +89,7 @@ class DatabaseHelper(object):
     def get_jdbc_url(sql_type: int, host: str, port: int, username: str, password: str, database: str):
         if sql_type == DatabaseEnum.MYSQL:
             # mysql模式
-            return f'mysql+aiomysql://{username}:{password}@{host}:{port}/{database}'
+            return f'mysql+aiomysql://{username}:{password}@{host}:{port}/{database}?charset=utf8mb4'
         if sql_type == DatabaseEnum.POSTGRESQL:
             return f'postgresql+asyncpg://{username}:{password}@{host}:{port}/{database}'
         raise Exception("未知的数据库类型")

@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"E:\\\\github_argus\\\\argus-end\" -Depth 1 -Name)",
+      "Bash(python generate_deepseek_doc.py)",
+      "Read(//e//**)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, 'E:/github_argus/argus-front'\\); exec\\(open\\('E:/github_argus/argus-front/generate_deepseek_doc.py'\\).read\\(\\)\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, 'E:/github_argus/argus-front'\\); f=open\\('E:/github_argus/argus-front/generate_deepseek_doc.py','r',encoding='utf-8'\\); exec\\(f.read\\(\\)\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python E:/github_argus/fix_quotes.py)",
+      "Bash(python -c \"f=open\\('E:/github_argus/argus-front/generate_deepseek_doc.py','r',encoding='utf-8'\\); exec\\(f.read\\(\\)\\)\")",
+      "Bash(python \"E:/github_argus/argus-front/generate_deepseek_doc.py\")",
+      "Bash(python \"E:/github_argus/fixpath.py\")"
+    ],
+    "additionalDirectories": [
+      "E:\\github_argus\\argus-front",
+      "E:\\github_argus"
+    ]
+  }
+}

@@ -270,44 +270,13 @@ class Executor(object):
         local_ctx = dict(context or {})
         text = str(source)
         exprs = re.findall(r"\$\{([^{}]+)\}", text)
-
-        # 1) 兼容旧语法：${【case6】xxx.y}
-        case_pairs = []
         transformed = text
-        case_ref_pattern = re.compile(r'^【case(\d+)】([A-Za-z_][\w-]*)(.*)$')
-        for expr in exprs:
-            m = case_ref_pattern.match(expr.strip())
-            if not m:
-                continue
-            cid = int(m.group(1))
-            var_name = m.group(2)
-            tail = m.group(3) or ''
-            case_pairs.append((cid, var_name))
-            safe_var = re.sub(r'[^A-Za-z0-9_]', '_', var_name)
-            transformed_expr = f"case{cid}_{safe_var}{tail}"
-            transformed = transformed.replace("${" + expr + "}", "${" + transformed_expr + "}")
 
-        if case_pairs:
-            pair_values = await GConfigDao.latest_case_variables(
-                env=self._runtime_env,
-                project_id=self._runtime_project_id,
-                pairs=case_pairs
-            )
-            for cid, var_name in set(case_pairs):
-                val = pair_values.get((cid, var_name))
-                if val is None:
-                    self.append(f"${{【case{cid}】{var_name}}}找不到变量名")
-                    continue
-                safe_var = re.sub(r'[^A-Za-z0-9_]', '_', var_name)
-                local_ctx[f"case{cid}_{safe_var}"] = Executor.normalize_variable_value(val)
-
-        # 2) 新语法优先：${变量名} / ${【变量名】} 均支持
+        # 1) 语法支持：${变量名} / ${【变量名】}
         wrapper_roots = {}
         unresolved_roots = set()
         for expr in exprs:
             raw_expr = expr.strip()
-            if case_ref_pattern.match(raw_expr):
-                continue
             root = None
             if raw_expr.startswith("【") and raw_expr.endswith("】"):
                 root = Executor._strip_special_wrapper(raw_expr)
@@ -327,10 +296,8 @@ class Executor(object):
             for key, value in runtime_values.items():
                 local_ctx[key] = Executor.normalize_variable_value(value)
 
-        # 3) 处理 ${【】} 包裹形式：先变量，再特殊固定变量
+        # 2) 处理 ${【】} 包裹形式：先变量，再特殊固定变量
         for expr in exprs:
-            if case_ref_pattern.match(expr.strip()):
-                continue
             raw_expr = expr.strip()
             if not (raw_expr.startswith("【") and raw_expr.endswith("】")):
                 continue
@@ -344,10 +311,8 @@ class Executor(object):
             local_ctx[normalized] = value
             transformed = transformed.replace("${" + expr + "}", "${" + normalized + "}")
 
-        # 4) 普通变量缺失日志（默认优先取当前上下文；跨case用最近值兜底）
+        # 3) 普通变量缺失日志（默认优先取当前上下文；跨case用最近值兜底）
         for expr in exprs:
-            if case_ref_pattern.match(expr.strip()):
-                continue
             raw_expr = expr.strip()
             if raw_expr.startswith("【") and raw_expr.endswith("】"):
                 normalized = Executor._strip_special_wrapper(raw_expr)

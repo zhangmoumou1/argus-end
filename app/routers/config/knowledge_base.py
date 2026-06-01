@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import Depends, File, Form, UploadFile
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 
 from app.crud.config.KnowledgeBaseDao import KnowledgeBaseDao
 from app.handler.fatcory import PityResponse
@@ -17,6 +17,7 @@ from app.schema.knowledge_base import KnowledgeBaseForm
 from config import Config
 
 KNOWLEDGE_UPLOAD_ROOT = os.path.join("statics", "knowledge")
+KNOWLEDGE_CHARSET_READY = False
 KNOWLEDGE_MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 KNOWLEDGE_ALLOWED_SUFFIXES = {
     ".jpg",
@@ -59,6 +60,35 @@ def _build_knowledge_storage_path(filename: str):
     absolute_path = os.path.join(upload_dir, stored_name)
     relative_path = os.path.join(relative_dir, stored_name)
     return absolute_path, relative_path
+
+
+def _sanitize_mysql_utf8_text(value: str):
+    if value is None:
+        return value
+    text = str(value)
+    return ''.join(ch for ch in text if ord(ch) <= 0xFFFF)
+
+
+async def _ensure_knowledge_charset(session):
+    global KNOWLEDGE_CHARSET_READY
+    if KNOWLEDGE_CHARSET_READY:
+        return
+    try:
+        # 统一表字符集，避免中文/特殊字符写入报 1366
+        await session.execute(text(
+            "ALTER TABLE pity_knowledge_base CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+        ))
+    except Exception:
+        # 可能已是目标字符集或权限受限，继续做列级兜底
+        pass
+    try:
+        await session.execute(text(
+            "ALTER TABLE pity_knowledge_base MODIFY COLUMN content LONGTEXT "
+            "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '文档内容'"
+        ))
+    except Exception:
+        pass
+    KNOWLEDGE_CHARSET_READY = True
 
 
 @router.get("/knowledge/list")
@@ -123,10 +153,13 @@ async def list_public_knowledge(page: int = 1, size: int = 1000, title: str = ""
 
 @router.post("/knowledge/insert")
 async def insert_knowledge(data: KnowledgeBaseForm, user_info=Depends(Permission(Config.ADMIN))):
+    async with async_session() as session:
+        await _ensure_knowledge_charset(session)
+        await session.commit()
     model = PityKnowledgeBase(
         title=data.title.strip(),
         summary=(data.summary or "").strip(),
-        content=data.content,
+        content=_sanitize_mysql_utf8_text(data.content),
         category=(data.category or "").strip(),
         user=user_info['id']
     )
@@ -138,10 +171,14 @@ async def insert_knowledge(data: KnowledgeBaseForm, user_info=Depends(Permission
 async def update_knowledge(data: KnowledgeBaseForm, user_info=Depends(Permission(Config.ADMIN))):
     if data.id is None:
         return PityResponse.failed("id不能为空")
+    async with async_session() as session:
+        await _ensure_knowledge_charset(session)
+        await session.commit()
 
     data.title = data.title.strip()
     data.summary = (data.summary or "").strip()
     data.category = (data.category or "").strip()
+    data.content = _sanitize_mysql_utf8_text(data.content)
     ans = await KnowledgeBaseDao.update_record_by_id(user_info['id'], data, True, True)
     return PityResponse.success(PityResponse.model_to_dict(ans))
 
