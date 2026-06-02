@@ -1112,8 +1112,6 @@ async def query_file(id: int, project_id: int = None, _=Depends(Permission())):
 async def insert_file(form: FunctionalCaseFileForm, user_info=Depends(Permission())):
     stats = analyze_case_data(form.data)
     case_items = extract_case_items(form.data)
-    if stats["conflicts"]:
-        return PityResponse.failed(f"{'、'.join(stats['conflicts'])}用例冲突")
     async with async_session() as session:
         await ensure_functional_case_schema(session)
         directory_result = await session.execute(
@@ -1167,8 +1165,6 @@ async def update_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
         return PityResponse.failed("id不能为空")
     stats = analyze_case_data(form.data)
     case_items = extract_case_items(form.data)
-    if stats["conflicts"]:
-        return PityResponse.failed(f"{'、'.join(stats['conflicts'])}用例冲突")
     async with async_session() as session:
         await ensure_functional_case_schema(session)
         result = await session.execute(
@@ -1266,8 +1262,6 @@ async def ai_generate_file(form: FunctionalCaseAIGenerateForm, _=Depends(Permiss
         ai_payload = call_kimi_generate(form, ai_config)
         title, data = normalize_ai_case_data(ai_payload, form.title)
         stats = analyze_case_data(data)
-        if stats["conflicts"]:
-            return PityResponse.failed(f"{'、'.join(stats['conflicts'])}用例冲突")
         return PityResponse.success({
             "title": title,
             "data": data,
