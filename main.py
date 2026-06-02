@@ -28,6 +28,7 @@ from app.routers.performance import router as performance_router
 from app.routers.project import project
 from app.routers.request import http
 from app.routers.testcase import router as testcase_router
+from app.routers.testcase.share import router as share_router
 from app.routers.testcase.functional_case import router as functional_case_router
 from app.routers.testcase.functional_case_skill import router as functional_case_skill_router
 from app.routers.testcase.interface_manage import router as interface_manage_router
@@ -101,6 +102,7 @@ pity.include_router(operation_router, dependencies=[Depends(request_info)])
 pity.include_router(msg_router, dependencies=[Depends(request_info)])
 pity.include_router(workspace_router, dependencies=[Depends(request_info)])
 pity.include_router(performance_router, dependencies=[Depends(request_info)])
+pity.include_router(share_router)
 
 pity.mount("/statics", StaticFiles(directory="statics"), name="statics")
 

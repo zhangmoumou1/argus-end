@@ -6,7 +6,7 @@ from typing import List, TypeVar
 from types import SimpleNamespace
 
 import requests
-from fastapi import APIRouter, Depends, UploadFile, File, Request
+from fastapi import APIRouter, Depends, Query, UploadFile, File, Request
 from sqlalchemy import select, text
 
 from app.core.request import get_convertor
@@ -30,6 +30,8 @@ from app.models import async_session
 from app.models.interface_manage import PityApiEndpoint, PityApiEndpointVersion, PityApiEndpointSample, PityApiService
 from app.models.out_parameters import PityTestCaseOutParameters
 from app.models.test_case import TestCase
+from app.models.test_plan import PityTestPlan
+from app.models.project import Project
 from app.models.testcase_directory import PityTestcaseDirectory
 from app.routers import Permission, get_session
 from app.schema.constructor import ConstructorForm, ConstructorIndex
@@ -932,7 +934,7 @@ async def list_case_and_constructor(constructor_type: int, suffix: bool):
 
 
 @router.get("/report")
-async def query_report(id: int, user_info=Depends(Permission())):
+async def query_report(id: int, status: int = Query(default=None), user_info=Depends(Permission())):
     report, case_list, plan_name = await TestReportDao.query(id)
     case_ids = [int(getattr(item, "case_id", 0) or 0) for item in case_list if int(getattr(item, "case_id", 0) or 0) > 0]
     pending_map = {}
@@ -959,9 +961,24 @@ async def query_report(id: int, user_info=Depends(Permission())):
         if not getattr(item, "case_name", None):
             item.case_name = case_name_map.get(int(getattr(item, "case_id", 0) or 0), "")
         item.api_pending_update = int(pending_map.get(int(getattr(item, "case_id", 0) or 0), 0) or 0)
+    project_name = None
     if report is not None:
         report.pending_review = 1 if pending_map else 0
-    return PityResponse.success(dict(report=report, plan_name=plan_name, case_list=case_list))
+        if report.plan_id:
+            async with async_session() as session:
+                plan_row = await session.execute(
+                    select(PityTestPlan.project_id).where(PityTestPlan.id == report.plan_id, PityTestPlan.deleted_at == 0)
+                )
+                plan_result = plan_row.first()
+                if plan_result:
+                    proj_row = await session.execute(
+                        select(Project.name).where(Project.id == plan_result[0], Project.deleted_at == 0)
+                    )
+                    proj_result = proj_row.first()
+                    project_name = proj_result[0] if proj_result else None
+    if status is not None:
+        case_list = [item for item in case_list if getattr(item, "status", None) == status]
+    return PityResponse.success(dict(report=report, plan_name=plan_name, case_list=case_list, project_name=project_name))
 
 
 @router.get("/report/list")
