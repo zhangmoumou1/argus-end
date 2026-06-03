@@ -12,6 +12,8 @@ from app.middleware.RedisManager import RedisHelper
 from app.models import async_session
 from app.models.ai_model import AI_MODEL_CONFIG_KEY as DEFAULT_AI_MODEL_CONFIG_KEY
 from app.models.ai_model import AI_MODEL_DEFAULTS as DEFAULT_AI_MODEL_DEFAULTS
+from app.models.ai_model import AI_MODEL_PRESETS as DEFAULT_AI_MODEL_PRESETS
+from app.models.ai_model import AI_MODEL_PRESET_ORDER as DEFAULT_AI_MODEL_PRESET_ORDER
 from app.models.gconfig import GConfig
 from app.models.project import Project
 from app.models.user import User
@@ -22,6 +24,8 @@ from app.schema.gconfig import GConfigForm
 class GConfigDao(Mapper):
     AI_MODEL_CONFIG_KEY = DEFAULT_AI_MODEL_CONFIG_KEY
     AI_MODEL_DEFAULTS = DEFAULT_AI_MODEL_DEFAULTS
+    AI_MODEL_PRESETS = DEFAULT_AI_MODEL_PRESETS
+    AI_MODEL_PRESET_ORDER = DEFAULT_AI_MODEL_PRESET_ORDER
 
     @staticmethod
     def _value_to_text(value):
@@ -53,51 +57,127 @@ class GConfigDao(Mapper):
         return f"{value[:6]}***{value[-4:]}"
 
     @classmethod
+    def _get_ai_preset(cls, provider_type: str):
+        provider_key = str(provider_type or "").strip().lower() or "custom"
+        return deepcopy(cls.AI_MODEL_PRESETS.get(provider_key) or cls.AI_MODEL_PRESETS.get("custom") or {})
+
+    @classmethod
+    def _normalize_ai_model_item(cls, item=None, index: int = 0):
+        raw_item = item if isinstance(item, dict) else {}
+        provider_type = str(raw_item.get("provider_type") or raw_item.get("provider") or "custom").strip().lower() or "custom"
+        preset = cls._get_ai_preset(provider_type)
+        provider_name = str(raw_item.get("provider_name") or raw_item.get("name") or preset.get("provider_name") or "自定义供应商").strip() or "自定义供应商"
+        base_url = str(raw_item.get("base_url") or preset.get("base_url") or "").strip()
+        model = str(raw_item.get("model") or preset.get("model") or "").strip()
+        model_options = raw_item.get("model_options") if isinstance(raw_item.get("model_options"), list) else raw_item.get("models")
+        if not isinstance(model_options, list):
+            model_options = preset.get("model_options") or []
+        model_options = [str(v).strip() for v in model_options if str(v or "").strip()]
+        if provider_type == "deepseek":
+            model_options = ["deepseek-v4-pro" if value == "deepseek-v4" else value for value in model_options]
+            if model == "deepseek-v4":
+                model = "deepseek-v4-pro"
+        if model and model not in model_options:
+            model_options = [model] + model_options
+        model_options = list(dict.fromkeys(model_options))
+        if not model and model_options:
+            model = model_options[0]
+        item_id = str(raw_item.get("id") or f"{provider_type}_{index + 1}").strip() or f"{provider_type}_{index + 1}"
+        api_key = str(raw_item.get("api_key") or preset.get("api_key") or "").strip()
+        normalized = {
+            "id": item_id,
+            "provider_type": provider_type,
+            "provider": provider_type,
+            "provider_name": provider_name,
+            "name": provider_name,
+            "base_url": base_url,
+            "model": model,
+            "model_options": model_options,
+            "models": model_options,
+            "api_key": api_key,
+            "enabled": bool(raw_item.get("enabled")),
+        }
+        return normalized
+
+    @classmethod
     def _normalize_ai_model_config(cls, value=None):
         saved = value if isinstance(value, dict) else {}
-        saved_models = saved.get("models") if isinstance(saved.get("models"), dict) else {}
-        active_provider = str(saved.get("active_provider") or "").strip()
-        models = {}
-        for provider, default_item in cls.AI_MODEL_DEFAULTS.items():
-            saved_item = saved_models.get(provider) if isinstance(saved_models.get(provider), dict) else {}
-            item = dict(default_item)
-            item.update({k: v for k, v in saved_item.items() if v is not None})
-            item["provider"] = provider
-            item["models"] = item.get("models") if isinstance(item.get("models"), list) else default_item["models"]
-            item["models"] = [str(v).strip() for v in item["models"] if str(v or "").strip()]
-            if not item["models"]:
-                item["models"] = default_item["models"]
-            if provider == "deepseek":
-                item["models"] = ["deepseek-v4-pro" if v == "deepseek-v4" else v for v in item["models"]]
-                item["models"] = list(dict.fromkeys([*item["models"], "deepseek-v4-pro", "deepseek-v4-flash"]))
-                if item.get("model") == "deepseek-v4":
-                    item["model"] = "deepseek-v4-pro"
-            if not item.get("model"):
-                item["model"] = item["models"][0]
-            if item.get("model") not in item["models"]:
-                item["models"] = [item.get("model")] + item["models"]
-            item["enabled"] = False
-            models[provider] = item
-        if active_provider not in models:
-            active_provider = next(
-                (p for p, item in saved_models.items() if isinstance(item, dict) and item.get("enabled") and p in models),
-                "kimi",
-            )
-        for provider, item in models.items():
-            item["enabled"] = provider == active_provider
-        return {"active_provider": active_provider, "models": models}
+        providers = []
+
+        if isinstance(saved.get("providers"), list):
+            for index, item in enumerate(saved.get("providers") or []):
+                providers.append(cls._normalize_ai_model_item(item, index))
+            active_model_id = str(saved.get("active_model_id") or "").strip()
+        else:
+            saved_models = saved.get("models") if isinstance(saved.get("models"), dict) else {}
+            active_provider = str(saved.get("active_provider") or "").strip().lower()
+            ordered_keys = [
+                *[key for key in cls.AI_MODEL_PRESET_ORDER if key in saved_models],
+                *[key for key in saved_models.keys() if key not in cls.AI_MODEL_PRESET_ORDER],
+            ]
+            if not ordered_keys:
+                ordered_keys = [key for key in cls.AI_MODEL_PRESET_ORDER if key != "custom"]
+            for index, provider in enumerate(ordered_keys):
+                saved_item = saved_models.get(provider) if isinstance(saved_models.get(provider), dict) else {}
+                legacy_item = dict(saved_item)
+                legacy_item.setdefault("provider_type", provider if provider in cls.AI_MODEL_PRESETS else "custom")
+                legacy_item.setdefault("provider_name", legacy_item.get("name") or provider)
+                providers.append(cls._normalize_ai_model_item(legacy_item, index))
+            active_model_id = ""
+            if active_provider:
+                matched = next((item for item in providers if item.get("provider_type") == active_provider), None)
+                if matched:
+                    active_model_id = matched.get("id") or ""
+
+        if not providers:
+            providers = [cls._normalize_ai_model_item({"provider_type": "kimi"}, 0)]
+
+        current_active_id = str(saved.get("active_model_id") or "").strip()
+        if current_active_id:
+            active_model_id = current_active_id
+        if not active_model_id:
+            matched_enabled = next((item for item in providers if item.get("enabled")), None)
+            active_model_id = str((matched_enabled or providers[0]).get("id") or "")
+        if not any(str(item.get("id") or "") == active_model_id for item in providers):
+            active_model_id = str(providers[0].get("id") or "")
+
+        for item in providers:
+            item["enabled"] = str(item.get("id") or "") == active_model_id
+
+        return {
+            "active_model_id": active_model_id,
+            "providers": providers,
+        }
 
     @classmethod
     def _public_ai_model_config(cls, config):
         normalized = cls._normalize_ai_model_config(config)
-        public_config = {"active_provider": normalized["active_provider"], "models": {}}
-        for provider, item in normalized["models"].items():
+        public_config = {
+            "active_model_id": normalized["active_model_id"],
+            "providers": [],
+        }
+        for item in normalized["providers"]:
             public_item = dict(item)
             public_item["api_key_masked"] = cls._mask_api_key(public_item.get("api_key"))
             public_item["has_api_key"] = bool(public_item.get("api_key"))
             public_item.pop("api_key", None)
-            public_config["models"][provider] = public_item
+            public_config["providers"].append(public_item)
         return public_config
+
+    @classmethod
+    def get_ai_model_provider_options(cls):
+        options = []
+        for provider_type in cls.AI_MODEL_PRESET_ORDER:
+            preset = cls._get_ai_preset(provider_type)
+            options.append({
+                "provider_type": provider_type,
+                "provider_name": str(preset.get("provider_name") or provider_type).strip() or provider_type,
+                "base_url": str(preset.get("base_url") or "").strip(),
+                "model": str(preset.get("model") or "").strip(),
+                "model_options": [str(v).strip() for v in (preset.get("model_options") or []) if str(v or "").strip()],
+                "builtin": bool(preset.get("builtin")),
+            })
+        return options
 
     @classmethod
     async def get_ai_model_config(cls, include_secret: bool = False):
@@ -117,36 +197,40 @@ class GConfigDao(Mapper):
     @classmethod
     async def get_active_ai_model_config(cls):
         config = await cls.get_ai_model_config(include_secret=True)
-        provider = config.get("active_provider") or "kimi"
-        model_config = (config.get("models") or {}).get(provider)
+        active_model_id = str(config.get("active_model_id") or "").strip()
+        model_config = next(
+            (item for item in (config.get("providers") or []) if str(item.get("id") or "") == active_model_id),
+            None,
+        )
         if not model_config or not model_config.get("api_key"):
-            raise Exception("请先到后台管理-系统设置配置并启用AI模型")
+            raise Exception("请先到后台管理-模型配置配置并启用AI模型")
         return model_config
 
     @classmethod
     @RedisHelper.up_cache("dao", "list_gconfig", "list_gconfig_page")
     async def update_ai_model_config(cls, form: dict, user_id: int):
         current = await cls.get_ai_model_config(include_secret=True)
-        incoming_models = form.get("models") if isinstance(form.get("models"), dict) else {}
-        active_provider = str(form.get("active_provider") or current.get("active_provider") or "kimi").strip()
-        if active_provider not in cls.AI_MODEL_DEFAULTS:
-            raise Exception("启用模型不存在")
-        next_config = cls._normalize_ai_model_config(current)
-        for provider, item in incoming_models.items():
-            if provider not in next_config["models"] or not isinstance(item, dict):
-                continue
-            target = next_config["models"][provider]
-            for key in ("base_url", "model", "name"):
-                if item.get(key) is not None:
-                    target[key] = str(item.get(key) or "").strip()
-            if isinstance(item.get("models"), list):
-                target["models"] = [str(v).strip() for v in item.get("models") if str(v or "").strip()]
-            if item.get("api_key") is not None and str(item.get("api_key")).strip() != "":
-                target["api_key"] = str(item.get("api_key")).strip()
-            if target.get("model") and target.get("model") not in target.get("models", []):
-                target["models"] = [target["model"]] + target.get("models", [])
-        next_config["active_provider"] = active_provider
-        next_config = cls._normalize_ai_model_config(next_config)
+        incoming_providers = form.get("providers") if isinstance(form.get("providers"), list) else current.get("providers") or []
+        active_model_id = str(form.get("active_model_id") or current.get("active_model_id") or "").strip()
+        current_provider_map = {
+            str(item.get("id") or ""): item
+            for item in (current.get("providers") or [])
+            if isinstance(item, dict)
+        }
+
+        next_config = cls._normalize_ai_model_config({
+            "active_model_id": active_model_id,
+            "providers": incoming_providers,
+        })
+        for item in next_config["providers"]:
+            current_item = current_provider_map.get(str(item.get("id") or ""))
+            if current_item and not str(item.get("api_key") or "").strip():
+                item["api_key"] = str(current_item.get("api_key") or "").strip()
+
+        if not next_config["providers"]:
+            raise Exception("请至少保留一个模型配置")
+        if not next_config.get("active_model_id"):
+            raise Exception("请先启用一个模型配置")
         async with async_session() as session:
             async with session.begin():
                 result = await session.execute(

@@ -4,8 +4,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
-import sys
 import time
 from copy import deepcopy
 from datetime import datetime
@@ -23,7 +21,7 @@ from app.models import async_session
 from app.models.functional_case import PityFunctionalCaseSkillDoc, PityFunctionalCaseSkillTask
 from app.models.user import User
 from app.routers import Permission
-from app.schema.functional_case import FunctionalCaseAIGenerateForm, FunctionalCaseSkillDocForm, FunctionalCaseSkillTaskForm
+from app.schema.functional_case import FunctionalCaseSkillDocForm, FunctionalCaseSkillTaskForm
 from app.utils.logger import Log
 from config import Config
 
@@ -37,9 +35,6 @@ AI_INSTRUCTION_LIMIT = 6000
 AI_IMAGE_LIMIT = 6
 AI_IMAGE_DATA_URL_LIMIT = 2_000_000
 SKILL_TASK_SCHEMA_READY = False
-REVIEW_MAX_ROUNDS = 2
-
-
 def serialize_model(model):
     return PityResponse.model_to_dict(model)
 
@@ -82,18 +77,6 @@ def truncate_ai_text(value, limit):
     return f"{text_value[:limit]}\n\n[内容已截断，共{len(text_value)}字符，仅保留前{limit}字符]"
 
 
-def compact_ai_images(images):
-    compacted = []
-    for image in (images or [])[:AI_IMAGE_LIMIT]:
-        image_value = str(image or "").strip()
-        if not image_value:
-            continue
-        if image_value.startswith("data:image") and len(image_value) > AI_IMAGE_DATA_URL_LIMIT:
-            continue
-        compacted.append(image_value)
-    return compacted
-
-
 def preview_text(value, limit=300):
     text_value = str(value or "").strip()
     if len(text_value) <= limit:
@@ -122,31 +105,229 @@ def get_builtin_context_text():
     return "\n\n".join(parts)
 
 
-def build_ai_prompt_content(form: FunctionalCaseAIGenerateForm, extra_context_text=""):
-    requirement_text = truncate_ai_text(form.requirement_text, AI_TEXT_LIMIT)
-    instruction_text = truncate_ai_text(form.instruction_text, AI_INSTRUCTION_LIMIT)
-    images = compact_ai_images(form.images or [])
-    text_parts = [
+def summarize_ai_images(images):
+    summary = []
+    for index, image in enumerate(images or [], start=1):
+        image_value = str(image or "")
+        image_type = "data_url" if image_value.startswith("data:image") else "url"
+        summary.append({
+            "index": index,
+            "type": image_type,
+            "length": len(image_value),
+        })
+    return summary
+
+
+def summarize_skill_task_request(task_payload, content):
+    text_blocks = [
+        item.get("text") or ""
+        for item in content
+        if isinstance(item, dict) and item.get("type") == "text"
+    ]
+    sent_images = [
+        item.get("image_url", {}).get("url")
+        for item in content
+        if isinstance(item, dict) and item.get("type") == "image_url"
+    ]
+    return {
+        "project_id": task_payload.get("project_id"),
+        "title": task_payload.get("title"),
+        "requirement_length": len(str(task_payload.get("requirement_text") or "")),
+        "instruction_length": len(str(task_payload.get("instruction_text") or "")),
+        "requirement_group_count": len(task_payload.get("requirement_items") or []),
+        "doc_count": len(task_payload.get("doc_ids") or []),
+        "sent_image_count": len(sent_images),
+        "prompt_text_length": sum(len(block) for block in text_blocks),
+        "prompt_text_preview": preview_text("\n\n".join(text_blocks), 1000),
+        "images": summarize_ai_images(sent_images),
+    }
+
+
+def provider_supports_image_content(provider, model=""):
+    provider_value = str(provider or "").strip().lower()
+    model_value = str(model or "").strip().lower()
+    if provider_value == "kimi":
+        return True
+    if provider_value == "qwen":
+        return True
+    if provider_value == "deepseek":
+        return False
+    if any(keyword in model_value for keyword in ("vision", "vl", "omni")):
+        return True
+    return False
+
+
+def flatten_prompt_content_to_text(content, provider, model):
+    lines = []
+    image_count = 0
+    omitted_image_count = 0
+    for block in content or []:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "").strip().lower()
+        if block_type == "text":
+            text_value = str(block.get("text") or "").strip()
+            if text_value:
+                lines.append(text_value)
+            continue
+        if block_type != "image_url":
+            continue
+        image_count += 1
+        image_url = str((block.get("image_url") or {}).get("url") or "").strip()
+        if not image_url:
+            continue
+        if image_url.startswith("data:image"):
+            omitted_image_count += 1
+            lines.append(
+                f"[需求截图{image_count}：已上传图片，但当前模型 {provider}/{model} 不支持 image_url 输入，无法直接读取该截图内容。]"
+            )
+        else:
+            lines.append(f"[需求截图{image_count} 链接：{image_url}]")
+    if image_count:
+        lines.append(
+            f"注意：当前模型 {provider}/{model} 按文本模式调用。"
+            f"{' 其中 ' + str(omitted_image_count) + ' 张 base64 截图未能直接发送给模型。' if omitted_image_count else ''}"
+            " 如需直接识别截图，请切换到支持视觉输入的供应商/模型。"
+        )
+    return "\n\n".join([item for item in lines if str(item or "").strip()])
+
+
+def is_balance_error(status_code, detail):
+    try:
+        detail_text = json.dumps(detail, ensure_ascii=False)
+    except Exception:
+        detail_text = str(detail or "")
+    detail_lower = detail_text.lower()
+    return (
+        int(status_code or 0) == 402
+        or "insufficient balance" in detail_lower
+        or "余额不足" in detail_text
+        or "insufficient_balance" in detail_lower
+    )
+
+
+def build_ai_error(provider, model, status_code, detail):
+    if is_balance_error(status_code, detail):
+        return ValueError(f"AI模型({provider}/{model})余额不足: {detail}")
+    return ValueError(f"AI模型({provider}/{model})调用失败: {detail}")
+
+
+def order_ai_model_configs(config):
+    models = (config or {}).get("models") or {}
+    active_provider = str((config or {}).get("active_provider") or "kimi").strip()
+    ordered = []
+    seen = set()
+    for provider in [active_provider, *models.keys()]:
+        provider_key = str(provider or "").strip()
+        if not provider_key or provider_key in seen:
+            continue
+        seen.add(provider_key)
+        item = models.get(provider_key) if isinstance(models.get(provider_key), dict) else {}
+        if not item:
+            continue
+        api_key = str(item.get("api_key") or "").strip()
+        base_url = str(item.get("base_url") or "").strip()
+        model = str(item.get("model") or "").strip()
+        if not api_key or not base_url or not model:
+            continue
+        ordered.append(item)
+    return ordered
+
+
+def build_skill_task_prompt_content(task_payload, docs):
+    title = str(task_payload.get("title") or "功能用例").strip() or "功能用例"
+    requirement_text = truncate_ai_text(task_payload.get("requirement_text"), AI_TEXT_LIMIT)
+    instruction_text = truncate_ai_text(task_payload.get("instruction_text"), AI_INSTRUCTION_LIMIT)
+    extra_context_text = build_extra_context(docs)
+    requirement_items = task_payload.get("requirement_items") or []
+    content = []
+    remaining_image_slots = AI_IMAGE_LIMIT
+
+    intro_lines = [
         "你是资深测试分析师，请根据需求材料生成功能测试用例脑图。",
-        f"当前用例标题：{form.title}",
-        "请严格只返回 JSON，不要返回 Markdown、解释、注释、代码块标记。",
-        (
-            "JSON 结构必须为："
-            '{"title":"用例标题","data":{"text":"根节点"},"children":[{"data":{"text":"节点文本","icon":["priority_1","progress_3"],"note":"可选备注","tag":["可选标签"]},"children":[]}]}'
-        ),
-        "约束：1. 所有节点都必须使用 data.text。2. 真正测试用例节点请用 icon 中的 priority_1 到 priority_9 标记优先级。3. children 必须始终返回数组。4. 文本使用中文。5. 覆盖正常、异常、边界场景。6. 请尽量按 模块-功能-子功能-字段-用例名称-预期 的层级组织。",
+        f"当前用例标题：{title}",
+        "请严格遵循技能文档中的输出结构，只输出最终 Markdown，不要输出解释、分析过程、注释或代码块标记。",
+        "请尽量按 模块-功能-子功能-字段-用例名称-预期 的层级组织内容，覆盖正常、异常、边界场景。",
+        "用例名称行请保留优先级标记，如 P0/P1/P2，便于系统自动识别优先级。",
     ]
     if extra_context_text:
-        text_parts.append(f"补充技能与规范材料：\n{truncate_ai_text(extra_context_text, 16000)}")
+        intro_lines.append(f"补充技能与规范材料：\n{truncate_ai_text(extra_context_text, 24000)}")
     if requirement_text:
-        text_parts.append(f"需求描述：\n{requirement_text}")
+        intro_lines.append(f"需求总述：\n{requirement_text}")
     if instruction_text:
-        text_parts.append(f"额外生成要求：\n{instruction_text}")
-    if images:
-        text_parts.append(f"还有 {len(images)} 张需求截图，请结合截图内容生成。")
-    content = [{"type": "text", "text": "\n\n".join(text_parts)}]
-    for image in images:
-        content.append({"type": "image_url", "image_url": {"url": image}})
+        intro_lines.append(f"额外生成要求：\n{instruction_text}")
+    if requirement_items:
+        intro_lines.append("以下按需求组提供材料。每组的说明、设计链接和图片属于同一上下文，禁止跨组混用。")
+    content.append({"type": "text", "text": "\n\n".join(intro_lines)})
+
+    normalized_items = []
+    for index, item in enumerate(requirement_items, start=1):
+        item_title = str(item.get("title") or "").strip() or f"需求组{index}"
+        item_text = truncate_ai_text(item.get("text"), AI_TEXT_LIMIT)
+        item_links = [str(link or "").strip() for link in (item.get("design_links") or []) if str(link or "").strip()]
+        raw_images = item.get("images") or []
+        accepted_images = []
+        skipped_image_count = 0
+        for image in raw_images:
+            image_value = str(image or "").strip()
+            if not image_value:
+                continue
+            if image_value.startswith("data:image") and len(image_value) > AI_IMAGE_DATA_URL_LIMIT:
+                skipped_image_count += 1
+                continue
+            if remaining_image_slots <= 0:
+                skipped_image_count += 1
+                continue
+            accepted_images.append(image_value)
+            remaining_image_slots -= 1
+        if not item_title and not item_text and not item_links and not accepted_images:
+            continue
+        normalized_items.append({
+            "title": item_title,
+            "text": item_text,
+            "design_links": item_links,
+            "images": accepted_images,
+            "skipped_image_count": skipped_image_count,
+        })
+
+    if normalized_items:
+        for index, item in enumerate(normalized_items, start=1):
+            lines = [
+                f"需求组{index}标题：{item['title']}",
+                f"需求组{index}说明：\n{item['text'] or '无'}",
+                f"需求组{index}设计链接：{'；'.join(item['design_links']) if item['design_links'] else '无'}",
+            ]
+            if item["images"]:
+                lines.append(f"下面紧跟 {len(item['images'])} 张属于需求组{index} 的截图，请结合当前需求组内容理解。")
+            if item["skipped_image_count"]:
+                lines.append(f"注意：需求组{index} 有 {item['skipped_image_count']} 张图片因数量或体积限制未发送。")
+            content.append({"type": "text", "text": "\n\n".join(lines)})
+            for image in item["images"]:
+                content.append({"type": "image_url", "image_url": {"url": image}})
+    else:
+        images = []
+        skipped_image_count = 0
+        for image in task_payload.get("images") or []:
+            image_value = str(image or "").strip()
+            if not image_value:
+                continue
+            if image_value.startswith("data:image") and len(image_value) > AI_IMAGE_DATA_URL_LIMIT:
+                skipped_image_count += 1
+                continue
+            if remaining_image_slots <= 0:
+                skipped_image_count += 1
+                continue
+            images.append(image_value)
+            remaining_image_slots -= 1
+        if images or skipped_image_count:
+            lines = ["以下为补充需求截图材料。"]
+            if images:
+                lines.append(f"下面紧跟 {len(images)} 张需求截图，请结合总体需求理解。")
+            if skipped_image_count:
+                lines.append(f"注意：有 {skipped_image_count} 张图片因数量或体积限制未发送。")
+            content.append({"type": "text", "text": "\n\n".join(lines)})
+            for image in images:
+                content.append({"type": "image_url", "image_url": {"url": image}})
     return content
 
 
@@ -180,25 +361,80 @@ def build_loggable_kimi_payload(payload):
     return cloned
 
 
-def extract_json_object(text_value):
-    text_value = str(text_value or "").strip()
-    if not text_value:
-        raise ValueError("AI 未返回内容")
-    try:
-        return json.loads(text_value)
-    except Exception:
-        pass
-    fenced = re.findall(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text_value, re.IGNORECASE)
-    for item in fenced:
-        try:
-            return json.loads(item)
-        except Exception:
+def normalize_model_text(text_value):
+    return str(text_value or "").strip().replace("\ufeff", "")
+
+
+def strip_fenced_markdown(text_value):
+    matched_blocks = re.findall(r"```(?:markdown|md)?\s*([\s\S]*?)\s*```", text_value, re.IGNORECASE)
+    if matched_blocks:
+        joined = "\n\n".join([item.strip() for item in matched_blocks if str(item or "").strip()])
+        if joined.strip():
+            return joined.strip()
+    return text_value
+
+
+def extract_priority_icons(text_value):
+    priority_match = re.search(r"[（(]\s*P\s*([0-9])\s*[）)]", text_value, re.IGNORECASE)
+    if not priority_match:
+        priority_match = re.search(r"\bP\s*([0-9])\b", text_value, re.IGNORECASE)
+    if not priority_match:
+        return []
+    priority_level = max(0, min(8, int(priority_match.group(1) or 0)))
+    return [f"priority_{priority_level + 1}"]
+
+
+def clean_outline_node_text(text_value):
+    text = str(text_value or "").strip()
+    text = re.sub(r"^[\-\*\+]\s+", "", text)
+    text = re.sub(r"^\d+\.\s+", "", text)
+    text = re.sub(r"[（(]\s*P\s*[0-9]\s*[）)]", "", text, flags=re.IGNORECASE)
+    return text.strip() or "未命名节点"
+
+
+def parse_markdown_outline_to_case_data(text_value, fallback_title):
+    normalized_text = normalize_model_text(strip_fenced_markdown(text_value)).replace("\r\n", "\n")
+    lines = []
+    for raw_line in normalized_text.split("\n"):
+        if not str(raw_line or "").strip():
             continue
-    start = text_value.find("{")
-    end = text_value.rfind("}")
-    if start >= 0 and end > start:
-        return json.loads(text_value[start:end + 1])
-    raise ValueError("AI 返回结果不是有效 JSON")
+        normalized_line = raw_line.replace("\t", "  ")
+        if not re.match(r"^\s*([\-\*\+]|\d+\.)\s+", normalized_line):
+            continue
+        indent = re.match(r"^\s*", normalized_line).group(0)
+        level = max(0, len(indent) // 2)
+        lines.append({
+            "level": level,
+            "text": clean_outline_node_text(normalized_line),
+            "icons": extract_priority_icons(normalized_line),
+        })
+
+    if not lines:
+        raise ValueError("AI 未返回可识别的 Markdown 大纲")
+
+    root_title = str(fallback_title or "AI生成功能用例").strip() or "AI生成功能用例"
+    root_node = {"data": {"text": root_title}, "children": []}
+    stack = [{"level": -1, "node": root_node}]
+
+    for item in lines:
+        node_data = {"text": item["text"]}
+        if item["icons"]:
+            node_data["icon"] = item["icons"]
+        node = {"data": node_data, "children": []}
+        while len(stack) > 1 and stack[-1]["level"] >= item["level"]:
+            stack.pop()
+        parent = stack[-1]["node"]
+        parent["children"].append(node)
+        stack.append({"level": item["level"], "node": node})
+
+    return root_title, root_node
+
+
+def extract_model_result_content(text_value):
+    normalized_text = normalize_model_text(text_value)
+    if not normalized_text:
+        raise ValueError("AI 未返回内容")
+    return strip_fenced_markdown(normalized_text)
 
 
 def normalize_ai_node(node):
@@ -218,6 +454,8 @@ def normalize_ai_node(node):
 
 
 def normalize_ai_case_data(payload, fallback_title):
+    if isinstance(payload, str):
+        return parse_markdown_outline_to_case_data(payload, fallback_title)
     if not isinstance(payload, dict):
         raise ValueError("AI 返回结果格式不正确")
     title = str(payload.get("title") or fallback_title or "AI生成功能用例").strip() or "AI生成功能用例"
@@ -251,115 +489,116 @@ def analyze_case_data(data):
     return {"case_count": case_count}
 
 
-def call_kimi_generate(form: FunctionalCaseAIGenerateForm, extra_context_text=""):
-    if not Config.KIMI_API_KEY:
-        raise ValueError("未配置 Kimi API Key")
-    prompt_content = build_ai_prompt_content(form, extra_context_text=extra_context_text)
+def call_active_model_generate(task_payload, docs, ai_config):
+    provider = ai_config.get("provider") or "kimi"
+    model = ai_config.get("model") or ""
+    base_url = str(ai_config.get("base_url") or "").rstrip("/")
+    api_key = str(ai_config.get("api_key") or "").strip()
+    if not api_key:
+        raise ValueError("未配置 AI API Key")
+    if not base_url:
+        raise ValueError("未配置 AI Base URL")
+    if not model:
+        raise ValueError("未配置 AI 模型名称")
+
+    prompt_content = build_skill_task_prompt_content(task_payload, docs)
+    request_summary = summarize_skill_task_request(task_payload, prompt_content)
+    supports_image_content = provider_supports_image_content(provider, model)
+    user_content = prompt_content if supports_image_content else flatten_prompt_content_to_text(prompt_content, provider, model)
     request_payload = {
-        "model": Config.KIMI_MODEL,
+        "model": model,
         "temperature": 1,
         "messages": [
-            {"role": "system", "content": "你只输出符合要求的 JSON，对象内不要出现 markdown 代码块标记。"},
-            {"role": "user", "content": prompt_content},
+            {
+                "role": "system",
+                "content": "你是资深测试分析师。请严格遵循输入中的技能文档和规范文档，只输出最终 Markdown 大纲，不要输出解释、分析过程、注释或代码块标记。",
+            },
+            {
+                "role": "user",
+                "content": user_content,
+            },
         ],
     }
-    logger.info(f"Kimi skill payload: {json.dumps(build_loggable_kimi_payload(request_payload), ensure_ascii=False)}")
-    started_at = time.perf_counter()
-    response = requests.post(
-        f"{Config.KIMI_BASE_URL}/chat/completions",
-        headers={"Authorization": f"Bearer {Config.KIMI_API_KEY}", "Content-Type": "application/json"},
-        json=request_payload,
-        timeout=600,
+    loggable_payload = build_loggable_kimi_payload(request_payload)
+    logger.info(f"functional skill task ai provider={provider}, model={model}, base_url={base_url}")
+    logger.info(
+        f"functional skill task ai request summary provider={provider}, model={model}, "
+        f"summary={json.dumps(request_summary, ensure_ascii=False)}"
     )
+    logger.info(
+        f"functional skill task ai capability provider={provider}, model={model}, "
+        f"supports_image_content={supports_image_content}"
+    )
+    logger.info(
+        f"functional skill task ai request payload provider={provider}, model={model}, "
+        f"payload={json.dumps(loggable_payload, ensure_ascii=False)}"
+    )
+    started_at = time.perf_counter()
+    try:
+        response = requests.post(
+            f"{base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=request_payload,
+            timeout=600,
+        )
+    except requests.Timeout as exc:
+        elapsed = round(time.perf_counter() - started_at, 2)
+        logger.warning(
+            f"functional skill task ai timeout provider={provider}, model={model}, elapsed={elapsed}s, "
+            f"summary={json.dumps(request_summary, ensure_ascii=False)}"
+        )
+        raise ValueError(f"AI模型({provider}/{model})请求超时({elapsed}s)，请减少图片数量或缩小需求内容后重试") from exc
+    except requests.RequestException as exc:
+        elapsed = round(time.perf_counter() - started_at, 2)
+        logger.error(
+            f"functional skill task ai request failed provider={provider}, model={model}, elapsed={elapsed}s, "
+            f"summary={json.dumps(request_summary, ensure_ascii=False)}, error={exc}"
+        )
+        raise ValueError(f"AI模型({provider}/{model})请求失败({elapsed}s): {exc}") from exc
     elapsed = round(time.perf_counter() - started_at, 2)
-    logger.info(f"Kimi skill status={response.status_code}, elapsed={elapsed}s, preview={preview_text(response.text, 1000)}")
+    logger.info(
+        f"functional skill task ai response provider={provider}, model={model}, status={response.status_code}, "
+        f"elapsed={elapsed}s, body_preview={preview_text(response.text, 1000)}"
+    )
     if response.status_code >= 400:
         try:
             detail = response.json()
         except Exception:
             detail = response.text
-        raise ValueError(f"Kimi 调用失败: {detail}")
+        raise build_ai_error(provider, model, response.status_code, detail)
     payload = response.json()
     choices = payload.get("choices") or []
     if not choices:
-        raise ValueError("Kimi 未返回可用结果")
+        raise ValueError(f"AI模型({provider}/{model})未返回可用结果")
     message = choices[0].get("message") or {}
     content = message.get("content")
     if isinstance(content, list):
         text_parts = [item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"]
         content = "\n".join(text_parts)
     if not isinstance(content, str):
-        raise ValueError("Kimi 返回内容格式不支持")
-    return extract_json_object(content)
+        raise ValueError(f"AI模型({provider}/{model})返回内容格式不支持")
+    return provider, model, extract_model_result_content(content)
 
 
-def call_kimi_json_prompt(system_prompt, user_prompt, temperature=1):
-    if not Config.KIMI_API_KEY:
-        raise ValueError("未配置 Kimi API Key")
-    request_payload = {
-        "model": Config.KIMI_MODEL,
-        "temperature": temperature,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    }
-    response = requests.post(
-        f"{Config.KIMI_BASE_URL}/chat/completions",
-        headers={"Authorization": f"Bearer {Config.KIMI_API_KEY}", "Content-Type": "application/json"},
-        json=request_payload,
-        timeout=600,
+async def generate_with_fallback(task_payload, docs):
+    ai_config = await GConfigDao.get_active_ai_model_config()
+    loop = asyncio.get_running_loop()
+    provider = str(ai_config.get("provider") or "").strip() or "unknown"
+    model = str(ai_config.get("model") or "").strip() or "unknown"
+    logger.info(
+        f"functional skill task ai attempt provider={provider}, model={model}, "
+        f"base_url={ai_config.get('base_url')}"
     )
-    if response.status_code >= 400:
-        try:
-            detail = response.json()
-        except Exception:
-            detail = response.text
-        raise ValueError(f"Kimi 调用失败: {detail}")
-    payload = response.json()
-    choices = payload.get("choices") or []
-    if not choices:
-        raise ValueError("Kimi 未返回可用结果")
-    content = (choices[0].get("message") or {}).get("content")
-    if isinstance(content, list):
-        text_parts = [item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"]
-        content = "\n".join(text_parts)
-    return extract_json_object(content)
-
-
-def call_claude_json_prompt(system_prompt, user_prompt, temperature=0.2):
-    api_key = getattr(Config, "CLAUDE_API_KEY", "") or os.getenv("CLAUDE_API_KEY", "")
-    base_url = getattr(Config, "CLAUDE_BASE_URL", "") or os.getenv("CLAUDE_BASE_URL", "https://api.anthropic.com/v1")
-    model = getattr(Config, "CLAUDE_MODEL", "") or os.getenv("CLAUDE_MODEL", "claude-3-7-sonnet-latest")
-    if not api_key:
-        raise ValueError("未配置 Claude API Key")
-    payload = {
-        "model": model,
-        "max_tokens": 8192,
-        "temperature": temperature,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": user_prompt}],
-    }
-    response = requests.post(
-        f"{base_url}/messages",
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=600,
+    return await loop.run_in_executor(
+        None,
+        call_active_model_generate,
+        task_payload,
+        docs,
+        ai_config,
     )
-    if response.status_code >= 400:
-        try:
-            detail = response.json()
-        except Exception:
-            detail = response.text
-        raise ValueError(f"Claude 调用失败: {detail}")
-    body = response.json()
-    content = body.get("content") or []
-    text_parts = [item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"]
-    return extract_json_object("\n".join(text_parts))
 
 
 def ensure_dir(path):
@@ -531,309 +770,6 @@ def build_extra_context(docs):
     return "\n\n".join(parts)
 
 
-def build_review_context(task_payload, docs):
-    return "\n\n".join(filter(None, [
-        get_builtin_context_text(),
-        "\n\n".join([f"用户文档[{doc['doc_type']}]-{doc['title']}：\n{doc['content']}" for doc in docs]),
-        f"需求描述：\n{task_payload.get('requirement_text') or ''}",
-        f"额外要求：\n{task_payload.get('instruction_text') or ''}",
-    ]))
-
-
-def review_case_payload(case_title, case_data, task_payload, docs):
-    review_context = build_review_context(task_payload, docs)
-    user_prompt = (
-        "请你作为功能测试用例评审专家，对当前测试用例进行审查。\n\n"
-        "要求：\n"
-        "1. 结合需求、模板、规范、用户技能文档审查覆盖度、结构合理性、优先级和异常场景。\n"
-        "2. 如果不通过，请直接给出修正后的 JSON 用例树 revised_case。\n"
-        "3. 只返回 JSON。\n\n"
-        "返回格式："
-        '{"passed":true,"summary":"通过/不通过原因","issues":["问题1"],"revised_case":{"title":"可选","data":{"text":"根节点"},"children":[]}}\n\n'
-        f"审查材料：\n{truncate_ai_text(review_context, 24000)}\n\n"
-        f"当前用例标题：{case_title}\n"
-        f"当前用例 JSON：\n{json.dumps(case_data, ensure_ascii=False)}"
-    )
-    system_prompt = "你是严格的测试用例评审专家，只返回 JSON，不返回 Markdown。"
-    api_key = getattr(Config, "CLAUDE_API_KEY", "") or os.getenv("CLAUDE_API_KEY", "")
-    provider = "claude" if api_key else "kimi"
-    payload = call_claude_json_prompt(system_prompt, user_prompt) if api_key else call_kimi_json_prompt(system_prompt, user_prompt)
-    return provider, payload
-
-
-def fix_case_payload(case_title, case_data, review_payload, task_payload, docs):
-    fix_context = build_review_context(task_payload, docs)
-    issues_text = "\n".join([f"- {item}" for item in (review_payload.get("issues") or [])])
-    user_prompt = (
-        "请根据评审问题修正功能测试用例脑图，返回修正后的 JSON。\n\n"
-        "返回格式："
-        '{"title":"用例标题","data":{"text":"根节点"},"children":[]}\n\n'
-        f"需求与规范材料：\n{truncate_ai_text(fix_context, 24000)}\n\n"
-        f"当前标题：{case_title}\n"
-        f"当前用例 JSON：\n{json.dumps(case_data, ensure_ascii=False)}\n\n"
-        f"评审问题：\n{issues_text or '- 无'}"
-    )
-    payload = call_kimi_json_prompt("你是测试用例修正助手，只返回 JSON。", user_prompt, temperature=1)
-    return payload
-
-
-def markdown_lines_from_node(node, depth=0):
-    text_value = str((node.get("data") or {}).get("text") or "未命名节点").strip() or "未命名节点"
-    prefix = "  " * depth
-    lines = [f"{prefix}- {text_value}"]
-    for child in node.get("children") or []:
-        lines.extend(markdown_lines_from_node(child, depth + 1))
-    return lines
-
-
-def write_markdown_from_tree(root_node, title, output_path):
-    root = {"data": {"text": title}, "children": root_node.get("children") or []}
-    lines = markdown_lines_from_node(root)
-    write_text(output_path, "\n".join(lines))
-
-
-def extract_priority_icons(text_value):
-    match = re.search(r"[（(](P[0-2])[）)]", str(text_value or ""), re.IGNORECASE)
-    if not match:
-        return []
-    priority = match.group(1).upper()
-    mapping = {"P0": "priority_1", "P1": "priority_2", "P2": "priority_3"}
-    icon = mapping.get(priority)
-    return [icon] if icon else []
-
-
-def parse_markdown_case_tree(markdown_text, fallback_title):
-    roots = []
-    stack = []
-    for raw_line in str(markdown_text or "").splitlines():
-        if not raw_line.strip():
-            continue
-        stripped = raw_line.lstrip(" ")
-        if not stripped.startswith("- "):
-            continue
-        indent = len(raw_line) - len(stripped)
-        text_value = stripped[2:].strip() or "未命名节点"
-        node = {"data": {"text": text_value}, "children": []}
-        icons = extract_priority_icons(text_value)
-        if icons:
-            node["data"]["icon"] = icons
-        while stack and stack[-1][0] >= indent:
-            stack.pop()
-        if stack:
-            stack[-1][1]["children"].append(node)
-        else:
-            roots.append(node)
-        stack.append((indent, node))
-    if not roots:
-        raise ValueError("未从 Markdown 中解析到有效的用例树")
-    title = str(fallback_title or "功能用例").strip() or "功能用例"
-    return title, {"data": {"text": title}, "children": roots}
-
-
-def build_claude_code_prompt(task_payload, docs, task_dir):
-    title = str(task_payload.get("title") or "功能用例").strip() or "功能用例"
-    requirement_text = str(task_payload.get("requirement_text") or "").strip()
-    instruction_text = str(task_payload.get("instruction_text") or "").strip()
-    requirement_items = task_payload.get("requirement_items") or []
-    builtin_context = get_builtin_context_text()
-    image_files = []
-    requirement_dir = os.path.join(task_dir, "需求文档")
-    if os.path.isdir(requirement_dir):
-        for file_name in sorted(os.listdir(requirement_dir)):
-            lower_name = file_name.lower()
-            if lower_name.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")):
-                image_files.append(os.path.join(requirement_dir, file_name))
-
-    prompt_lines = [
-        "你当前位于一个测试用例需求目录。",
-        "注意：由于本地文件加密环境影响，下面已经直接提供了需求正文、规范与技能的明文内容。",
-        "对于 Markdown 和文本材料，请优先使用本次输入中的明文内容，不要依赖重新读取本地 md 文件。",
-        "对于需求截图，请继续读取本地 需求文档 目录下的图片文件。",
-        "",
-        f"当前测试用例标题：{title}",
-        "",
-        "请完成以下任务：",
-        "1. 基于下方给出的需求正文、规范材料、技能材料，以及本地图片文件，生成或覆盖当前目录下的 功能测试用例.md。",
-        "2. 生成完成后，依据下方给出的评审要求进行自审。",
-        "3. 若发现问题，请直接修正 功能测试用例.md，直到结果可交付。",
-        "4. 最终只保留一个可交付的 功能测试用例.md。",
-        "",
-        "关键理解要求：",
-        "1. 需求文档目录下的 需求组_*.md 中，需求说明、设计链接、关联图片属于同一组上下文，必须结合理解。",
-        "2. 不要把不同需求组的说明、图片、链接混用。",
-        "3. 若某需求组只有图片没有说明，请根据图片中可观察到的页面结构和交互提炼测试点。",
-        "4. 若某需求组只有说明没有图片，请按说明生成测试点，不强行补图中才有的细节。",
-        "5. 若某需求组包含 Figma/蓝湖/墨刀链接，请把该链接视为该组的补充原型材料。",
-        "",
-        "Markdown 输出要求：",
-        "1. 使用 Markdown 层级列表，统一用 '- ' 作为每一行前缀。",
-        "2. 结构尽量遵循：模块 -> 功能 -> 子功能 -> 字段 -> 用例名称 -> 预期。",
-        "3. 用例名称必须写成：用例名称: xxx（P0/P1/P2）。",
-        "4. 每条用例名称的下一层只保留预期，例如：预期: xxx。",
-        "5. 文本使用中文。",
-        "6. 覆盖正常、异常、边界、失败反馈、状态保留、关键交互拦截场景。",
-        "7. 不要生成 xmind 文件，不要输出 JSON 文件。",
-        "",
-        "需求截图文件：",
-    ]
-    if image_files:
-        prompt_lines.extend([f"- {item}" for item in image_files])
-    else:
-        prompt_lines.append("- 未提供图片文件")
-
-    prompt_lines.extend([
-        "",
-        "需求正文：",
-        requirement_text or "未提供需求正文，请结合图片和其他材料处理。",
-        "",
-        "需求组摘要：",
-    ])
-    if requirement_items:
-        for index, item in enumerate(requirement_items, start=1):
-            prompt_lines.extend([
-                f"需求组{index}: {str(item.get('title') or '').strip() or f'需求组{index}'}",
-                f"- 说明：{str(item.get('text') or '').strip() or '无'}",
-                f"- 设计链接：{'；'.join(item.get('design_links') or []) or '无'}",
-                f"- 图片数量：{len(item.get('images') or [])}",
-            ])
-    else:
-        prompt_lines.append("未提供结构化需求组，请按普通需求处理。")
-
-    prompt_lines.extend([
-        "",
-        "系统内置规范与技能：",
-        truncate_ai_text(builtin_context, 24000) or "未提供系统内置规范与技能。",
-        "",
-        "用户选择的技能与文档：",
-    ])
-    if docs:
-        for doc in docs:
-            prompt_lines.extend([
-                f"【{doc.get('doc_type') or 'doc'}】{doc.get('title') or '未命名文档'}",
-                truncate_ai_text(doc.get("content") or "", 12000) or "空文档",
-                "",
-            ])
-    else:
-        prompt_lines.append("未选择用户技能或文档。")
-
-    if instruction_text:
-        prompt_lines.extend(["", "本次生成提示词：", instruction_text])
-
-    prompt_lines.extend(["", "完成后请只输出：DONE"])
-    return "\n".join(prompt_lines)
-
-
-def run_claude_code_generate(task_dir, task_payload, docs):
-    prompt_text = build_claude_code_prompt(task_payload, docs, task_dir)
-    prompt_path = os.path.join(task_dir, "claude_task_prompt.txt")
-    write_text(prompt_path, prompt_text)
-    claude_executable = (
-        shutil.which("claude.cmd")
-        or shutil.which("claude")
-        or os.path.expandvars(r"%APPDATA%\npm\claude.cmd")
-    )
-    logger.info(f"functional skill task claude-code start executable={claude_executable}, task_dir={task_dir}")
-    if not claude_executable or not os.path.exists(claude_executable):
-        raise ValueError("未找到 Claude Code CLI，可执行文件 claude/claude.cmd 不存在")
-    command = [
-        claude_executable,
-        "-p",
-        "--output-format",
-        "text",
-        "--permission-mode",
-        "bypassPermissions",
-        "--dangerously-skip-permissions",
-        "--add-dir",
-        task_dir,
-    ]
-    process = subprocess.Popen(
-        command,
-        cwd=task_dir,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="ignore",
-    )
-    result_md_path = os.path.join(task_dir, "功能测试用例.md")
-    start_time = time.time()
-    stable_since = None
-    stdout_text = ""
-    stderr_text = ""
-    try:
-        if process.stdin:
-            process.stdin.write(prompt_text)
-            process.stdin.close()
-        while True:
-            return_code = process.poll()
-            md_exists = os.path.exists(result_md_path)
-            md_text = read_text_if_exists(result_md_path) if md_exists else ""
-            if md_exists and md_text.strip():
-                current_signature = (os.path.getsize(result_md_path), os.path.getmtime(result_md_path))
-                if stable_since is None:
-                    stable_since = (time.time(), current_signature)
-                else:
-                    stable_time, stable_signature = stable_since
-                    if stable_signature != current_signature:
-                        stable_since = (time.time(), current_signature)
-                    elif time.time() - stable_time >= 8:
-                        process.terminate()
-                        try:
-                            stdout_text, stderr_text = process.communicate(timeout=10)
-                        except Exception:
-                            stdout_text = ""
-                            stderr_text = ""
-                            process.kill()
-                            try:
-                                stdout_text, stderr_text = process.communicate(timeout=5)
-                            except Exception:
-                                pass
-                        write_text(os.path.join(task_dir, "claude_stdout.log"), str(stdout_text or "").strip())
-                        write_text(os.path.join(task_dir, "claude_stderr.log"), str(stderr_text or "").strip())
-                        return {
-                            "stdout": str(stdout_text or "").strip(),
-                            "stderr": str(stderr_text or "").strip(),
-                            "result_md_path": result_md_path,
-                            "markdown_text": md_text,
-                        }
-            if return_code is not None:
-                stdout_text, stderr_text = process.communicate()
-                stdout_text = str(stdout_text or "").strip()
-                stderr_text = str(stderr_text or "").strip()
-                write_text(os.path.join(task_dir, "claude_stdout.log"), stdout_text)
-                write_text(os.path.join(task_dir, "claude_stderr.log"), stderr_text)
-                if return_code != 0:
-                    raise ValueError(f"Claude Code CLI 执行失败: {preview_text(stderr_text or stdout_text or 'unknown error', 1200)}")
-                if not md_exists:
-                    raise ValueError("Claude Code CLI 执行完成，但未生成 功能测试用例.md")
-                if not md_text.strip():
-                    raise ValueError("Claude Code CLI 生成的 功能测试用例.md 为空")
-                return {
-                    "stdout": stdout_text,
-                    "stderr": stderr_text,
-                    "result_md_path": result_md_path,
-                    "markdown_text": md_text,
-                }
-            if time.time() - start_time > 1800:
-                process.kill()
-                try:
-                    stdout_text, stderr_text = process.communicate(timeout=5)
-                except Exception:
-                    stdout_text = ""
-                    stderr_text = ""
-                write_text(os.path.join(task_dir, "claude_stdout.log"), str(stdout_text or "").strip())
-                write_text(os.path.join(task_dir, "claude_stderr.log"), str(stderr_text or "").strip())
-                raise ValueError("Claude Code CLI 执行超时，30分钟内未完成")
-            time.sleep(2)
-    finally:
-        if process.poll() is None:
-            try:
-                process.kill()
-            except Exception:
-                pass
-
-
 async def load_skill_docs(session, user_id, doc_ids):
     if not doc_ids:
         return []
@@ -908,7 +844,8 @@ async def execute_skill_task(task_id):
         task_payload = load_task_request_payload(task, task_dir)
         docs = await load_skill_docs(session, user_id, task_payload.get("doc_ids") or [])
 
-    review_provider = "claude-code-cli"
+    review_provider = ""
+    review_rounds = 0
     try:
         await update_task_state(task_id, user_id, status="running", stage="prepare", stage_text="正在组装需求目录与技能材料", progress=10)
         export_runtime_materials(
@@ -920,37 +857,48 @@ async def execute_skill_task(task_id):
             task_payload.get("requirement_items") or [],
         )
 
-        try:
-            ai_config = await GConfigDao.get_active_ai_model_config()
-            logger.info(
-                f"functional skill task execute task_id={task_id}, generator=claude-code-cli, "
-                f"system_active_ai_provider={ai_config.get('provider')}, "
-                f"system_active_ai_model={ai_config.get('model')}, "
-                f"system_active_ai_base_url={ai_config.get('base_url')}"
-            )
-        except Exception as config_exc:
-            logger.warning(
-                f"functional skill task execute task_id={task_id}, generator=claude-code-cli, "
-                f"load system ai config failed: {config_exc}"
-            )
+        ai_config = await GConfigDao.get_active_ai_model_config()
+        review_provider = ai_config.get("provider") or ""
+        logger.info(
+            f"functional skill task execute task_id={task_id}, generator=model-api, "
+            f"system_active_ai_provider={ai_config.get('provider')}, "
+            f"system_active_ai_model={ai_config.get('model')}, "
+            f"system_active_ai_base_url={ai_config.get('base_url')}"
+        )
 
-        await update_task_state(task_id, user_id, stage="generate", stage_text="正在调用 Claude Code CLI 生成测试用例", progress=35, review_provider=review_provider)
-        loop = asyncio.get_running_loop()
-        cli_result = await loop.run_in_executor(None, run_claude_code_generate, task_dir, task_payload, docs)
+        await update_task_state(
+            task_id,
+            user_id,
+            stage="generate",
+            stage_text="正在调用启用中的模型配置生成测试用例",
+            progress=35,
+            review_provider=review_provider,
+            review_rounds=review_rounds,
+        )
+        review_provider, model_name, ai_payload = await generate_with_fallback(task_payload, docs)
 
-        await update_task_state(task_id, user_id, stage="convert", stage_text="正在解析 Markdown 并转换画布数据", progress=80, review_provider=review_provider, review_rounds=1)
-        case_title, case_data = parse_markdown_case_tree(cli_result.get("markdown_text"), task_payload.get("title") or "功能用例")
+        await update_task_state(
+            task_id,
+            user_id,
+            stage="convert",
+            stage_text="正在解析模型结果并转换画布数据",
+            progress=80,
+            review_provider=review_provider,
+            review_rounds=review_rounds,
+        )
+        case_title, case_data = normalize_ai_case_data(ai_payload, task_payload.get("title") or "功能用例")
         stats = analyze_case_data(case_data)
         result_json_path = os.path.join(task_dir, "generated_case.json")
-        result_md_path = cli_result.get("result_md_path") or os.path.join(task_dir, "功能测试用例.md")
+        result_md_path = os.path.join(task_dir, "generated_case.md")
         write_text(result_json_path, json.dumps(case_data, ensure_ascii=False, indent=2))
+        write_text(result_md_path, str(ai_payload or ""))
 
         await update_task_state(
             task_id,
             user_id,
             status="success",
             stage="success",
-            stage_text="生成完成，结果已可回填画布",
+            stage_text="模型生成完成，结果已可回填画布",
             progress=100,
             result_title=case_title,
             result_case_count=int(stats["case_count"] or 0),
@@ -962,11 +910,13 @@ async def execute_skill_task(task_id):
                 "data": case_data,
                 "case_count": int(stats["case_count"] or 0),
                 "case_num": int(stats["case_count"] or 0),
+                "provider": review_provider,
+                "model": model_name,
             }, ensure_ascii=False),
             error_message="",
             finished_at=int(time.time()),
             review_provider=review_provider,
-            review_rounds=1,
+            review_rounds=review_rounds,
         )
     except Exception as exc:
         logger.error(f"functional skill task failed: {exc}")
@@ -980,6 +930,7 @@ async def execute_skill_task(task_id):
             error_message=str(exc),
             finished_at=int(time.time()),
             review_provider=review_provider,
+            review_rounds=review_rounds,
         )
 
 async def try_finalize_task_from_runtime(task_id, user_id):
@@ -996,34 +947,33 @@ async def try_finalize_task_from_runtime(task_id, user_id):
             return None
         if task.create_user != user_id:
             return task
-        if task.status == "success":
+        if task.status in ("success", "failed"):
             return task
         task_dir = task.runtime_dir or os.path.join(SKILL_TASK_DIR, str(task.create_user), str(task.id))
-        result_md_path = os.path.join(task_dir, "功能测试用例.md")
-        if not os.path.exists(result_md_path):
+        result_json_path = task.result_file_path or os.path.join(task_dir, "generated_case.json")
+        if not os.path.exists(result_json_path):
             return task
-        markdown_text = read_text_if_exists(result_md_path)
-        if not markdown_text.strip():
+        result_text = read_text_if_exists(result_json_path)
+        if not result_text.strip():
             return task
-        if time.time() - os.path.getmtime(result_md_path) < 8:
+        if time.time() - os.path.getmtime(result_json_path) < 3:
             return task
-        task_payload = load_task_request_payload(task, task_dir)
     try:
-        case_title, case_data = parse_markdown_case_tree(markdown_text, task_payload.get("title") or task.title or "功能用例")
+        result_payload = json.loads(result_text)
+        case_title, case_data = normalize_ai_case_data(result_payload, task.title or "功能用例")
         stats = analyze_case_data(case_data)
-        result_json_path = os.path.join(task_dir, "generated_case.json")
-        write_text(result_json_path, json.dumps(case_data, ensure_ascii=False, indent=2))
+        result_md_path = task.result_md_path or os.path.join(task_dir, "generated_case.md")
         updated_task = await update_task_state(
             task_id,
             user_id,
             status="success",
             stage="success",
-            stage_text="检测到 Markdown 已生成并稳定，已自动完成画布回填",
+            stage_text="检测到结果文件已生成，已自动完成画布回填",
             progress=100,
             result_title=case_title,
             result_case_count=int(stats["case_count"] or 0),
             result_file_path=result_json_path,
-            result_md_path=result_md_path,
+            result_md_path=result_md_path if os.path.exists(result_md_path) else "",
             result_xmind_path="",
             result_payload=json.dumps({
                 "title": case_title,
@@ -1033,8 +983,8 @@ async def try_finalize_task_from_runtime(task_id, user_id):
             }, ensure_ascii=False),
             error_message="",
             finished_at=int(time.time()),
-            review_provider="claude-code-cli",
-            review_rounds=1,
+            review_provider=task.review_provider or "",
+            review_rounds=int(task.review_rounds or 0),
         )
         return updated_task
     except Exception as exc:
@@ -1296,7 +1246,7 @@ async def create_skill_task(form: FunctionalCaseSkillTaskForm, user_info=Depends
     try:
         ai_config = await GConfigDao.get_active_ai_model_config()
         logger.info(
-            f"functional skill task create task_id={task.id}, generator=claude-code-cli, "
+            f"functional skill task create task_id={task.id}, generator=model-api, "
             f"system_active_ai_provider={ai_config.get('provider')}, system_active_ai_model={ai_config.get('model')}, system_active_ai_base_url={ai_config.get('base_url')}"
         )
     except Exception as config_exc:

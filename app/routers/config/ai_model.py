@@ -28,7 +28,7 @@ async def update_ai_model_config(form: dict, user_info=Depends(Permission(Config
 @router.get("/ai-model/providers", summary="获取AI模型供应商和默认版本")
 async def list_ai_model_providers(_=Depends(Permission(Config.ADMIN))):
     try:
-        data = await GConfigDao.get_ai_model_config()
+        data = GConfigDao.get_ai_model_provider_options()
         return PityResponse.success(data)
     except Exception as err:
         return PityResponse.failed(err)
