@@ -19,6 +19,7 @@ from sqlalchemy.exc import OperationalError
 from app.handler.fatcory import PityResponse
 from app.models import async_session
 from app.models.functional_case import PityFunctionalCaseSkillDoc, PityFunctionalCaseSkillTask
+from app.models.operation_log import PityOperationLog
 from app.models.user import User
 from app.routers import Permission
 from app.schema.functional_case import FunctionalCaseSkillDocForm, FunctionalCaseSkillTaskForm
@@ -824,6 +825,99 @@ def load_task_request_payload(task, task_dir):
     return payload
 
 
+def build_skill_task_result_operation_log_payload(
+    task,
+    docs,
+    requirement_items,
+    status,
+    elapsed_seconds,
+    review_provider,
+    model_name,
+    case_title="",
+    case_data=None,
+    ai_payload="",
+    stats=None,
+    result_json_path="",
+    result_md_path="",
+    error_message="",
+):
+    stats = stats or {}
+    case_data = case_data or {}
+    status_text = "成功" if str(status or "").lower() == "success" else "失败"
+    return {
+        "title": "任务标题={}&项目ID={}&日志={}".format(task.title or "功能用例", task.project_id or 0, status_text),
+        "tag": "功能用例AI生成",
+        "description": json.dumps([
+            {"name": "任务ID", "now": task.id},
+            {"name": "任务标题", "now": task.title or "功能用例"},
+            {"name": "项目ID", "now": task.project_id or 0},
+            {"name": "选中文档数", "now": len(docs or [])},
+            {"name": "需求组数", "now": len(requirement_items or [])},
+            {"name": "结果状态", "now": status_text},
+            {"name": "耗时(秒)", "now": elapsed_seconds},
+            {"name": "结果标题", "now": case_title},
+            {"name": "结果用例数", "now": int(stats.get("case_count") or 0)},
+            {"name": "模型供应商", "now": review_provider or ""},
+            {"name": "模型名称", "now": model_name or ""},
+            {"name": "结果JSON路径", "now": result_json_path or ""},
+            {"name": "结果Markdown路径", "now": result_md_path or ""},
+            {"name": "模型返回结果", "now": preview_text(ai_payload or error_message, 2000)},
+            {"name": "标准化结果预览", "now": preview_text(json.dumps(case_data, ensure_ascii=False), 2000) if case_data else ""},
+        ], ensure_ascii=False),
+    }
+
+
+async def append_skill_task_result_operation_log(
+    task,
+    docs,
+    requirement_items,
+    status,
+    elapsed_seconds,
+    review_provider,
+    model_name,
+    case_title="",
+    case_data=None,
+    ai_payload="",
+    stats=None,
+    result_json_path="",
+    result_md_path="",
+    error_message="",
+):
+    async with async_session() as session:
+        await ensure_skill_task_schema(session)
+        payload = build_skill_task_result_operation_log_payload(
+            task,
+            docs,
+            requirement_items,
+            status,
+            elapsed_seconds,
+            review_provider,
+            model_name,
+            case_title=case_title,
+            case_data=case_data,
+            ai_payload=ai_payload,
+            stats=stats,
+            result_json_path=result_json_path,
+            result_md_path=result_md_path,
+            error_message=error_message,
+        )
+        existed = await session.execute(
+            text("SELECT id FROM pity_operation_log WHERE `key`=:key AND tag=:tag AND title=:title LIMIT 1"),
+            {"key": task.id, "tag": payload["tag"], "title": payload["title"]},
+        )
+        if existed.first() is not None:
+            return
+        session.add(PityOperationLog(
+            task.create_user,
+            OperationType.EXECUTE,
+            payload["title"],
+            payload["tag"],
+            payload["description"],
+            task.id,
+        ))
+        await session.commit()
+
+
 async def execute_skill_task(task_id):
     async with async_session() as session:
         await ensure_skill_task_schema(session)
@@ -846,6 +940,7 @@ async def execute_skill_task(task_id):
 
     review_provider = ""
     review_rounds = 0
+    task_started_at = time.perf_counter()
     try:
         await update_task_state(task_id, user_id, status="running", stage="prepare", stage_text="正在组装需求目录与技能材料", progress=10)
         export_runtime_materials(
@@ -918,6 +1013,25 @@ async def execute_skill_task(task_id):
             review_provider=review_provider,
             review_rounds=review_rounds,
         )
+        try:
+            elapsed_seconds = round(time.perf_counter() - task_started_at, 2)
+            await append_skill_task_result_operation_log(
+                task,
+                docs,
+                task_payload.get("requirement_items") or [],
+                "success",
+                elapsed_seconds,
+                review_provider,
+                model_name,
+                case_title=case_title,
+                case_data=case_data,
+                ai_payload=ai_payload,
+                stats=stats,
+                result_json_path=result_json_path,
+                result_md_path=result_md_path,
+            )
+        except Exception as log_exc:
+            logger.warning(f"functional skill task result log skipped: {log_exc}")
     except Exception as exc:
         logger.error(f"functional skill task failed: {exc}")
         await update_task_state(
@@ -932,6 +1046,20 @@ async def execute_skill_task(task_id):
             review_provider=review_provider,
             review_rounds=review_rounds,
         )
+        try:
+            elapsed_seconds = round(time.perf_counter() - task_started_at, 2)
+            await append_skill_task_result_operation_log(
+                task,
+                docs,
+                task_payload.get("requirement_items") or [],
+                "failed",
+                elapsed_seconds,
+                review_provider,
+                "",
+                error_message=str(exc),
+            )
+        except Exception as log_exc:
+            logger.warning(f"functional skill task failed log skipped: {log_exc}")
 
 async def try_finalize_task_from_runtime(task_id, user_id):
     async with async_session() as session:
@@ -980,12 +1108,34 @@ async def try_finalize_task_from_runtime(task_id, user_id):
                 "data": case_data,
                 "case_count": int(stats["case_count"] or 0),
                 "case_num": int(stats["case_count"] or 0),
+                "provider": task.review_provider or "",
+                "model": "",
             }, ensure_ascii=False),
             error_message="",
             finished_at=int(time.time()),
             review_provider=task.review_provider or "",
             review_rounds=int(task.review_rounds or 0),
         )
+        try:
+            task_payload = load_task_request_payload(task, task_dir)
+            elapsed_seconds = round(max(0, time.time() - float(task.created_at.timestamp() if task.created_at else time.time())), 2)
+            await append_skill_task_result_operation_log(
+                task,
+                [None] * int(task_payload.get("visible_doc_count") or 0),
+                task_payload.get("requirement_items") or [],
+                "success",
+                elapsed_seconds,
+                task.review_provider or "",
+                "",
+                case_title=case_title,
+                case_data=case_data,
+                ai_payload=result_text,
+                stats=stats,
+                result_json_path=result_json_path,
+                result_md_path=result_md_path if os.path.exists(result_md_path) else "",
+            )
+        except Exception as log_exc:
+            logger.warning(f"fallback skill task result log skipped: {log_exc}")
         return updated_task
     except Exception as exc:
         logger.warning(f"fallback finalize skipped: {exc}")
@@ -1215,7 +1365,6 @@ async def create_skill_task(form: FunctionalCaseSkillTaskForm, user_info=Depends
         }, ensure_ascii=False)
         session.add(task)
         await session.flush()
-        await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, task, key=task.id)
         await session.commit()
         await session.refresh(task)
 

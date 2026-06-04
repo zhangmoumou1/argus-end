@@ -262,6 +262,8 @@ def build_ai_flow_preview_operation_log(form, context, normalized):
     service = context.get("service") or {}
     endpoints = context.get("endpoints") or []
     warnings = normalized.get("warnings") or []
+    cases = normalized.get("cases") or []
+    first_case = cases[0] if cases and isinstance(cases[0], dict) else {}
     return {
         "title": "项目ID={}&目录ID={}".format(form.get("project_id") or 0, form.get("directory_id") or 0),
         "tag": "AI生成流程场景预览",
@@ -276,8 +278,12 @@ def build_ai_flow_preview_operation_log(form, context, normalized):
             {"name": "包含异常场景", "now": bool(form.get("include_negative"))},
             {"name": "包含断言", "now": bool(form.get("include_asserts"))},
             {"name": "业务目标", "now": preview_text(form.get("business_goal"), 300)},
-            {"name": "预览生成条数", "now": len(normalized.get("cases") or [])},
+            {"name": "预览生成条数", "now": len(cases)},
             {"name": "预警数", "now": len(warnings)},
+            {"name": "生成场景", "now": normalized.get("scenario_name") or ""},
+            {"name": "生成摘要", "now": preview_text(normalized.get("summary"), 300)},
+            {"name": "首个用例", "now": preview_text(first_case.get("name") or "", 120)},
+            {"name": "生成结果", "now": preview_text(json.dumps(normalized, ensure_ascii=False), 2000)},
         ], ensure_ascii=False),
     }
 
