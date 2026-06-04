@@ -2,6 +2,7 @@ import json
 import re
 import time
 from datetime import datetime
+from urllib.parse import urlsplit, urlunsplit
 from typing import List, TypeVar
 from types import SimpleNamespace
 
@@ -27,6 +28,7 @@ from app.exception.error import AuthError
 from app.handler.fatcory import PityResponse
 from app.middleware.RedisManager import RedisHelper
 from app.models import async_session
+from app.models.operation_log import PityOperationLog
 from app.models.interface_manage import PityApiEndpoint, PityApiEndpointVersion, PityApiEndpointSample, PityApiService
 from app.models.out_parameters import PityTestCaseOutParameters
 from app.models.test_case import TestCase
@@ -59,6 +61,225 @@ def preview_text(value, limit=2000):
     if len(text_value) <= limit:
         return text_value
     return f"{text_value[:limit]} ...<truncated {len(text_value) - limit} chars>"
+
+
+GPT_RESPONSES_USER_AGENT = "codex_vscode/0.136.0-alpha.2 (Windows 10.0.26200; x86_64) unknown (VS Code; 26.527.60818)"
+
+
+def is_gpt_model(model):
+    return str(model or "").strip().lower().startswith("gpt")
+
+
+def resolve_ai_wire_api(ai_config, provider="", model=""):
+    value = str((ai_config or {}).get("wire_api") or "").strip().lower().replace("-", "_").replace("/", "_")
+    if value in ("chat_completions", "responses"):
+        return value
+    base_url_value = str((ai_config or {}).get("base_url") or "").strip().lower().rstrip("/")
+    if base_url_value.endswith("/chat/completions"):
+        return "chat_completions"
+    if base_url_value.endswith("/responses"):
+        return "responses"
+    provider_value = str(provider or "").strip().lower()
+    if is_gpt_model(model) and provider_value in ("openai", "custom"):
+        return "responses"
+    return "chat_completions"
+
+
+def normalize_ai_base_url(base_url, wire_api, provider="", model=""):
+    original = str(base_url or "").strip()
+    if not original:
+        return original
+    provider_value = str(provider or "").strip().lower()
+    if provider_value == "custom":
+        return original
+    normalized = original.rstrip("/")
+    if wire_api not in ("chat_completions", "responses"):
+        return normalized
+    parsed = urlsplit(normalized)
+    path_value = str(parsed.path or "").strip().rstrip("/")
+    if path_value:
+        return normalized
+    if provider_value == "openai" or is_gpt_model(model):
+        return urlunsplit((parsed.scheme, parsed.netloc, "/v1", parsed.query, parsed.fragment)).rstrip("/")
+    return normalized
+
+
+def build_ai_request_url(base_url, wire_api, provider="", model=""):
+    normalized = normalize_ai_base_url(base_url, wire_api, provider, model)
+    normalized_no_slash = str(normalized or "").rstrip("/")
+    provider_value = str(provider or "").strip().lower()
+    if provider_value == "custom":
+        return normalized
+    base_url_value = str(base_url or "").strip().lower().rstrip("/")
+    if base_url_value.endswith("/chat/completions") or base_url_value.endswith("/responses"):
+        return normalized
+    if wire_api == "responses":
+        return f"{normalized_no_slash}/responses"
+    return f"{normalized_no_slash}/chat/completions"
+
+
+def build_non_json_response_error(provider, model, wire_api, request_url, response, body_preview):
+    content_type = str(response.headers.get("Content-Type") or "").strip()
+    content_encoding = str(response.headers.get("Content-Encoding") or "").strip()
+    provider_value = str(provider or "").strip().lower()
+    hint = ""
+    if provider_value == "custom":
+        hint = " 自定义供应商当前会原样请求你配置的地址，不自动补 /v1、/responses 或 /chat/completions，请确认后台“请求地址”填写的是完整接口地址。"
+    return (
+        f"AI模型({provider}/{model})响应不是有效 JSON: request_url={request_url}, "
+        f"wire_api={wire_api}, content_type={content_type or 'unknown'}, "
+        f"content_encoding={content_encoding or 'unknown'}。{hint}响应预览: {body_preview}"
+    )
+
+
+def build_api_key_preview(api_key):
+    value = str(api_key or "").strip()
+    if not value:
+        return ""
+    if len(value) <= 12:
+        return value
+    return f"{value[:8]}***{value[-6:]}"
+
+
+def normalize_request_model_name(model, provider=""):
+    value = str(model or "").strip()
+    provider_value = str(provider or "").strip().lower()
+    if is_gpt_model(value) and provider_value in ("openai", "custom"):
+        return value.lower()
+    return value
+
+
+def build_ai_headers(api_key, model):
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate",
+    }
+    if is_gpt_model(model):
+        headers["User-Agent"] = GPT_RESPONSES_USER_AGENT
+    return headers
+
+
+def build_responses_request_payload(model, system_content, user_content, temperature=1, max_output_tokens=None):
+    payload = {
+        "model": model,
+        "store": False,
+        "instructions": str(system_content or ""),
+        "input": [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": str(user_content or "")}],
+            }
+        ],
+        "text": {"format": {"type": "text"}},
+    }
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if max_output_tokens is not None:
+        payload["max_output_tokens"] = max_output_tokens
+    return payload
+
+
+def extract_responses_output_text(payload):
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    text_value = payload.get("text")
+    if isinstance(text_value, str) and text_value.strip():
+        return text_value.strip()
+    if isinstance(text_value, dict):
+        for key in ("text", "value", "content"):
+            nested = text_value.get(key)
+            if isinstance(nested, str) and nested.strip():
+                return nested.strip()
+
+    response_value = payload.get("response")
+    if isinstance(response_value, dict):
+        nested_output_text = response_value.get("output_text")
+        if isinstance(nested_output_text, str) and nested_output_text.strip():
+            return nested_output_text.strip()
+
+    text_parts = []
+    for item in payload.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").strip().lower()
+        item_role = str(item.get("role") or "").strip().lower()
+        if item_type in ("output_text", "text"):
+            text_parts.append(str(item.get("text") or ""))
+            continue
+        if item_role == "assistant":
+            assistant_text = item.get("text")
+            if isinstance(assistant_text, str) and assistant_text.strip():
+                text_parts.append(assistant_text)
+        for content_item in item.get("content") or []:
+            if not isinstance(content_item, dict):
+                continue
+            content_type = str(content_item.get("type") or "").strip().lower()
+            if content_type in ("output_text", "text", "input_text"):
+                text_parts.append(str(content_item.get("text") or ""))
+                continue
+            if content_type == "message":
+                nested_text = content_item.get("text") or content_item.get("content")
+                if isinstance(nested_text, str) and nested_text.strip():
+                    text_parts.append(nested_text)
+    merged = "\n".join([part for part in text_parts if str(part or "").strip()]).strip()
+    if merged:
+        return merged
+
+    choices = payload.get("choices") or []
+    if choices:
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        if isinstance(content, list):
+            merged_content = "\n".join(
+                str(item.get("text") or "")
+                for item in content
+                if isinstance(item, dict) and str(item.get("text") or "").strip()
+            ).strip()
+            if merged_content:
+                return merged_content
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+    usage = payload.get("usage") or {}
+    output_tokens = usage.get("output_tokens")
+    response_id = payload.get("id") or ""
+    status = payload.get("status") or ""
+    output_count = len(payload.get("output") or []) if isinstance(payload.get("output"), list) else 0
+    text_meta = payload.get("text") if isinstance(payload.get("text"), dict) else {}
+    raise ValueError(
+        "AI模型未返回可用结果"
+        f"(response_id={response_id or 'unknown'}, status={status or 'unknown'}, "
+        f"output_count={output_count}, output_tokens={output_tokens if output_tokens is not None else 'unknown'}, "
+        f"text_meta={preview_text(text_meta, 300)})"
+    )
+
+
+def build_ai_flow_preview_operation_log(form, context, normalized):
+    service = context.get("service") or {}
+    endpoints = context.get("endpoints") or []
+    warnings = normalized.get("warnings") or []
+    return {
+        "title": "项目ID={}&目录ID={}".format(form.get("project_id") or 0, form.get("directory_id") or 0),
+        "tag": "AI生成流程场景预览",
+        "description": json.dumps([
+            {"name": "项目ID", "now": form.get("project_id") or 0},
+            {"name": "目录ID", "now": form.get("directory_id") or 0},
+            {"name": "服务ID", "now": form.get("service_id") or 0},
+            {"name": "服务名称", "now": service.get("name") or ""},
+            {"name": "接口数量", "now": len(endpoints)},
+            {"name": "技能文档数", "now": len(form.get("skill_doc_ids") or [])},
+            {"name": "生成风格", "now": form.get("generate_style") or "standard"},
+            {"name": "包含异常场景", "now": bool(form.get("include_negative"))},
+            {"name": "包含断言", "now": bool(form.get("include_asserts"))},
+            {"name": "业务目标", "now": preview_text(form.get("business_goal"), 300)},
+            {"name": "预览生成条数", "now": len(normalized.get("cases") or [])},
+            {"name": "预警数", "now": len(warnings)},
+        ], ensure_ascii=False),
+    }
 
 
 def safe_json_loads(value, default=None):
@@ -353,16 +574,19 @@ def build_fallback_flow_payload(context, reason=""):
 def call_kimi_for_flow_cases(context, ai_config=None):
     ai_config = ai_config or {}
     api_key = ai_config.get("api_key") or Config.KIMI_API_KEY
-    base_url = (ai_config.get("base_url") or Config.KIMI_BASE_URL).rstrip("/")
     model = ai_config.get("model") or Config.KIMI_MODEL
     provider = ai_config.get("provider") or "kimi"
+    request_model = normalize_request_model_name(model, provider)
+    wire_api = resolve_ai_wire_api(ai_config, provider, request_model)
+    base_url = normalize_ai_base_url(ai_config.get("base_url") or Config.KIMI_BASE_URL, wire_api, provider, model)
+    request_url = build_ai_request_url(ai_config.get("base_url") or Config.KIMI_BASE_URL, wire_api, provider, model)
     if not api_key:
         raise ValueError("未配置 AI API Key")
     prompt = build_ai_prompt(context)
     endpoint_count = len(context.get("endpoints") or [])
     prompt_chars = len(prompt)
     logger.info(
-        f"flow-preview ai start provider={provider}, model={model}, base_url={base_url}, "
+        f"flow-preview ai start provider={provider}, model={model}, request_model={request_model}, wire_api={wire_api}, base_url={base_url}, request_url={request_url}, "
         f"endpoint_count={endpoint_count}, prompt_chars={prompt_chars}, timeout={AI_KIMI_TIMEOUT}s"
     )
     try:
@@ -375,34 +599,41 @@ def call_kimi_for_flow_cases(context, ai_config=None):
     for idx in range(0, len(prompt), chunk_size):
         logger.info(f"flow-preview ai prompt chunk[{idx // chunk_size + 1}] provider={provider}, model={model}, text={prompt[idx:idx + chunk_size]}")
     logger.info(f"flow-preview ai prompt end provider={provider}, model={model}")
-    request_payload = {
-        "model": model,
-        "temperature": 1,
-        "max_tokens": 4096,
-        "messages": [
-            {"role": "system", "content": "你只输出严格 JSON，用于接口自动化测试用例生成。"},
-            {"role": "user", "content": prompt},
-        ],
-    }
+    system_prompt = "你只输出严格 JSON，用于接口自动化测试用例生成。"
+    if wire_api == "responses":
+        request_payload = build_responses_request_payload(request_model, system_prompt, prompt, temperature=1, max_output_tokens=4096)
+    else:
+        request_payload = {
+            "model": request_model,
+            "temperature": 1,
+            "max_tokens": 4096,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+        }
+    request_headers = build_ai_headers(api_key, model)
+    api_key_preview = build_api_key_preview(api_key)
+    logger.info(f"flow-preview ai resolved provider={provider}, model={model}, request_model={request_model}, wire_api={wire_api}, base_url={base_url}, request_url={request_url}, api_key={api_key_preview}")
     started_at = time.perf_counter()
     try:
         response = requests.post(
-            f"{base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            request_url,
+            headers=request_headers,
             json=request_payload,
             timeout=(10, AI_KIMI_TIMEOUT),
         )
     except requests.Timeout as exc:
         elapsed = round(time.perf_counter() - started_at, 2)
-        logger.warning(f"flow-preview ai timeout provider={provider}, model={model}, elapsed={elapsed}s, endpoint_count={endpoint_count}, prompt_chars={prompt_chars}")
+        logger.warning(f"flow-preview ai timeout provider={provider}, model={model}, wire_api={wire_api}, elapsed={elapsed}s, endpoint_count={endpoint_count}, prompt_chars={prompt_chars}")
         raise ValueError(f"AI模型({provider}/{model})请求超时({elapsed}s)，已压缩接口上下文仍未返回，请减少接口数量或稍后重试") from exc
     except requests.RequestException as exc:
         elapsed = round(time.perf_counter() - started_at, 2)
-        logger.error(f"flow-preview ai request error provider={provider}, model={model}, elapsed={elapsed}s, error={exc}")
+        logger.error(f"flow-preview ai request error provider={provider}, model={model}, wire_api={wire_api}, elapsed={elapsed}s, error={exc}")
         raise ValueError(f"AI模型({provider}/{model})请求失败({elapsed}s): {exc}") from exc
     elapsed = round(time.perf_counter() - started_at, 2)
     request_id = response.headers.get("x-request-id") or response.headers.get("request-id") or ""
-    logger.info(f"flow-preview ai done provider={provider}, model={model}, status={response.status_code}, elapsed={elapsed}s, request_id={request_id}")
+    logger.info(f"flow-preview ai done provider={provider}, model={model}, wire_api={wire_api}, status={response.status_code}, elapsed={elapsed}s, request_id={request_id}")
     if response.status_code >= 400:
         try:
             detail = response.json()
@@ -413,31 +644,38 @@ def call_kimi_for_flow_cases(context, ai_config=None):
         payload = response.json()
     except Exception as exc:
         body_preview = preview_text(response.text, 2000)
-        logger.error(f"flow-preview ai invalid-json-response provider={provider}, model={model}, request_id={request_id}, body_preview={body_preview}")
-        raise ValueError(f"AI模型({provider}/{model})响应不是有效 JSON: {body_preview}") from exc
-    logger.info(f"flow-preview ai raw-payload-preview provider={provider}, model={model}, payload={preview_text(json.dumps(payload, ensure_ascii=False), 2000)}")
-    choices = payload.get("choices") or []
-    if not choices:
-        raise ValueError(f"AI模型({provider}/{model})未返回可用结果")
-    message = choices[0].get("message") or {}
-    content = message.get("content")
-    if isinstance(content, list):
-        content = "\n".join([item.get("text", "") for item in content if isinstance(item, dict)])
-    if isinstance(content, str):
-        content = content.strip()
-    if not content:
-        finish_reason = choices[0].get("finish_reason")
-        reasoning_content = message.get("reasoning_content")
-        refusal = message.get("refusal")
-        logger.warning(
-            f"flow-preview ai empty-content provider={provider}, model={model}, "
-            f"request_id={request_id}, finish_reason={finish_reason}, "
-            f"reasoning_preview={preview_text(reasoning_content, 1000)}, "
-            f"refusal_preview={preview_text(refusal, 1000)}"
-        )
-        raise ValueError(f"AI模型({provider}/{model})返回空内容")
-    if not isinstance(content, str):
-        raise ValueError(f"AI模型({provider}/{model})返回内容格式不支持")
+        logger.error(f"flow-preview ai invalid-json-response provider={provider}, model={model}, wire_api={wire_api}, request_id={request_id}, body_preview={body_preview}")
+        raise ValueError(build_non_json_response_error(provider, model, wire_api, request_url, response, body_preview)) from exc
+    logger.info(f"flow-preview ai raw-payload-preview provider={provider}, model={model}, wire_api={wire_api}, payload={preview_text(json.dumps(payload, ensure_ascii=False), 2000)}")
+    if wire_api == "responses":
+        content = extract_responses_output_text(payload)
+    else:
+        choices = payload.get("choices") or []
+        if not choices:
+            raise ValueError(f"AI模型({provider}/{model})未返回可用结果")
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "\n".join([item.get("text", "") for item in content if isinstance(item, dict)])
+        if isinstance(content, str):
+            content = content.strip()
+        if not content:
+            finish_reason = choices[0].get("finish_reason")
+            reasoning_content = message.get("reasoning_content")
+            refusal = message.get("refusal")
+            logger.warning(
+                f"flow-preview ai empty-content provider={provider}, model={model}, "
+                f"request_id={request_id}, finish_reason={finish_reason}, "
+                f"reasoning_preview={preview_text(reasoning_content, 1000)}, "
+                f"refusal_preview={preview_text(refusal, 1000)}"
+            )
+            raise ValueError(f"AI模型({provider}/{model})返回空内容")
+        if not isinstance(content, str):
+            raise ValueError(f"AI模型({provider}/{model})返回内容格式不支持")
+    logger.info(
+        f"flow-preview ai content provider={provider}, model={model}, wire_api={wire_api}, "
+        f"content={content}"
+    )
     return extract_json_object(content)
 
 
@@ -741,7 +979,7 @@ def to_testcase_info(raw_case, directory_id):
 
 
 @router.post("/ai-generate/flow-preview", summary="AI生成流程接口场景预览")
-async def ai_generate_flow_preview(form: dict, _=Depends(Permission()), session=Depends(get_session)):
+async def ai_generate_flow_preview(form: dict, user_info=Depends(Permission()), session=Depends(get_session)):
     try:
         if not form.get("directory_id"):
             return PityResponse.failed("请先选择用例目录")
@@ -785,6 +1023,16 @@ async def ai_generate_flow_preview(form: dict, _=Depends(Permission()), session=
                 if item.get("body") in (None, "", {}, []) and matched.get("sample_request_body_raw") not in (None, ""):
                     item["body"] = matched.get("sample_request_body_raw")
                     item["body_type"] = 1 if str(item.get("request_method") or "").upper() in ("POST", "PUT", "PATCH") else 0
+        log_payload = build_ai_flow_preview_operation_log(form, context, normalized)
+        session.add(PityOperationLog(
+            user_info["id"],
+            OperationType.EXECUTE,
+            log_payload["title"],
+            log_payload["tag"],
+            log_payload["description"],
+            int(form.get("directory_id") or 0),
+        ))
+        await session.commit()
         return PityResponse.success(normalized)
     except Exception as e:
         return PityResponse.failed(e)

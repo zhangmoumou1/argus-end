@@ -56,6 +56,22 @@ class GConfigDao(Mapper):
             return value
         return f"{value[:6]}***{value[-4:]}"
 
+    @staticmethod
+    def _normalize_ai_wire_api(wire_api: str, provider_type: str = "", model: str = "", base_url: str = ""):
+        value = str(wire_api or "").strip().lower().replace("-", "_").replace("/", "_")
+        if value in ("chat_completions", "responses"):
+            return value
+        base_url_value = str(base_url or "").strip().lower().rstrip("/")
+        if base_url_value.endswith("/chat/completions"):
+            return "chat_completions"
+        if base_url_value.endswith("/responses"):
+            return "responses"
+        provider_value = str(provider_type or "").strip().lower()
+        model_value = str(model or "").strip().lower()
+        if model_value.startswith("gpt") and provider_value in ("openai", "custom"):
+            return "responses"
+        return "chat_completions"
+
     @classmethod
     def _get_ai_preset(cls, provider_type: str):
         provider_key = str(provider_type or "").strip().lower() or "custom"
@@ -84,6 +100,7 @@ class GConfigDao(Mapper):
             model = model_options[0]
         item_id = str(raw_item.get("id") or f"{provider_type}_{index + 1}").strip() or f"{provider_type}_{index + 1}"
         api_key = str(raw_item.get("api_key") or preset.get("api_key") or "").strip()
+        wire_api = cls._normalize_ai_wire_api(raw_item.get("wire_api") or preset.get("wire_api"), provider_type, model, base_url)
         normalized = {
             "id": item_id,
             "provider_type": provider_type,
@@ -95,6 +112,7 @@ class GConfigDao(Mapper):
             "model_options": model_options,
             "models": model_options,
             "api_key": api_key,
+            "wire_api": wire_api,
             "enabled": bool(raw_item.get("enabled")),
         }
         return normalized
@@ -175,6 +193,7 @@ class GConfigDao(Mapper):
                 "base_url": str(preset.get("base_url") or "").strip(),
                 "model": str(preset.get("model") or "").strip(),
                 "model_options": [str(v).strip() for v in (preset.get("model_options") or []) if str(v or "").strip()],
+                "wire_api": cls._normalize_ai_wire_api(preset.get("wire_api"), provider_type, str(preset.get("model") or "").strip(), str(preset.get("base_url") or "").strip()),
                 "builtin": bool(preset.get("builtin")),
             })
         return options
