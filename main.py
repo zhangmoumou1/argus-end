@@ -1,4 +1,5 @@
 import asyncio
+import json
 from mimetypes import guess_type
 from os.path import isfile
 
@@ -68,6 +69,13 @@ def _trim_request_payload(payload, limit: int = 2000):
     if len(text) <= limit:
         return text
     return f"{text[:limit]} ...<truncated {len(text) - limit} chars>"
+
+
+def _normalize_plan_cron_for_scheduler(cron: str) -> str:
+    fields = [x.strip() for x in str(cron or "").split() if x.strip()]
+    if not fields:
+        return ""
+    return " ".join("*" if field == "?" else field for field in fields)
 
 
 async def request_info(request: Request):
@@ -179,6 +187,60 @@ def init_scheduler():
 
 
 @pity.on_event('startup')
+async def restore_test_plan_scheduler_jobs():
+    """
+    启动时按数据库中的测试计划重新注册调度任务。
+    手动执行成功而定时不触发，常见原因是进程重启后内存中的job没有恢复。
+    """
+    restored = 0
+    paused = 0
+    skipped = 0
+    failed = 0
+    async with async_session() as session:
+        try:
+            result = await session.execute(text("SHOW COLUMNS FROM pity_test_plan LIKE 'enabled'"))
+            if result.first() is None:
+                await session.execute(text(
+                    "ALTER TABLE pity_test_plan "
+                    "ADD COLUMN enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否开启计划调度'"
+                ))
+                await session.commit()
+        except Exception as e:
+            logger.bind(name=None).warning(f"restore test plan scheduler ensure enabled failed: {e}")
+        try:
+            rows = await session.execute(text(
+                "SELECT id, name, cron, enabled "
+                "FROM pity_test_plan WHERE deleted_at = 0"
+            ))
+            for row in rows.mappings().all():
+                plan_id = int(row.get("id") or 0)
+                plan_name = str(row.get("name") or f"plan-{plan_id}")
+                cron = _normalize_plan_cron_for_scheduler(row.get("cron"))
+                enabled = bool(row.get("enabled", 1))
+                if not plan_id or not cron:
+                    skipped += 1
+                    continue
+                try:
+                    Scheduler.edit_test_plan(plan_id, plan_name, cron)
+                    Scheduler.pause_resume_test_plan(plan_id, enabled)
+                    if enabled:
+                        restored += 1
+                    else:
+                        paused += 1
+                except Exception as job_exc:
+                    failed += 1
+                    logger.bind(name=None).warning(
+                        f"restore test plan scheduler job failed: plan_id={plan_id}, "
+                        f"name={plan_name}, cron={cron}, enabled={enabled}, error={job_exc}"
+                    )
+            logger.bind(name=None).success(
+                f"test plan scheduler restored.        ✔ enabled={restored}, paused={paused}, skipped={skipped}, failed={failed}"
+            )
+        except Exception as e:
+            logger.bind(name=None).warning(f"restore test plan scheduler jobs failed: {e}")
+
+
+@pity.on_event('startup')
 async def init_database():
     """
     初始化数据库，建表
@@ -235,6 +297,32 @@ async def ensure_testcase_api_columns():
             logger.bind(name=None).success("testcase api version columns checked.        ✔")
         except Exception as e:
             logger.bind(name=None).warning(f"testcase api version columns check failed: {e}")
+
+
+@pity.on_event('startup')
+async def ensure_oss_file_columns():
+    """
+    为OSS文件记录表做启动兜底迁移，避免历史库缺列导致上传和详情查询失败
+    """
+    alter_sql_list = [
+        "ALTER TABLE pity_oss_file MODIFY COLUMN file_path VARCHAR(255) NOT NULL COMMENT '文件路径'",
+        "ALTER TABLE pity_oss_file MODIFY COLUMN view_url VARCHAR(256) NULL DEFAULT '' COMMENT '文件预览url'",
+        "ALTER TABLE pity_oss_file ADD COLUMN bucket_name VARCHAR(64) NOT NULL DEFAULT '' COMMENT '桶名称'",
+        "ALTER TABLE pity_oss_file ADD COLUMN object_key VARCHAR(255) NOT NULL DEFAULT '' COMMENT '对象key'",
+        "UPDATE pity_oss_file SET object_key = file_path WHERE object_key = ''",
+        "ALTER TABLE pity_oss_file DROP COLUMN view_url",
+    ]
+    async with async_session() as session:
+        try:
+            for sql in alter_sql_list:
+                try:
+                    await session.execute(text(sql))
+                except Exception:
+                    pass
+            await session.commit()
+            logger.bind(name=None).success("oss file columns checked.        ✔")
+        except Exception as e:
+            logger.bind(name=None).warning(f"oss file columns check failed: {e}")
 
 
 @pity.websocket("/ws/{user_id}")

@@ -192,7 +192,11 @@ class Mapper(object):
         :return:
         """
         changed = []
-        for var, value in vars(source).items():
+        if hasattr(source, "__table__"):
+            source_items = ((column.name, getattr(source, column.name, None)) for column in source.__table__.columns)
+        else:
+            source_items = vars(source).items()
+        for var, value in source_items:
             if not_null:
                 if value is None:
                     continue

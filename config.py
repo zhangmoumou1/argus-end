@@ -69,6 +69,18 @@ class BaseConfig(BaseSettings):
     KIMI_BASE_URL: str = "https://api.moonshot.cn/v1"
     KIMI_MODEL: str = "kimi-k2.6"
 
+    # RustFS / S3 compatible OSS
+    OSS_TYPE: str = ""
+    OSS_ENDPOINT: str = ""
+    OSS_ACCESS_KEY_ID: str = ""
+    OSS_ACCESS_KEY_SECRET: str = ""
+    OSS_BUCKET: str = ""
+    OSS_AVATAR_BUCKET: str = ""
+    OSS_REGION: str = "us-east-1"
+    OSS_USE_SSL: bool = False
+    OSS_FORCE_PATH_STYLE: bool = True
+    OSS_PRESIGN_EXPIRE: int = 3600
+
     # 测试报告路径
     REPORT_PATH: ClassVar[str] = os.path.join(ROOT, "templates", "report.html")
 

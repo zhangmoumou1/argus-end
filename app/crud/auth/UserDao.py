@@ -58,9 +58,26 @@ class UserDao(Mapper):
                     user = query.scalars().first()
                     if not user:
                         raise Exception("该用户不存在, 请检查")
-                    # 开启not_null，这样只有非空字段才修改
                     old = deepcopy(user)
-                    changed = UserDao.update_model(user, user_info, user_id, True)
+                    changed = []
+
+                    next_name = user_info.name if user_info.name is not None else user.name
+                    next_email = user_info.email if user_info.email is not None else user.email
+                    next_phone = user_info.phone if user_info.phone is not None else user.phone
+
+                    if next_name != user.name:
+                        user.name = next_name
+                        changed.append("name")
+                    if next_email != user.email:
+                        user.email = next_email
+                        changed.append("email")
+                    if next_phone != user.phone:
+                        user.phone = next_phone
+                        changed.append("phone")
+
+                    if changed:
+                        user.update_user = user_id
+                        user.updated_at = datetime.now()
                     await session.flush()
                     if changed:
                         setattr(user, "__tag__", "用户管理")

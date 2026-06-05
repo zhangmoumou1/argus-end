@@ -5,7 +5,7 @@ import aiohttp
 from aiohttp import FormData
 
 from app.enums.RequestBodyEnum import BodyType
-from app.middleware.oss import OssClient
+from app.middleware.oss import OssClient, get_public_bucket_name
 from config import Config
 
 
@@ -80,7 +80,10 @@ class AsyncRequest(object):
                             form_data.add_field(item.get("key"), item.get("value", ''))
                         else:
                             client = OssClient.get_oss_client()
-                            file_object = await client.get_file_object(item.get("value"))
+                            file_object = await client.get_file_object(
+                                item.get("value"),
+                                bucket_name=get_public_bucket_name() or None,
+                            )
                             form_data.add_field(item.get("key"), file_object)
                 r = AsyncRequest(url, headers=headers, data=form_data, timeout=timeout)
             except Exception as e:

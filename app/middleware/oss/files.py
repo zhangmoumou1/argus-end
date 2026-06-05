@@ -5,22 +5,33 @@ import time
 class OssFile(object):
     _base_path = "pity"
 
-    async def create_file(self, filepath: str, content, base_path: str = None) -> (str, int):
+    async def create_file(self, filepath: str, content, base_path: str = None, bucket_name: str = None,
+                          content_type: str = None) -> (str, int):
         raise NotImplementedError
 
     # async def update_file(self, filepath: str, content, base_path: str = None):
     #     raise NotImplementedError
 
-    async def delete_file(self, filepath: str, base_path: str = None):
+    async def delete_file(self, filepath: str, base_path: str = None, bucket_name: str = None):
+        raise NotImplementedError
+
+    async def delete_prefix(self, filepath: str, base_path: str = None, bucket_name: str = None):
         raise NotImplementedError
 
     # async def list_file(self):
     #     raise NotImplementedError
 
-    async def download_file(self, filepath, base_path: str = None):
+    async def download_file(self, filepath, base_path: str = None, bucket_name: str = None):
         raise NotImplementedError
 
-    async def get_file_object(self, filepath):
+    async def get_file_object(self, filepath, bucket_name: str = None):
+        raise NotImplementedError
+
+    async def get_object_detail(self, filepath: str, bucket_name: str = None):
+        raise NotImplementedError
+
+    async def list_objects(self, prefix: str = "", recursive: bool = True, bucket_name: str = None,
+                           suffix: str = None):
         raise NotImplementedError
 
     def get_real_path(self, filepath, base_path=None):

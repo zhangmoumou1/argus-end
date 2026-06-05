@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import io
 import json
 import math
 import os
@@ -21,6 +22,7 @@ from app.crud.operation.PityOperationDao import PityOperationDao
 from app.enums.OperationEnum import OperationType
 from app.handler.fatcory import PityResponse
 from app.middleware.AsyncHttpClient import AsyncRequest
+from app.middleware.oss import OssClient, get_public_bucket_name
 from app.models import async_session
 from app.models.interface_manage import PityApiEndpointSample, PityApiEndpointVersion
 from app.models.performance import (
@@ -180,6 +182,34 @@ def parse_csv_file(file_path: Path, encoding="utf-8", delimiter=","):
         for row in reader:
             rows.append({str(k): row.get(k) for k in columns if k})
     return columns, rows
+
+
+def parse_csv_content(content: bytes, encoding="utf-8", delimiter=","):
+    rows = []
+    columns = []
+    text = content.decode(encoding or "utf-8")
+    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter or ",")
+    columns = reader.fieldnames or []
+    for row in reader:
+        rows.append({str(k): row.get(k) for k in columns if k})
+    return columns, rows
+
+
+def build_bucket_parameter_file_id(file_path: str) -> str:
+    return f"bucket:{str(file_path or '').strip()}"
+
+
+def parse_bucket_parameter_file_id(file_id) -> str:
+    text = str(file_id or "").strip()
+    if text.startswith("bucket:"):
+        return text.split(":", 1)[1].strip()
+    return ""
+
+
+async def load_public_bucket_csv(file_path: str, encoding="utf-8", delimiter=","):
+    client = OssClient.get_oss_client()
+    content = await client.get_file_object(file_path, bucket_name=get_public_bucket_name() or None)
+    return parse_csv_content(content, encoding=encoding or "utf-8", delimiter=delimiter or ",")
 
 
 def normalize_plan_payload(payload: dict):
@@ -487,25 +517,35 @@ async def load_parameter_variables(session, parameter_config, state):
         if not isinstance(item, dict) or not item.get("enabled", True):
             continue
         file_id = item.get("file_id")
-        if not file_id:
+        bucket_file_path = parse_bucket_parameter_file_id(file_id) or str(item.get("bucket_file_path") or "").strip()
+        if not file_id and not bucket_file_path:
             continue
-        row = await session.execute(
-            select(PityPerformanceParameterFile).where(
-                PityPerformanceParameterFile.id == int(file_id),
-                PityPerformanceParameterFile.deleted_at == 0,
+        if bucket_file_path:
+            columns, rows = await load_public_bucket_csv(
+                bucket_file_path,
+                encoding=str(item.get("encoding") or "utf-8"),
+                delimiter=str(item.get("delimiter") or ","),
             )
-        )
-        file_record = row.scalars().first()
-        if file_record is None:
-            continue
-        file_path = Path(file_record.file_path)
-        if not file_path.exists():
-            continue
-        columns, rows = parse_csv_file(file_path, file_record.encoding or "utf-8", file_record.delimiter or ",")
+            state_file_key = build_bucket_parameter_file_id(bucket_file_path)
+        else:
+            row = await session.execute(
+                select(PityPerformanceParameterFile).where(
+                    PityPerformanceParameterFile.id == int(file_id),
+                    PityPerformanceParameterFile.deleted_at == 0,
+                )
+            )
+            file_record = row.scalars().first()
+            if file_record is None:
+                continue
+            file_path = Path(file_record.file_path)
+            if not file_path.exists():
+                continue
+            columns, rows = parse_csv_file(file_path, file_record.encoding or "utf-8", file_record.delimiter or ",")
+            state_file_key = str(file_id)
         if not rows:
             continue
         read_mode = str(item.get("read_mode") or "CIRCULAR").upper()
-        state_key = f"file_{file_id}_index"
+        state_key = f"file_{state_file_key}_index"
         index = int(state.get(state_key, 0))
         if read_mode == "RANDOM":
             row_data = random.choice(rows)
@@ -639,18 +679,27 @@ async def validate_parameter_payload(session, form: PityPerformanceParameterVali
         if not isinstance(item, dict) or not item.get("enabled", True):
             continue
         file_id = item.get("file_id")
-        if not file_id:
+        bucket_file_path = parse_bucket_parameter_file_id(file_id) or str(item.get("bucket_file_path") or "").strip()
+        if not file_id and not bucket_file_path:
             continue
-        row = await session.execute(
-            select(PityPerformanceParameterFile).where(
-                PityPerformanceParameterFile.id == int(file_id),
-                PityPerformanceParameterFile.deleted_at == 0,
+        if bucket_file_path:
+            columns, _ = await load_public_bucket_csv(
+                bucket_file_path,
+                encoding=str(item.get("encoding") or "utf-8"),
+                delimiter=str(item.get("delimiter") or ","),
             )
-        )
-        file_record = row.scalars().first()
-        if file_record is None:
-            continue
-        file_columns.update(safe_json_loads(file_record.columns, []))
+            file_columns.update(columns)
+        else:
+            row = await session.execute(
+                select(PityPerformanceParameterFile).where(
+                    PityPerformanceParameterFile.id == int(file_id),
+                    PityPerformanceParameterFile.deleted_at == 0,
+                )
+            )
+            file_record = row.scalars().first()
+            if file_record is None:
+                continue
+            file_columns.update(safe_json_loads(file_record.columns, []))
 
     setup_output_names = await collect_setup_output_names(session, parameter_config.get("setup_config"))
     global_header_values = [

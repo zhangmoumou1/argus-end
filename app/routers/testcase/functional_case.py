@@ -18,6 +18,7 @@ from app.crud.config.GConfigDao import GConfigDao
 from app.crud.operation.PityOperationDao import PityOperationDao
 from app.enums.OperationEnum import OperationType
 from app.handler.fatcory import PityResponse
+from app.middleware.oss import OssClient, get_default_bucket_name, normalize_oss_upload_result
 from app.models import async_session
 from app.models.functional_case import PityFunctionalCaseDirectory, PityFunctionalCaseFile, PityFunctionalCaseItem
 from app.models.user import User
@@ -1362,20 +1363,77 @@ async def upload_functional_case_image(
         allowed_suffix = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg"}
         if suffix not in allowed_suffix:
             suffix = ".png"
-        os.makedirs(CASE_IMAGE_DIR, exist_ok=True)
         stored_name = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}{suffix}"
-        abs_path = os.path.join(CASE_IMAGE_DIR, stored_name)
         content = await file.read()
         if not content:
             return PityResponse.failed("上传失败，图片内容为空")
-        with open(abs_path, "wb") as f:
-            f.write(content)
+        client = OssClient.get_oss_client()
+        bucket_name = get_default_bucket_name() or None
+        upload_result, _ = await client.create_file(
+            stored_name,
+            content,
+            base_path="functionalcase",
+            bucket_name=bucket_name,
+            content_type=file.content_type,
+        )
+        file_url = normalize_oss_upload_result(
+            client,
+            upload_result,
+            stored_name,
+            bucket_name=bucket_name,
+            base_path="functionalcase",
+        )["file_url"]
         return PityResponse.success({
             "name": stored_name,
-            "url": build_static_url(abs_path),
+            "url": file_url,
+            "file_path": f"functionalcase/{stored_name}",
+            "bucket": get_default_bucket_name(),
             "size": len(content),
         })
     except Exception as e:
         logger.exception(f"上传功能用例节点图片失败: {e}")
         return PityResponse.failed("上传节点图片失败")
+
+
+@router.post("/file/attachment/upload")
+async def upload_functional_case_attachment(
+    file: UploadFile = File(...),
+    _=Depends(Permission()),
+):
+    try:
+        suffix = Path(file.filename or "").suffix.lower()
+        if not suffix:
+            suffix = ".bin"
+        stored_name = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}{suffix}"
+        content = await file.read()
+        if not content:
+            return PityResponse.failed("上传失败，附件内容为空")
+        client = OssClient.get_oss_client()
+        bucket_name = get_default_bucket_name() or None
+        upload_result, _ = await client.create_file(
+            stored_name,
+            content,
+            base_path="functionalcase",
+            bucket_name=bucket_name,
+            content_type=file.content_type,
+        )
+        file_url = normalize_oss_upload_result(
+            client,
+            upload_result,
+            stored_name,
+            bucket_name=bucket_name,
+            base_path="functionalcase",
+        )["file_url"]
+        return PityResponse.success({
+            "name": file.filename or stored_name,
+            "stored_name": stored_name,
+            "url": file_url,
+            "file_path": f"functionalcase/{stored_name}",
+            "bucket": get_default_bucket_name(),
+            "size": len(content),
+            "content_type": file.content_type or "application/octet-stream",
+        })
+    except Exception as e:
+        logger.exception(f"上传功能用例节点附件失败: {e}")
+        return PityResponse.failed("上传节点附件失败")
 
