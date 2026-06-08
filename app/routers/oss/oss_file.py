@@ -175,6 +175,31 @@ async def create_oss_file(filepath: str, file: UploadFile = File(...),
         return PityResponse.failed(f"上传失败: {e}")
 
 
+@router.post("/create-folder")
+async def create_oss_folder(filepath: str,
+                            session=Depends(get_session),
+                            user_info=Depends(Permission(Config.MEMBER))):
+    try:
+        folder_path = str(filepath or "").replace("\\", "/").strip().strip("/")
+        if not folder_path:
+            raise Exception("目录名称不能为空")
+        bucket_name = get_public_bucket_name() or None
+        client = OssClient.get_oss_client()
+        target_path = f"{folder_path}/"
+        async with session.begin():
+            upload_result, file_size = await client.create_file(
+                target_path,
+                b"",
+                bucket_name=bucket_name,
+                content_type="application/x-directory",
+            )
+            upload_meta = normalize_oss_upload_result(client, upload_result, target_path, bucket_name=bucket_name)
+            await _upsert_oss_record(user_info['id'], target_path, upload_meta, file_size, session=session)
+        return PityResponse.success()
+    except Exception as e:
+        return PityResponse.failed(f"创建目录失败: {e}")
+
+
 @router.post("/upload/batch")
 async def create_oss_files(paths: str = Form(...), files: List[UploadFile] = File(...),
                            user_info=Depends(Permission(Config.MEMBER))):

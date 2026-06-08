@@ -39,11 +39,17 @@ class S3CompatibleOss(OssFile):
 
     @staticmethod
     def _normalize_key(filepath: str, base_path: Optional[str] = None) -> str:
-        key = str(filepath or "").replace("\\", "/").strip("/")
+        raw_key = str(filepath or "").replace("\\", "/").strip()
+        keep_trailing_slash = raw_key.endswith("/")
+        key = raw_key.strip("/")
         prefix = str(base_path or "").replace("\\", "/").strip("/")
         if prefix and key:
-            return f"{prefix}/{key}"
-        return prefix or key
+            normalized = f"{prefix}/{key}"
+        else:
+            normalized = prefix or key
+        if keep_trailing_slash and normalized and not normalized.endswith("/"):
+            normalized = f"{normalized}/"
+        return normalized
 
     def get_real_path(self, filepath, base_path=None):
         return self._normalize_key(filepath, base_path)
@@ -118,11 +124,12 @@ class S3CompatibleOss(OssFile):
         objects = []
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             for item in page.get("Contents") or []:
-                key = str(item.get("Key") or "").strip("/")
-                if not key:
+                raw_key = str(item.get("Key") or "").strip()
+                key = raw_key.strip("/")
+                if not key or not raw_key:
                     continue
                 if key == prefix or key.startswith(f"{prefix}/"):
-                    objects.append({"Key": key})
+                    objects.append({"Key": raw_key})
         for index in range(0, len(objects), 1000):
             self.client.delete_objects(
                 Bucket=bucket,
@@ -205,6 +212,19 @@ class S3CompatibleOss(OssFile):
             for item in page.get("Contents") or []:
                 key = str(item.get("Key") or "").strip("/")
                 if not key or key == normalized_prefix.strip("/"):
+                    continue
+                if str(item.get("Key") or "").endswith("/"):
+                    ans.append({
+                        "bucket": bucket,
+                        "file_path": key,
+                        "key": key,
+                        "name": os.path.basename(key),
+                        "is_dir": True,
+                        "size": 0,
+                        "file_size": "0B",
+                        "view_url": "",
+                        "updated_at": item.get("LastModified").strftime("%Y-%m-%d %H:%M:%S") if item.get("LastModified") else None,
+                    })
                     continue
                 if suffix and not key.lower().endswith(str(suffix).lower()):
                     continue
