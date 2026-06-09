@@ -1,0 +1,17 @@
+{
+  "name": "argus-ui-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Midscene + Playwright runner for Argus UI automation",
+  "scripts": {
+    "start": "node runner.js",
+    "dev": "node runner.js"
+  },
+  "dependencies": {
+    "@midscene/web": "^1.0.0",
+    "@playwright/test": "^1.53.0",
+    "dotenv": "^16.6.1",
+    "playwright": "^1.53.0"
+  }
+}

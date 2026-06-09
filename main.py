@@ -34,6 +34,7 @@ from app.routers.testcase.functional_case import router as functional_case_route
 from app.routers.testcase.functional_case_skill import router as functional_case_skill_router
 from app.routers.testcase.interface_manage import router as interface_manage_router
 from app.routers.testcase.mock_config import router as mock_config_router
+from app.routers.ui_test import restore_ui_test_scheduler_jobs, router as ui_test_router
 from app.routers.workspace import router as workspace_router
 from app.utils.scheduler import Scheduler
 from config import Config, PITY_ENV, BANNER
@@ -110,6 +111,7 @@ pity.include_router(operation_router, dependencies=[Depends(request_info)])
 pity.include_router(msg_router, dependencies=[Depends(request_info)])
 pity.include_router(workspace_router, dependencies=[Depends(request_info)])
 pity.include_router(performance_router, dependencies=[Depends(request_info)])
+pity.include_router(ui_test_router, dependencies=[Depends(request_info)])
 pity.include_router(share_router)
 
 pity.mount("/statics", StaticFiles(directory="statics"), name="statics")
@@ -238,6 +240,15 @@ async def restore_test_plan_scheduler_jobs():
             )
         except Exception as e:
             logger.bind(name=None).warning(f"restore test plan scheduler jobs failed: {e}")
+
+
+@pity.on_event('startup')
+async def restore_ui_test_plan_scheduler_jobs():
+    try:
+        await restore_ui_test_scheduler_jobs()
+        logger.bind(name=None).success("ui test scheduler restored.        ✔")
+    except Exception as e:
+        logger.bind(name=None).warning(f"restore ui test scheduler jobs failed: {e}")
 
 
 @pity.on_event('startup')

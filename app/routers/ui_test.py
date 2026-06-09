@@ -1,0 +1,2267 @@
+import asyncio
+import hashlib
+import json
+import re
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from apscheduler.jobstores.base import JobLookupError
+from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import bindparam, text
+
+from app.crud.config.GConfigDao import GConfigDao
+from app.handler.fatcory import PityResponse
+from app.middleware.oss import OssClient, get_default_bucket_name, normalize_oss_upload_result
+from app.middleware.Jwt import UserToken
+from app.models import async_session
+from app.routers import Permission, get_session
+from app.utils.scheduler import Scheduler
+
+router = APIRouter(prefix="/ui-test")
+
+UI_CASE_NODE_NAME = "UI自动化用例"
+UI_CASE_STEP_NODE_NAME = "测试步骤"
+UI_CASE_CONFIG_NODE_NAME = "场景配置"
+UI_CASE_ASSERT_NODE_NAME = "执行断言"
+UI_BUCKET_NAME = get_default_bucket_name() or "argus-end"
+UI_OBJECT_PREFIX = "autowebcase"
+UI_SCHEMA_READY = False
+UI_RUNNER_BOOTSTRAP_FILE = Path(__file__).resolve().parents[2] / "ui_runner" / ".runner-bootstrap.json"
+UI_RUN_ACTIVE_STATUSES = {"queued", "claimed", "running", "uploading"}
+UI_RUN_TERMINAL_STATUSES = {"success", "failed", "cancelled", "skipped", "partial_success"}
+
+
+def _node_text(node):
+    if not isinstance(node, dict):
+        return ""
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    return str(
+        data.get("text")
+        or data.get("title")
+        or node.get("label")
+        or node.get("title")
+        or node.get("text")
+        or ""
+    ).strip()
+
+
+def _normalize_node_marker(value):
+    return re.sub(r"[\s:：]+", "", str(value or "")).strip().lower()
+
+
+def _is_named_node(value, expected):
+    return _normalize_node_marker(value) == _normalize_node_marker(expected)
+
+
+def _is_ui_case_content_node(value):
+    return any((
+        _is_named_node(value, UI_CASE_CONFIG_NODE_NAME),
+        _is_named_node(value, UI_CASE_STEP_NODE_NAME),
+        _is_named_node(value, UI_CASE_ASSERT_NODE_NAME),
+    ))
+
+
+def _looks_like_ui_case_node(node):
+    children = _node_children(node)
+    if not children:
+        return False
+    has_step_or_assert = False
+    has_config = False
+    for child in children:
+        child_text = _node_text(child)
+        if _is_named_node(child_text, UI_CASE_STEP_NODE_NAME) or _is_named_node(child_text, UI_CASE_ASSERT_NODE_NAME):
+            has_step_or_assert = True
+        elif _is_named_node(child_text, UI_CASE_CONFIG_NODE_NAME):
+            has_config = True
+    if has_step_or_assert:
+        return True
+    if not has_config:
+        return False
+    return not any(_looks_like_ui_case_node(child) for child in children if not _is_ui_case_content_node(_node_text(child)))
+
+
+def _node_children(node):
+    if not isinstance(node, dict):
+        return []
+    children = node.get("children")
+    if isinstance(children, list):
+        return children
+    if isinstance(children, dict):
+        attached = children.get("attached")
+        if isinstance(attached, list):
+            return attached
+    return []
+
+
+def _parse_json_text(value):
+    text_value = str(value or "").strip()
+    if not text_value:
+        return None
+    try:
+        return json.loads(text_value)
+    except Exception:
+        return None
+
+
+def _normalize_runner_server(request: Request):
+    origin = str(getattr(request, "base_url", "") or "").strip().rstrip("/")
+    return origin or "http://127.0.0.1:7777"
+
+
+def _build_runner_bootstrap_payload(request: Request, user_info: dict, project_id: int, run_ids, plan_id: int = 0,
+                                    ai_model: dict = None):
+    expire_ts, token = UserToken.get_token({
+        "id": int(user_info["id"]),
+        "role": int(user_info.get("role") or 0),
+    })
+    primary_run_id = int(run_ids[0]) if run_ids else 0
+    return {
+        "server": _normalize_runner_server(request),
+        "project_id": int(project_id or 0),
+        "plan_id": int(plan_id or 0),
+        "run_id": primary_run_id,
+        "run_ids": [int(item) for item in (run_ids or []) if int(item or 0) > 0],
+        "any_project": True,
+        "token": token,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "expires_at": datetime.fromtimestamp(float(expire_ts)).strftime("%Y-%m-%d %H:%M:%S"),
+        "source": "argus-ui-test",
+        "ai_model": ai_model or {},
+    }
+
+
+def _write_runner_bootstrap_file(payload: dict):
+    UI_RUNNER_BOOTSTRAP_FILE.parent.mkdir(parents=True, exist_ok=True)
+    UI_RUNNER_BOOTSTRAP_FILE.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+async def _ensure_table_index(session, table_name: str, index_name: str, columns: str):
+    try:
+        await session.execute(text(f"ALTER TABLE {table_name} ADD INDEX {index_name} ({columns})"))
+    except Exception:
+        pass
+
+
+def _clamp_pagination(page=1, size=20, max_size=200):
+    page_value = max(int(page or 1), 1)
+    size_value = min(max(int(size or 20), 1), max_size)
+    return page_value, size_value, (page_value - 1) * size_value
+
+
+def _paged_payload(items, total: int, page: int, size: int):
+    return {
+        "list": items,
+        "total": int(total or 0),
+        "page": int(page or 1),
+        "size": int(size or 20),
+    }
+
+
+def _resolve_tree_roots(root):
+    if isinstance(root, list):
+        return [item for item in root if isinstance(item, dict)]
+    if not isinstance(root, dict):
+        return []
+    if isinstance(root.get("root"), dict):
+        return [root["root"]]
+    return [root]
+
+
+def _find_ui_nodes(root):
+    results = []
+
+    def append_result(node, path_parts, shared_config=None):
+        current_text = _node_text(node)
+        if not current_text:
+            return
+        results.append({
+            "node": node,
+            "path": " / ".join(path_parts + [current_text]),
+            "title": current_text,
+            "shared_config": dict(shared_config or {}),
+        })
+
+    def collect_cases_under_ui_root(node, path_parts, inherited_config=None):
+        # 兼容两种结构：
+        # 1. UI自动化用例 -> 场景配置/测试步骤/执行断言
+        # 2. UI自动化用例 -> 功能节点 -> 场景配置/测试步骤/执行断言
+        current_text = _node_text(node)
+        next_path = path_parts + [current_text] if current_text else list(path_parts)
+        merged_config = dict(inherited_config or {})
+        for child in _node_children(node):
+            if _is_named_node(_node_text(child), UI_CASE_CONFIG_NODE_NAME):
+                merged_config.update(_parse_key_value_nodes(child))
+        if _looks_like_ui_case_node(node):
+            append_result(node, path_parts, merged_config)
+            return
+        matched = False
+        for child in _node_children(node):
+            if _is_ui_case_content_node(_node_text(child)):
+                continue
+            if _looks_like_ui_case_node(child):
+                append_result(child, next_path, merged_config)
+                matched = True
+        if matched:
+            return
+        for child in _node_children(node):
+            if _is_ui_case_content_node(_node_text(child)):
+                continue
+            collect_cases_under_ui_root(child, next_path, merged_config)
+
+    def walk(node, path_parts):
+        current_text = _node_text(node)
+        next_path = path_parts + [current_text] if current_text else list(path_parts)
+        if _is_named_node(current_text, UI_CASE_NODE_NAME):
+            collect_cases_under_ui_root(node, path_parts, {})
+            return
+        for child in _node_children(node):
+            walk(child, next_path)
+
+    for item in _resolve_tree_roots(root):
+        walk(item, [])
+    return results
+
+
+def _parse_key_value_nodes(node):
+    values = {}
+    for child in _node_children(node):
+        text_value = _node_text(child)
+        if not text_value:
+            continue
+        if "：" in text_value:
+            key, value = text_value.split("：", 1)
+            values[str(key).strip()] = str(value).strip()
+        elif ":" in text_value:
+            key, value = text_value.split(":", 1)
+            values[str(key).strip()] = str(value).strip()
+    return values
+
+
+def _parse_ui_step(text_value):
+    raw_text = str(text_value or "").strip()
+    if not raw_text:
+        return None, "步骤内容为空"
+    normalized = re.sub(r"^\d+[\s\.\、\)\）\-]*", "", raw_text).strip()
+
+    if normalized.startswith("打开 "):
+        return {"type": "open", "value": normalized[3:].strip(), "raw": raw_text}, None
+    if normalized.startswith("点击 "):
+        return {"type": "click", "target": normalized[3:].strip(), "raw": raw_text}, None
+    if normalized.startswith("输入 "):
+        body = normalized[3:].strip()
+        if " " not in body:
+            return None, f"输入步骤缺少目标或值: {raw_text}"
+        target, value = body.split(" ", 1)
+        return {"type": "input", "target": target.strip(), "value": value.strip(), "raw": raw_text}, None
+    if normalized.startswith("选择 "):
+        body = normalized[3:].strip()
+        if " " not in body:
+            return None, f"选择步骤缺少目标或值: {raw_text}"
+        target, value = body.split(" ", 1)
+        return {"type": "select", "target": target.strip(), "value": value.strip(), "raw": raw_text}, None
+    if normalized.startswith("等待出现 "):
+        return {"type": "wait_exists", "target": normalized[5:].strip(), "raw": raw_text}, None
+    if normalized.startswith("等待消失 "):
+        return {"type": "wait_not_exists", "target": normalized[5:].strip(), "raw": raw_text}, None
+    if normalized.startswith("断言出现 "):
+        return {"type": "assert_exists", "target": normalized[5:].strip(), "raw": raw_text}, None
+    if normalized.startswith("断言不存在 "):
+        return {"type": "assert_not_exists", "target": normalized[6:].strip(), "raw": raw_text}, None
+    if normalized.startswith("断言文本 "):
+        body = normalized[5:].strip()
+        if " " not in body:
+            return None, f"断言文本步骤缺少目标或值: {raw_text}"
+        target, expected = body.split(" ", 1)
+        return {"type": "assert_text", "target": target.strip(), "expected": expected.strip(), "raw": raw_text}, None
+    if normalized.startswith("截图 "):
+        return {"type": "screenshot", "name": normalized[3:].strip() or "step", "raw": raw_text}, None
+    if normalized.startswith("提取 "):
+        body = normalized[3:].strip()
+        if "=>" not in body:
+            return None, f"提取步骤缺少保存变量: {raw_text}"
+        target, save_as = body.split("=>", 1)
+        return {
+            "type": "extract_text",
+            "target": target.strip(),
+            "save_as": save_as.strip(),
+            "raw": raw_text,
+        }, None
+    return None, f"不支持的步骤动作: {raw_text}"
+
+
+def _compile_ui_case(node_wrapper, project_id, file_id, file_title):
+    node = node_wrapper["node"]
+    ui_path = node_wrapper["path"]
+    config_node = None
+    step_node = None
+    assertion_node = None
+    for child in _node_children(node):
+        child_text = _node_text(child)
+        if _is_named_node(child_text, UI_CASE_CONFIG_NODE_NAME):
+            config_node = child
+        elif _is_named_node(child_text, UI_CASE_STEP_NODE_NAME):
+            step_node = child
+        elif _is_named_node(child_text, UI_CASE_ASSERT_NODE_NAME):
+            assertion_node = child
+
+    if step_node is None:
+        return {
+            "status": "empty_ui_node",
+            "message": "缺少“测试步骤”节点",
+            "dsl": None,
+            "step_count": 0,
+        }
+
+    step_errors = []
+    steps = []
+    for child in _node_children(step_node):
+        parsed, error = _parse_ui_step(_node_text(child))
+        if error:
+            step_errors.append(error)
+            continue
+        steps.append(parsed)
+
+    if not steps:
+        return {
+            "status": "empty_ui_node",
+            "message": "测试步骤为空",
+            "dsl": None,
+            "step_count": 0,
+        }
+
+    if step_errors:
+        return {
+            "status": "invalid_ui_node",
+            "message": "；".join(step_errors[:5]),
+            "dsl": {
+                "mode": "ui_web_midscene",
+                "project_id": project_id,
+                "file_id": file_id,
+                "file_title": file_title,
+                "ui_case_path": ui_path,
+                "steps": steps,
+            },
+            "step_count": len(steps),
+        }
+
+    config_map = dict(node_wrapper.get("shared_config") or {})
+    if config_node:
+        config_map.update(_parse_key_value_nodes(config_node))
+    assertions = []
+    if assertion_node:
+        for child in _node_children(assertion_node):
+            child_text = _node_text(child)
+            if not child_text:
+                continue
+            if "：" in child_text:
+                key, value = child_text.split("：", 1)
+            elif ":" in child_text:
+                key, value = child_text.split(":", 1)
+            else:
+                assertions.append({"type": "raw", "value": child_text})
+                continue
+            assertions.append({"type": str(key).strip(), "value": str(value).strip()})
+
+    dsl = {
+        "mode": "ui_web_midscene",
+        "project_id": project_id,
+        "file_id": file_id,
+        "file_title": file_title,
+        "ui_case_path": ui_path,
+        "ui_case_title": str(node_wrapper.get("title") or UI_CASE_NODE_NAME),
+        "channel": config_map.get("渠道", "web"),
+        "entry_url": config_map.get("页面入口", ""),
+        "browser": config_map.get("浏览器", "chromium"),
+        "headless": True,
+        "scene_config": config_map,
+        "steps": steps,
+        "assertions": assertions,
+    }
+    return {
+        "status": "valid",
+        "message": "校验通过",
+        "dsl": dsl,
+        "step_count": len(steps),
+    }
+
+
+async def ensure_ui_test_schema(session):
+    global UI_SCHEMA_READY
+    if UI_SCHEMA_READY:
+        return
+    await session.execute(text(
+        "CREATE TABLE IF NOT EXISTS pity_ui_test_case_ref ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+        "deleted_at BIGINT NOT NULL DEFAULT 0,"
+        "create_user INT NOT NULL DEFAULT 0,"
+        "update_user INT NOT NULL DEFAULT 0,"
+        "project_id INT NOT NULL DEFAULT 0,"
+        "file_id INT NOT NULL DEFAULT 0,"
+        "file_title VARCHAR(128) NOT NULL DEFAULT '',"
+        "node_uid VARCHAR(64) NOT NULL DEFAULT '',"
+        "node_title VARCHAR(128) NOT NULL DEFAULT '',"
+        "node_path TEXT NULL,"
+        "status VARCHAR(32) NOT NULL DEFAULT 'empty_ui_node',"
+        "step_count INT NOT NULL DEFAULT 0,"
+        "dsl_json LONGTEXT NULL,"
+        "validation_result LONGTEXT NULL,"
+        "source_snapshot LONGTEXT NULL,"
+        "last_scanned_at DATETIME NULL,"
+        "KEY idx_ui_case_project_deleted (project_id, deleted_at),"
+        "KEY idx_ui_case_file_deleted (file_id, deleted_at),"
+        "KEY idx_ui_case_node_uid_deleted (node_uid, deleted_at)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='UI测试用例引用表'"
+    ))
+    await session.execute(text(
+        "CREATE TABLE IF NOT EXISTS pity_ui_test_plan ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+        "deleted_at BIGINT NOT NULL DEFAULT 0,"
+        "create_user INT NOT NULL DEFAULT 0,"
+        "update_user INT NOT NULL DEFAULT 0,"
+        "project_id INT NOT NULL DEFAULT 0,"
+        "name VARCHAR(128) NOT NULL DEFAULT '',"
+        "description VARCHAR(500) NULL,"
+        "env_name VARCHAR(64) NULL,"
+        "base_url VARCHAR(255) NULL,"
+        "browser VARCHAR(32) NOT NULL DEFAULT 'chromium',"
+        "headless TINYINT(1) NOT NULL DEFAULT 1,"
+        "ordered TINYINT(1) NOT NULL DEFAULT 0,"
+        "cron VARCHAR(64) NULL,"
+        "retry_times INT NOT NULL DEFAULT 0,"
+        "status VARCHAR(32) NOT NULL DEFAULT 'enabled',"
+        "runner_config LONGTEXT NULL,"
+        "KEY idx_ui_plan_project_deleted (project_id, deleted_at)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='UI测试计划表'"
+    ))
+    await session.execute(text(
+        "CREATE TABLE IF NOT EXISTS pity_ui_test_plan_case ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+        "deleted_at BIGINT NOT NULL DEFAULT 0,"
+        "create_user INT NOT NULL DEFAULT 0,"
+        "update_user INT NOT NULL DEFAULT 0,"
+        "plan_id BIGINT NOT NULL DEFAULT 0,"
+        "case_ref_id BIGINT NOT NULL DEFAULT 0,"
+        "sort_index INT NOT NULL DEFAULT 0,"
+        "enabled TINYINT(1) NOT NULL DEFAULT 1,"
+        "KEY idx_ui_plan_case_plan_deleted (plan_id, deleted_at)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='UI测试计划用例关系表'"
+    ))
+    await session.execute(text(
+        "CREATE TABLE IF NOT EXISTS pity_ui_test_run ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+        "deleted_at BIGINT NOT NULL DEFAULT 0,"
+        "create_user INT NOT NULL DEFAULT 0,"
+        "update_user INT NOT NULL DEFAULT 0,"
+        "project_id INT NOT NULL DEFAULT 0,"
+        "plan_id BIGINT NOT NULL DEFAULT 0,"
+        "case_ref_id BIGINT NOT NULL DEFAULT 0,"
+        "run_name VARCHAR(128) NOT NULL DEFAULT '',"
+        "status VARCHAR(32) NOT NULL DEFAULT 'queued',"
+        "trigger_mode VARCHAR(32) NOT NULL DEFAULT 'manual',"
+        "browser VARCHAR(32) NOT NULL DEFAULT 'chromium',"
+        "headless TINYINT(1) NOT NULL DEFAULT 1,"
+        "artifact_bucket VARCHAR(128) NOT NULL DEFAULT '',"
+        "artifact_prefix VARCHAR(255) NOT NULL DEFAULT '',"
+        "screenshot_dir VARCHAR(255) NOT NULL DEFAULT '',"
+        "video_path VARCHAR(255) NOT NULL DEFAULT '',"
+        "trace_path VARCHAR(255) NOT NULL DEFAULT '',"
+        "report_path VARCHAR(255) NOT NULL DEFAULT '',"
+        "result_json_path VARCHAR(255) NOT NULL DEFAULT '',"
+        "runner_payload LONGTEXT NULL,"
+        "result_payload LONGTEXT NULL,"
+        "error_message LONGTEXT NULL,"
+        "started_at DATETIME NULL,"
+        "finished_at DATETIME NULL,"
+        "KEY idx_ui_run_project_deleted (project_id, deleted_at),"
+        "KEY idx_ui_run_plan_deleted (plan_id, deleted_at)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='UI测试执行记录表'"
+    ))
+    await session.execute(text(
+        "CREATE TABLE IF NOT EXISTS pity_ui_test_step_result ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+        "deleted_at BIGINT NOT NULL DEFAULT 0,"
+        "create_user INT NOT NULL DEFAULT 0,"
+        "update_user INT NOT NULL DEFAULT 0,"
+        "run_id BIGINT NOT NULL DEFAULT 0,"
+        "step_index INT NOT NULL DEFAULT 0,"
+        "step_name VARCHAR(255) NOT NULL DEFAULT '',"
+        "step_type VARCHAR(64) NOT NULL DEFAULT '',"
+        "status VARCHAR(32) NOT NULL DEFAULT 'queued',"
+        "screenshot_path VARCHAR(255) NOT NULL DEFAULT '',"
+        "request_payload LONGTEXT NULL,"
+        "result_payload LONGTEXT NULL,"
+        "error_message LONGTEXT NULL,"
+        "duration_ms INT NOT NULL DEFAULT 0,"
+        "KEY idx_ui_step_run_deleted (run_id, deleted_at)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='UI测试步骤结果表'"
+    ))
+    await _ensure_table_index(
+        session,
+        "pity_ui_test_run",
+        "idx_ui_run_queue_claim",
+        "status, deleted_at, project_id, plan_id, id",
+    )
+    await _ensure_table_index(
+        session,
+        "pity_ui_test_run",
+        "idx_ui_run_debug_owner",
+        "trigger_mode, create_user, project_id, case_ref_id, deleted_at, id",
+    )
+    await _ensure_table_index(
+        session,
+        "pity_ui_test_run",
+        "idx_ui_run_report_scope",
+        "project_id, trigger_mode, deleted_at, id",
+    )
+    await _ensure_table_index(
+        session,
+        "pity_ui_test_step_result",
+        "idx_ui_step_run_order",
+        "run_id, deleted_at, step_index, id",
+    )
+    await _ensure_table_index(
+        session,
+        "pity_ui_test_case_ref",
+        "idx_ui_case_project_status_file",
+        "project_id, status, deleted_at, file_id",
+    )
+    await _ensure_table_index(
+        session,
+        "pity_ui_test_plan_case",
+        "idx_ui_plan_case_enabled_order",
+        "plan_id, enabled, deleted_at, sort_index, id",
+    )
+    await session.commit()
+    UI_SCHEMA_READY = True
+
+
+async def _scan_project_cases(session, project_id, operator_user_id):
+    await ensure_ui_test_schema(session)
+    file_rows = await session.execute(
+        text(
+            "SELECT id, title, case_data FROM pity_functional_case_file "
+            "WHERE deleted_at=0 AND project_id=:project_id ORDER BY updated_at DESC, id DESC"
+        ),
+        {"project_id": project_id},
+    )
+    files = file_rows.mappings().all()
+    now_dt = datetime.now()
+    await session.execute(
+        text(
+            "UPDATE pity_ui_test_case_ref SET deleted_at=:deleted_at, update_user=:user_id, updated_at=:updated_at "
+            "WHERE project_id=:project_id AND deleted_at=0"
+        ),
+        {
+            "deleted_at": int(now_dt.timestamp()),
+            "user_id": operator_user_id,
+            "updated_at": now_dt,
+            "project_id": project_id,
+        },
+    )
+    insert_rows = []
+    for file_item in files:
+        file_id = int(file_item["id"])
+        file_title = str(file_item["title"] or "")
+        case_data = _parse_json_text(file_item.get("case_data"))
+        ui_nodes = _find_ui_nodes(case_data)
+        for index, node_wrapper in enumerate(ui_nodes):
+            compiled = _compile_ui_case(node_wrapper, project_id, file_id, file_title)
+            node_uid = hashlib.md5(f"{file_id}:{node_wrapper['path']}:{index}".encode("utf-8")).hexdigest()
+            insert_rows.append({
+                "deleted_at": 0,
+                "create_user": operator_user_id,
+                "update_user": operator_user_id,
+                "created_at": now_dt,
+                "updated_at": now_dt,
+                "project_id": project_id,
+                "file_id": file_id,
+                "file_title": file_title,
+                "node_uid": node_uid,
+                "node_title": node_wrapper["title"],
+                "node_path": node_wrapper["path"],
+                "status": compiled["status"],
+                "step_count": int(compiled["step_count"] or 0),
+                "dsl_json": json.dumps(compiled.get("dsl"), ensure_ascii=False) if compiled.get("dsl") else "",
+                "validation_result": json.dumps({"message": compiled["message"]}, ensure_ascii=False),
+                "source_snapshot": json.dumps(node_wrapper["node"], ensure_ascii=False),
+                "last_scanned_at": now_dt,
+            })
+    if insert_rows:
+        await session.execute(
+            text(
+                "INSERT INTO pity_ui_test_case_ref "
+                "(deleted_at, create_user, update_user, created_at, updated_at, project_id, file_id, file_title, node_uid, node_title, node_path, status, step_count, dsl_json, validation_result, source_snapshot, last_scanned_at) "
+                "VALUES "
+                "(:deleted_at, :create_user, :update_user, :created_at, :updated_at, :project_id, :file_id, :file_title, :node_uid, :node_title, :node_path, :status, :step_count, :dsl_json, :validation_result, :source_snapshot, :last_scanned_at)"
+            ),
+            insert_rows,
+        )
+    await session.commit()
+    return {"file_count": len(files), "ui_case_count": len(insert_rows)}
+
+
+def _normalize_bool(value, default=False):
+    if value in (True, False):
+        return value
+    if value is None:
+        return default
+    text_value = str(value).strip().lower()
+    return text_value in {"1", "true", "yes", "on"}
+
+
+def _normalize_ui_run_status(value, default="queued"):
+    status = str(value or "").strip().lower()
+    allowed = {
+        "queued", "claimed", "running", "uploading", "success", "failed", "cancelled", "skipped", "partial_success"
+    }
+    return status if status in allowed else default
+
+
+def _normalize_ui_step_status(value, default="queued"):
+    status = str(value or "").strip().lower()
+    allowed = {"queued", "running", "success", "failed", "skipped"}
+    return status if status in allowed else default
+
+
+def _normalize_plan_cron(cron):
+    fields = [x.strip() for x in str(cron or "").split() if x.strip()]
+    if not fields:
+        return ""
+    return " ".join("*" if field == "?" else field for field in fields)
+
+
+def _build_ui_plan_runner_cases(cases):
+    runner_cases = []
+    for index, item in enumerate(cases or [], start=1):
+        dsl = _parse_json_text(item.get("dsl_json")) or {}
+        steps = dsl.get("steps") if isinstance(dsl.get("steps"), list) else []
+        if not steps:
+            continue
+        runner_cases.append({
+            "case_index": index,
+            "case_ref_id": int(item.get("case_ref_id") or 0),
+            "file_title": str(item.get("file_title") or ""),
+            "node_title": str(item.get("node_title") or ""),
+            "node_path": str(item.get("node_path") or ""),
+            "dsl": dsl,
+        })
+    return runner_cases
+
+
+async def _create_ui_plan_run(session, plan: dict, cases, create_user_id=0, trigger_mode="manual"):
+    runner_cases = _build_ui_plan_runner_cases(cases)
+    if not runner_cases:
+        return 0
+
+    plan_id = int(plan.get("id") or 0)
+    project_id = int(plan.get("project_id") or 0)
+    now_dt = datetime.now()
+    run_name = str(plan.get("name") or "").strip() or f"UI计划#{plan_id}"
+    if len(runner_cases) > 1:
+        run_name = f"{run_name} ({len(runner_cases)}用例)"
+
+    insert_result = await session.execute(
+        text(
+            "INSERT INTO pity_ui_test_run "
+            "(created_at, updated_at, deleted_at, create_user, update_user, project_id, plan_id, case_ref_id, run_name, status, trigger_mode, browser, headless, artifact_bucket, artifact_prefix, screenshot_dir, video_path, trace_path, report_path, result_json_path, runner_payload, started_at) "
+            "VALUES "
+            "(:created_at, :updated_at, 0, :create_user, :update_user, :project_id, :plan_id, 0, :run_name, 'queued', :trigger_mode, :browser, :headless, :artifact_bucket, '', '', '', '', '', '', :runner_payload, :started_at)"
+        ),
+        {
+            "created_at": now_dt,
+            "updated_at": now_dt,
+            "create_user": int(create_user_id or 0),
+            "update_user": int(create_user_id or 0),
+            "project_id": project_id,
+            "plan_id": plan_id,
+            "run_name": run_name,
+            "trigger_mode": str(trigger_mode or "manual"),
+            "browser": str(plan.get("browser") or "chromium"),
+            "headless": int(plan.get("headless") or 1),
+            "artifact_bucket": UI_BUCKET_NAME,
+            "runner_payload": json.dumps({
+                "source": "ui_test_plan",
+                "plan_id": plan_id,
+                "plan_name": str(plan.get("name") or ""),
+                "case_count": len(runner_cases),
+                "ordered": bool(plan.get("ordered")),
+                "runner_config": _parse_json_text(plan.get("runner_config")) or {},
+                "cases": runner_cases,
+                "bucket": UI_BUCKET_NAME,
+                "prefix": UI_OBJECT_PREFIX,
+            }, ensure_ascii=False),
+            "started_at": now_dt,
+        },
+    )
+    run_id = int(insert_result.lastrowid or 0)
+    artifact_prefix = f"{UI_OBJECT_PREFIX}/{project_id}/{plan_id}/{run_id}"
+    await session.execute(
+        text(
+            "UPDATE pity_ui_test_run SET artifact_prefix=:artifact_prefix, screenshot_dir=:screenshot_dir, "
+            "video_path=:video_path, trace_path=:trace_path, report_path=:report_path, result_json_path=:result_json_path "
+            "WHERE id=:id"
+        ),
+        {
+            "id": run_id,
+            "artifact_prefix": artifact_prefix,
+            "screenshot_dir": f"{artifact_prefix}/screenshots/",
+            "video_path": f"{artifact_prefix}/videos/run.mp4",
+            "trace_path": f"{artifact_prefix}/traces/trace.zip",
+            "report_path": f"{artifact_prefix}/reports/report.html",
+            "result_json_path": f"{artifact_prefix}/logs/result.json",
+        },
+    )
+    return run_id
+
+
+def _parse_cron_trigger(cron):
+    fields = [x.strip() for x in str(cron or "").split() if x.strip()]
+    if len(fields) == 5:
+        return CronTrigger.from_crontab(" ".join(fields))
+    if len(fields) == 6:
+        second, minute, hour, day, month, day_of_week = fields
+        return CronTrigger(second=second, minute=minute, hour=hour, day=day, month=month, day_of_week=day_of_week)
+    if len(fields) == 7:
+        second, minute, hour, day, month, day_of_week, year = fields
+        return CronTrigger(second=second, minute=minute, hour=hour, day=day, month=month, day_of_week=day_of_week,
+                           year=year)
+    raise ValueError("cron表达式不合法")
+
+
+async def _enqueue_ui_plan_run(plan_id, user_id=0, trigger_mode="scheduler"):
+    async with async_session() as session:
+        plan_row = await session.execute(
+            text("SELECT * FROM pity_ui_test_plan WHERE deleted_at=0 AND id=:id AND status='enabled'"),
+            {"id": int(plan_id)},
+        )
+        plan = plan_row.mappings().first()
+        if not plan:
+            return
+        case_rows = await session.execute(
+            text(
+                "SELECT p.project_id, p.name, p.browser, p.headless, pc.case_ref_id, r.file_title, r.node_title, r.node_path, r.dsl_json "
+                "FROM pity_ui_test_plan p "
+                "LEFT JOIN pity_ui_test_plan_case pc ON p.id=pc.plan_id "
+                "LEFT JOIN pity_ui_test_case_ref r ON pc.case_ref_id=r.id "
+                "WHERE p.deleted_at=0 AND pc.deleted_at=0 AND pc.enabled=1 AND r.deleted_at=0 AND r.status='valid' "
+                "AND p.id=:plan_id ORDER BY pc.sort_index ASC, pc.id ASC"
+            ),
+            {"plan_id": int(plan_id)},
+        )
+        cases = case_rows.mappings().all()
+        run_id = await _create_ui_plan_run(session, dict(plan), cases, create_user_id=user_id, trigger_mode=trigger_mode)
+        await session.commit()
+        return [run_id] if run_id else []
+
+
+def _sync_ui_plan_scheduler(plan_id, plan_name, cron, enabled):
+    normalized_cron = _normalize_plan_cron(cron)
+    if not normalized_cron:
+        try:
+            Scheduler.scheduler.remove_job(f"ui_test_plan_{plan_id}")
+        except Exception:
+            pass
+        return
+    trigger = _parse_cron_trigger(normalized_cron)
+    job_id = f"ui_test_plan_{plan_id}"
+    try:
+        Scheduler.scheduler.add_job(
+            func=_enqueue_ui_plan_run,
+            args=(int(plan_id), 0, "scheduler"),
+            id=job_id,
+            name=f"UI测试计划:{plan_name}",
+            trigger=trigger,
+            replace_existing=True,
+        )
+    except Exception:
+        Scheduler.scheduler.modify_job(job_id=job_id, trigger=trigger, name=f"UI测试计划:{plan_name}")
+    try:
+        if enabled:
+            Scheduler.scheduler.resume_job(job_id)
+        else:
+            Scheduler.scheduler.pause_job(job_id)
+    except Exception:
+        pass
+
+
+async def restore_ui_test_scheduler_jobs():
+    async with async_session() as session:
+        rows = await session.execute(
+            text(
+                "SELECT id, name, cron, status "
+                "FROM pity_ui_test_plan WHERE deleted_at=0"
+            )
+        )
+        for item in rows.mappings().all():
+            try:
+                _sync_ui_plan_scheduler(
+                    int(item["id"] or 0),
+                    str(item.get("name") or ""),
+                    str(item.get("cron") or ""),
+                    str(item.get("status") or "enabled") == "enabled",
+                )
+            except Exception:
+                continue
+
+
+def _build_run_analysis(run_data, steps):
+    status = str(run_data.get("status") or "")
+    error_message = str(run_data.get("error_message") or "").strip()
+    failed_steps = [item for item in steps if str(item.get("status") or "") == "failed"]
+    if status == "cancelled":
+        return {
+            "status": "cancelled",
+            "summary": "本次UI执行已被手动停止。",
+            "reason_type": "cancelled",
+            "failed_step_count": len(failed_steps),
+            "suggestion": "如需继续验证，请重新试运行或重新执行计划。",
+        }
+    if status in {"queued", "claimed", "running", "uploading"}:
+        summary_map = {
+            "queued": "任务已入队，等待 Runner 领取执行。",
+            "claimed": "任务已被 Runner 领取，等待开始执行步骤。",
+            "running": "任务执行中，可稍后刷新查看步骤结果。",
+            "uploading": "步骤已执行完成，正在生成并上传截图、Trace、视频和报告产物。",
+        }
+        return {
+            "status": status,
+            "summary": summary_map.get(status) or "任务正在处理中。",
+            "reason_type": "artifact_uploading" if status == "uploading" else "pending",
+            "failed_step_count": len(failed_steps),
+            "suggestion": "等待对象存储产物上传完成后再查看截图、Trace、视频和报告。" if status == "uploading" else "等待 Runner 执行完成后再查看截图、trace 和报告产物。",
+        }
+    if status == "success":
+        if not steps:
+            return {
+                "status": "failed",
+                "summary": "Runner 标记成功，但没有回写任何步骤结果，判定为空执行。",
+                "reason_type": "empty_execution",
+                "failed_step_count": 0,
+                "suggestion": "检查 Runner 是否消费到了 runner_payload.cases，并确认当前运行的 Runner 已更新到最新版本。",
+            }
+        return {
+            "status": "success",
+            "summary": "本次UI执行成功，未发现失败步骤。",
+            "reason_type": "none",
+            "suggestion": "无需处理。",
+        }
+
+    text_value = f"{error_message}\n" + "\n".join(str(item.get("error_message") or "") for item in failed_steps)
+    lowered = text_value.lower()
+    if any(key in lowered for key in ("timeout", "timed out", "waitfor")):
+        reason_type = "timeout"
+        summary = "高概率为页面加载或元素等待超时。"
+        suggestion = "优先检查页面响应速度、等待条件和步骤描述是否过于模糊。"
+    elif any(key in lowered for key in ("not found", "locator", "element", "不存在")):
+        reason_type = "locator"
+        summary = "高概率为元素定位失败或页面结构变化。"
+        suggestion = "检查页面文案、布局变化，必要时改写步骤目标描述。"
+    elif any(key in lowered for key in ("assert", "期望", "expected")):
+        reason_type = "assertion"
+        summary = "高概率为断言不满足。"
+        suggestion = "检查业务预期、测试数据以及页面实际渲染结果。"
+    elif any(key in lowered for key in ("net::", "network", "http", "https", "dns")):
+        reason_type = "environment"
+        summary = "高概率为环境连通性或网络异常。"
+        suggestion = "检查目标环境、DNS、代理和登录态配置。"
+    else:
+        reason_type = "unknown"
+        summary = "存在失败步骤，但当前无法从错误文本中稳定归因。"
+        suggestion = "优先查看失败步骤截图、trace 和 report.html。"
+
+    return {
+        "status": status or "failed",
+        "summary": summary,
+        "reason_type": reason_type,
+        "failed_step_count": len(failed_steps),
+        "suggestion": suggestion,
+    }
+
+
+def _guess_artifact_preview_type(path_value: str):
+    suffix = Path(str(path_value or "").lower()).suffix
+    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg"}:
+        return "image"
+    if suffix in {".mp4", ".webm", ".ogg", ".mov", ".m4v", ".avi", ".mkv"}:
+        return "video"
+    if suffix in {".html", ".htm"}:
+        return "html"
+    if suffix in {".json", ".log", ".txt", ".md", ".xml", ".yaml", ".yml"}:
+        return "text"
+    if suffix == ".pdf":
+        return "pdf"
+    if suffix == ".zip":
+        return "archive"
+    return "file"
+
+
+async def _build_artifact_descriptor(client, bucket_name: str, object_key: str, label: str = ""):
+    normalized_key = str(object_key or "").replace("\\", "/").strip().strip("/")
+    if not normalized_key:
+        return None
+    item = {
+        "label": label or Path(normalized_key).name,
+        "object_key": normalized_key,
+        "preview_type": _guess_artifact_preview_type(normalized_key),
+        "name": Path(normalized_key).name,
+        "view_url": "",
+        "content_type": "",
+        "bucket_name": str(bucket_name or ""),
+        "size": 0,
+        "file_size": "",
+        "available": False,
+    }
+    try:
+        detail = await client.get_object_detail(normalized_key, bucket_name=bucket_name or None)
+        item.update({
+            "view_url": detail.get("view_url") or "",
+            "content_type": detail.get("content_type") or "",
+            "bucket_name": detail.get("bucket") or item["bucket_name"],
+            "size": int(detail.get("size") or 0),
+            "file_size": detail.get("file_size") or "",
+            "available": True,
+        })
+    except Exception:
+        pass
+    return item
+
+
+async def _upload_artifact_with_retry(client, object_key: str, content: bytes, bucket_name: str = None,
+                                      content_type: str = "application/octet-stream", attempts: int = 3):
+    last_error = None
+    normalized_attempts = max(1, int(attempts or 1))
+    for attempt in range(1, normalized_attempts + 1):
+        try:
+            upload_result, file_size = await client.create_file(
+                object_key,
+                content,
+                bucket_name=bucket_name,
+                content_type=content_type or "application/octet-stream",
+            )
+            return upload_result, file_size, attempt
+        except Exception as exc:
+            last_error = exc
+            if attempt < normalized_attempts:
+                await asyncio.sleep(min(1.2 * attempt, 5))
+    raise RuntimeError(f"对象存储上传失败，已重试{normalized_attempts}次：{last_error}") from last_error
+
+
+@router.post("/case/scan")
+async def scan_ui_test_cases(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
+    payload = await request.json()
+    project_id = int(payload.get("project_id") or 0)
+    if project_id <= 0:
+        return PityResponse.failed("project_id不能为空")
+    result = await _scan_project_cases(session, project_id, int(user_info["id"]))
+    return PityResponse.success(result)
+
+
+@router.get("/case/list")
+async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "", auto_scan: bool = False,
+                             page: int = 1, size: int = 20, paged: bool = False,
+                             session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    page, size, offset = _clamp_pagination(page, size, 200)
+    existing_row = await session.execute(
+        text(
+            "SELECT COUNT(1) AS total FROM pity_ui_test_case_ref "
+            "WHERE deleted_at=0 AND project_id=:project_id"
+        ),
+        {"project_id": int(project_id or 0)},
+    )
+    existing_total = int((existing_row.mappings().first() or {}).get("total") or 0)
+    should_scan = bool(auto_scan) or existing_total == 0
+    if should_scan:
+        await _scan_project_cases(session, int(project_id), int(user_info["id"]))
+    normalized_status = str(status or "").strip()
+    status_expr = (
+        "CASE "
+        "WHEN COUNT(r.id)=0 THEN 'no_ui_node' "
+        "WHEN SUM(CASE WHEN r.status='valid' THEN 1 ELSE 0 END)>0 THEN 'valid' "
+        "WHEN SUM(CASE WHEN r.status='invalid_ui_node' THEN 1 ELSE 0 END)>0 THEN 'invalid_ui_node' "
+        "ELSE 'empty_ui_node' END"
+    )
+    params = {"project_id": project_id, "keyword": keyword or "", "like_keyword": f"%{keyword or ''}%"}
+    sql = (
+        "SELECT f.id AS file_id, f.title AS file_title, "
+        "COUNT(r.id) AS ui_case_count, "
+        "SUM(CASE WHEN r.status='valid' THEN 1 ELSE 0 END) AS valid_ui_case_count, "
+        "SUM(CASE WHEN r.status='invalid_ui_node' THEN 1 ELSE 0 END) AS invalid_ui_case_count, "
+        "SUM(CASE WHEN r.status='empty_ui_node' THEN 1 ELSE 0 END) AS empty_ui_case_count, "
+        "MAX(r.last_scanned_at) AS last_scanned_at "
+        "FROM pity_functional_case_file f "
+        "LEFT JOIN pity_ui_test_case_ref r ON f.id=r.file_id AND r.deleted_at=0 "
+        "WHERE f.deleted_at=0 AND f.project_id=:project_id "
+        "AND (:keyword='' OR f.title LIKE :like_keyword OR CAST(f.id AS CHAR) LIKE :like_keyword) "
+        "GROUP BY f.id, f.title "
+    )
+    if normalized_status:
+        sql += f"HAVING {status_expr}=:status "
+        params["status"] = normalized_status
+    sql += "ORDER BY f.updated_at DESC, f.id DESC"
+    if paged:
+        sql += " LIMIT :limit OFFSET :offset"
+        params["limit"] = size
+        params["offset"] = offset
+    rows = await session.execute(text(sql), params)
+    result = []
+    for row in rows.mappings().all():
+        item = dict(row)
+        item["ui_case_count"] = int(item.get("ui_case_count") or 0)
+        item["valid_ui_case_count"] = int(item.get("valid_ui_case_count") or 0)
+        item["invalid_ui_case_count"] = int(item.get("invalid_ui_case_count") or 0)
+        item["empty_ui_case_count"] = int(item.get("empty_ui_case_count") or 0)
+        item["has_valid_data"] = item["valid_ui_case_count"] > 0
+        if item["ui_case_count"] == 0:
+            item["status"] = "no_ui_node"
+        elif item["valid_ui_case_count"] > 0:
+            item["status"] = "valid"
+        elif item["invalid_ui_case_count"] > 0:
+            item["status"] = "invalid_ui_node"
+        else:
+            item["status"] = "empty_ui_node"
+        result.append(item)
+    if not paged:
+        return PityResponse.success(result)
+    count_sql = (
+        "SELECT COUNT(1) AS total FROM ("
+        "SELECT f.id "
+        "FROM pity_functional_case_file f "
+        "LEFT JOIN pity_ui_test_case_ref r ON f.id=r.file_id AND r.deleted_at=0 "
+        "WHERE f.deleted_at=0 AND f.project_id=:project_id "
+        "AND (:keyword='' OR f.title LIKE :like_keyword OR CAST(f.id AS CHAR) LIKE :like_keyword) "
+        "GROUP BY f.id, f.title "
+    )
+    count_params = {"project_id": project_id, "keyword": keyword or "", "like_keyword": f"%{keyword or ''}%"}
+    if normalized_status:
+        count_sql += f"HAVING {status_expr}=:status "
+        count_params["status"] = normalized_status
+    count_sql += ") t"
+    count_row = await session.execute(text(count_sql), count_params)
+    total = int((count_row.mappings().first() or {}).get("total") or 0)
+    return PityResponse.success(_paged_payload(result, total, page, size))
+
+
+@router.get("/case/nodes")
+async def list_ui_test_case_nodes(file_id: int, include_dsl: bool = False,
+                                  session=Depends(get_session), _=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    dsl_column = ", dsl_json" if include_dsl else ""
+    rows = await session.execute(
+        text(
+            "SELECT id, file_id, file_title, node_uid, node_title, node_path, status, step_count, validation_result, last_scanned_at "
+            f"{dsl_column} "
+            "FROM pity_ui_test_case_ref WHERE deleted_at=0 AND file_id=:file_id ORDER BY id ASC"
+        ),
+        {"file_id": file_id},
+    )
+    data = []
+    for row in rows.mappings().all():
+        item = dict(row)
+        item["step_count"] = int(item.get("step_count") or 0)
+        item["validation_result"] = _parse_json_text(item.get("validation_result")) or {}
+        item["dsl_json"] = (_parse_json_text(item.get("dsl_json")) or {}) if include_dsl else {}
+        data.append(item)
+    return PityResponse.success(data)
+
+
+@router.get("/case/detail")
+async def get_ui_test_case_detail(id: int, session=Depends(get_session), _=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    row = await session.execute(
+        text(
+            "SELECT id, project_id, file_id, file_title, node_uid, node_title, node_path, status, step_count, "
+            "dsl_json, validation_result, source_snapshot, last_scanned_at "
+            "FROM pity_ui_test_case_ref WHERE deleted_at=0 AND id=:id"
+        ),
+        {"id": id},
+    )
+    item = row.mappings().first()
+    if not item:
+        return PityResponse.failed("UI测试用例不存在")
+    data = dict(item)
+    data["dsl_json"] = _parse_json_text(data.get("dsl_json")) or {}
+    data["validation_result"] = _parse_json_text(data.get("validation_result")) or {}
+    data["source_snapshot"] = _parse_json_text(data.get("source_snapshot")) or {}
+    return PityResponse.success(data)
+
+
+@router.post("/case/validate")
+async def validate_ui_test_case(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    payload = await request.json()
+    case_ref_id = int(payload.get("id") or 0)
+    if case_ref_id <= 0:
+        return PityResponse.failed("id不能为空")
+    row = await session.execute(
+        text(
+            "SELECT id, project_id, file_id, node_uid, node_path "
+            "FROM pity_ui_test_case_ref WHERE deleted_at=0 AND id=:id"
+        ),
+        {"id": case_ref_id},
+    )
+    record = row.mappings().first()
+    if not record:
+        return PityResponse.failed("UI测试用例不存在")
+    await _scan_project_cases(session, int(record["project_id"]), int(user_info["id"]))
+    refreshed = await session.execute(
+        text(
+            "SELECT id, status, step_count, validation_result, dsl_json, last_scanned_at "
+            "FROM pity_ui_test_case_ref "
+            "WHERE deleted_at=0 AND project_id=:project_id AND file_id=:file_id AND node_uid=:node_uid"
+        ),
+        {
+            "project_id": int(record["project_id"] or 0),
+            "file_id": int(record["file_id"] or 0),
+            "node_uid": str(record.get("node_uid") or ""),
+        },
+    )
+    item = refreshed.mappings().first()
+    if not item:
+        return PityResponse.failed(f"UI测试用例已失效: {record.get('node_path') or case_ref_id}")
+    data = dict(item)
+    data["validation_result"] = _parse_json_text(data.get("validation_result")) or {}
+    data["dsl_json"] = _parse_json_text(data.get("dsl_json")) or {}
+    return PityResponse.success(data)
+
+
+@router.post("/case/preview-dsl")
+async def preview_ui_test_case_dsl(request: Request, session=Depends(get_session), _=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    payload = await request.json()
+    case_ref_id = int(payload.get("id") or 0)
+    if case_ref_id <= 0:
+        return PityResponse.failed("id不能为空")
+    row = await session.execute(
+        text("SELECT id, status, dsl_json, validation_result FROM pity_ui_test_case_ref WHERE deleted_at=0 AND id=:id"),
+        {"id": case_ref_id},
+    )
+    record = row.mappings().first()
+    if not record:
+        return PityResponse.failed("UI测试用例不存在")
+    return PityResponse.success({
+        "id": int(record["id"]),
+        "status": record["status"],
+        "dsl": _parse_json_text(record.get("dsl_json")) or {},
+        "validation_result": _parse_json_text(record.get("validation_result")) or {},
+    })
+
+
+@router.post("/case/trial-run")
+async def trial_run_ui_test_case(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    payload = await request.json()
+    case_ref_id = int(payload.get("id") or 0)
+    if case_ref_id <= 0:
+        return PityResponse.failed("id不能为空")
+
+    row = await session.execute(
+        text(
+            "SELECT id, project_id, file_title, node_title, node_path, status, dsl_json "
+            "FROM pity_ui_test_case_ref WHERE deleted_at=0 AND id=:id"
+        ),
+        {"id": case_ref_id},
+    )
+    case_ref = row.mappings().first()
+    if not case_ref:
+        return PityResponse.failed("UI测试用例不存在")
+    if str(case_ref["status"]) != "valid":
+        return PityResponse.failed("该UI测试用例当前不可试运行")
+
+    now_dt = datetime.now()
+    insert_result = await session.execute(
+        text(
+            "INSERT INTO pity_ui_test_run "
+            "(created_at, updated_at, deleted_at, create_user, update_user, project_id, plan_id, case_ref_id, run_name, status, trigger_mode, browser, headless, artifact_bucket, artifact_prefix, screenshot_dir, video_path, trace_path, report_path, result_json_path, runner_payload, started_at) "
+            "VALUES "
+            "(:created_at, :updated_at, 0, :create_user, :update_user, :project_id, 0, :case_ref_id, :run_name, :status, :trigger_mode, :browser, :headless, :artifact_bucket, :artifact_prefix, :screenshot_dir, :video_path, :trace_path, :report_path, :result_json_path, :runner_payload, :started_at)"
+        ),
+        {
+            "created_at": now_dt,
+            "updated_at": now_dt,
+            "create_user": int(user_info["id"]),
+            "update_user": int(user_info["id"]),
+            "project_id": int(case_ref["project_id"] or 0),
+            "case_ref_id": case_ref_id,
+            "run_name": f"Trial Run #{case_ref_id}",
+            "status": "queued",
+            "trigger_mode": "trial",
+            "browser": str(payload.get("browser") or "chromium"),
+            "headless": 1 if _normalize_bool(payload.get("headless"), True) else 0,
+            "artifact_bucket": UI_BUCKET_NAME,
+            "artifact_prefix": "",
+            "screenshot_dir": "",
+            "video_path": "",
+            "trace_path": "",
+            "report_path": "",
+            "result_json_path": "",
+            "runner_payload": json.dumps({
+                "source": "ui_test_trial_run",
+                "debug": True,
+                "debug_user_id": int(user_info["id"]),
+                "file_title": case_ref["file_title"],
+                "node_title": case_ref["node_title"],
+                "node_path": case_ref["node_path"],
+                "dsl": _parse_json_text(case_ref.get("dsl_json")) or {},
+                "bucket": UI_BUCKET_NAME,
+                "prefix": UI_OBJECT_PREFIX,
+            }, ensure_ascii=False),
+            "started_at": now_dt,
+        },
+    )
+    run_id = int(insert_result.lastrowid or 0)
+    artifact_prefix = f"{UI_OBJECT_PREFIX}/{int(case_ref['project_id'] or 0)}/0/{run_id}"
+    await session.execute(
+        text(
+            "UPDATE pity_ui_test_run SET artifact_prefix=:artifact_prefix, screenshot_dir=:screenshot_dir, "
+            "video_path=:video_path, trace_path=:trace_path, report_path=:report_path, result_json_path=:result_json_path "
+            "WHERE id=:id"
+        ),
+        {
+            "id": run_id,
+            "artifact_prefix": artifact_prefix,
+            "screenshot_dir": f"{artifact_prefix}/screenshots/",
+            "video_path": f"{artifact_prefix}/videos/run.mp4",
+            "trace_path": f"{artifact_prefix}/traces/trace.zip",
+            "report_path": f"{artifact_prefix}/reports/report.html",
+            "result_json_path": f"{artifact_prefix}/logs/result.json",
+        },
+    )
+    await session.commit()
+    ai_model = await GConfigDao.get_active_ai_model_config()
+    bootstrap = _build_runner_bootstrap_payload(request, user_info, int(case_ref["project_id"] or 0), [run_id], 0, ai_model)
+    _write_runner_bootstrap_file(bootstrap)
+    return PityResponse.success({"run_id": run_id, "trigger_mode": "trial", "runner_bootstrap": bootstrap})
+
+
+@router.get("/plan/candidates")
+async def list_ui_plan_candidates(project_id: int, session=Depends(get_session), _=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    rows = await session.execute(
+        text(
+            "SELECT file_id, file_title, id, node_title, node_path, step_count "
+            "FROM pity_ui_test_case_ref "
+            "WHERE deleted_at=0 AND project_id=:project_id AND status='valid' "
+            "ORDER BY file_title ASC, id ASC"
+        ),
+        {"project_id": project_id},
+    )
+    grouped = {}
+    for row in rows.mappings().all():
+        file_id = int(row["file_id"])
+        grouped.setdefault(file_id, {
+            "file_id": file_id,
+            "file_title": row["file_title"],
+            "ui_case_count": 0,
+            "nodes": [],
+        })
+        grouped[file_id]["ui_case_count"] += 1
+        grouped[file_id]["nodes"].append({
+            "id": int(row["id"]),
+            "node_title": row["node_title"],
+            "node_path": row["node_path"],
+            "step_count": int(row["step_count"] or 0),
+        })
+    return PityResponse.success(list(grouped.values()))
+
+
+@router.get("/plan/list")
+async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str = "",
+                             page: int = 1, size: int = 20, paged: bool = False,
+                             session=Depends(get_session), _=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    page, size, offset = _clamp_pagination(page, size, 200)
+    sql = (
+        "SELECT p.id, p.project_id, p.name, p.description, p.env_name, p.base_url, p.browser, p.headless, "
+        "p.ordered, p.cron, p.retry_times, p.status, p.created_at, "
+        "COUNT(pc.id) AS case_count "
+        "FROM pity_ui_test_plan p "
+        "LEFT JOIN pity_ui_test_plan_case pc ON p.id=pc.plan_id AND pc.deleted_at=0 "
+        "WHERE p.deleted_at=0 "
+    )
+    params = {}
+    if int(project_id or 0) > 0:
+        sql += "AND p.project_id=:project_id "
+        params["project_id"] = int(project_id)
+    normalized_status = str(status or "").strip()
+    if normalized_status:
+        sql += "AND p.status=:status "
+        params["status"] = normalized_status
+    normalized_keyword = str(keyword or "").strip()
+    if normalized_keyword:
+        sql += "AND (p.name LIKE :like_keyword OR p.description LIKE :like_keyword OR p.env_name LIKE :like_keyword) "
+        params["like_keyword"] = f"%{normalized_keyword}%"
+    sql += "GROUP BY p.id ORDER BY p.updated_at DESC, p.id DESC"
+    if paged:
+        sql += " LIMIT :limit OFFSET :offset"
+        params["limit"] = size
+        params["offset"] = offset
+    rows = await session.execute(text(sql), params)
+    items = [dict(row) for row in rows.mappings().all()]
+    if not paged:
+        return PityResponse.success(items)
+    count_sql = "SELECT COUNT(1) AS total FROM pity_ui_test_plan p WHERE p.deleted_at=0 "
+    count_params = {}
+    if int(project_id or 0) > 0:
+        count_sql += "AND p.project_id=:project_id "
+        count_params["project_id"] = int(project_id)
+    if normalized_status:
+        count_sql += "AND p.status=:status "
+        count_params["status"] = normalized_status
+    if normalized_keyword:
+        count_sql += "AND (p.name LIKE :like_keyword OR p.description LIKE :like_keyword OR p.env_name LIKE :like_keyword) "
+        count_params["like_keyword"] = f"%{normalized_keyword}%"
+    count_row = await session.execute(text(count_sql), count_params)
+    total = int((count_row.mappings().first() or {}).get("total") or 0)
+    return PityResponse.success(_paged_payload(items, total, page, size))
+
+
+@router.get("/plan/detail")
+async def get_ui_test_plan_detail(id: int, session=Depends(get_session), _=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    plan_row = await session.execute(
+        text("SELECT * FROM pity_ui_test_plan WHERE deleted_at=0 AND id=:id"),
+        {"id": id},
+    )
+    plan = plan_row.mappings().first()
+    if not plan:
+        return PityResponse.failed("UI测试计划不存在")
+    case_rows = await session.execute(
+        text(
+            "SELECT pc.id, pc.case_ref_id, pc.sort_index, pc.enabled, r.file_title, r.node_title, r.node_path, r.status "
+            "FROM pity_ui_test_plan_case pc "
+            "LEFT JOIN pity_ui_test_case_ref r ON pc.case_ref_id=r.id "
+            "WHERE pc.deleted_at=0 AND pc.plan_id=:plan_id ORDER BY pc.sort_index ASC, pc.id ASC"
+        ),
+        {"plan_id": id},
+    )
+    data = dict(plan)
+    data["runner_config"] = _parse_json_text(data.get("runner_config")) or {}
+    data["cases"] = [dict(row) for row in case_rows.mappings().all()]
+    return PityResponse.success(data)
+
+
+@router.post("/plan/save")
+async def save_ui_test_plan(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    payload = await request.json()
+    plan_id = int(payload.get("id") or 0)
+    project_id = int(payload.get("project_id") or 0)
+    name = str(payload.get("name") or "").strip()
+    if project_id <= 0:
+        return PityResponse.failed("project_id不能为空")
+    if not name:
+        return PityResponse.failed("计划名称不能为空")
+    selected_case_ref_ids = [int(item) for item in (payload.get("selected_case_ref_ids") or []) if int(item or 0) > 0]
+    if not selected_case_ref_ids:
+        return PityResponse.failed("请至少选择一个UI自动化用例")
+    valid_rows = await session.execute(
+        text(
+            "SELECT id FROM pity_ui_test_case_ref "
+            "WHERE deleted_at=0 AND project_id=:project_id AND status='valid' AND id IN :ids"
+        ).bindparams(bindparam("ids", expanding=True)),
+        {"project_id": project_id, "ids": list(set(selected_case_ref_ids))},
+    )
+    valid_ids = {int(row["id"]) for row in valid_rows.mappings().all()}
+    if len(valid_ids) != len(set(selected_case_ref_ids)):
+        return PityResponse.failed("包含不可执行或已失效的UI自动化用例")
+
+    now_dt = datetime.now()
+    runner_config = json.dumps({
+        "midscene_provider": payload.get("midscene_provider") or "",
+        "analysis_provider": payload.get("analysis_provider") or "",
+        "record_video": _normalize_bool(payload.get("record_video"), True),
+        "record_trace": _normalize_bool(payload.get("record_trace"), True),
+        "capture_screenshot": _normalize_bool(payload.get("capture_screenshot"), True),
+    }, ensure_ascii=False)
+
+    if plan_id > 0:
+        plan_row = await session.execute(
+            text("SELECT id FROM pity_ui_test_plan WHERE deleted_at=0 AND id=:id"),
+            {"id": plan_id},
+        )
+        if not plan_row.first():
+            return PityResponse.failed("UI测试计划不存在")
+        await session.execute(
+            text(
+                "UPDATE pity_ui_test_plan SET project_id=:project_id, name=:name, description=:description, "
+                "env_name=:env_name, base_url=:base_url, browser=:browser, headless=:headless, ordered=:ordered, "
+                "cron=:cron, retry_times=:retry_times, status=:status, runner_config=:runner_config, "
+                "update_user=:update_user, updated_at=:updated_at WHERE id=:id"
+            ),
+            {
+                "id": plan_id,
+                "project_id": project_id,
+                "name": name,
+                "description": str(payload.get("description") or "").strip(),
+                "env_name": str(payload.get("env_name") or "").strip(),
+                "base_url": str(payload.get("base_url") or "").strip(),
+                "browser": str(payload.get("browser") or "chromium").strip() or "chromium",
+                "headless": 1 if _normalize_bool(payload.get("headless"), True) else 0,
+                "ordered": 1 if _normalize_bool(payload.get("ordered"), False) else 0,
+                "cron": str(payload.get("cron") or "").strip(),
+                "retry_times": int(payload.get("retry_times") or 0),
+                "status": str(payload.get("status") or "enabled").strip() or "enabled",
+                "runner_config": runner_config,
+                "update_user": int(user_info["id"]),
+                "updated_at": now_dt,
+            },
+        )
+        await session.execute(
+            text(
+                "UPDATE pity_ui_test_plan_case SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
+                "WHERE plan_id=:plan_id AND deleted_at=0"
+            ),
+            {
+                "deleted_at": int(now_dt.timestamp()),
+                "update_user": int(user_info["id"]),
+                "updated_at": now_dt,
+                "plan_id": plan_id,
+            },
+        )
+    else:
+        insert_result = await session.execute(
+            text(
+                "INSERT INTO pity_ui_test_plan "
+                "(created_at, updated_at, deleted_at, create_user, update_user, project_id, name, description, env_name, base_url, browser, headless, ordered, cron, retry_times, status, runner_config) "
+                "VALUES "
+                "(:created_at, :updated_at, 0, :create_user, :update_user, :project_id, :name, :description, :env_name, :base_url, :browser, :headless, :ordered, :cron, :retry_times, :status, :runner_config)"
+            ),
+            {
+                "created_at": now_dt,
+                "updated_at": now_dt,
+                "create_user": int(user_info["id"]),
+                "update_user": int(user_info["id"]),
+                "project_id": project_id,
+                "name": name,
+                "description": str(payload.get("description") or "").strip(),
+                "env_name": str(payload.get("env_name") or "").strip(),
+                "base_url": str(payload.get("base_url") or "").strip(),
+                "browser": str(payload.get("browser") or "chromium").strip() or "chromium",
+                "headless": 1 if _normalize_bool(payload.get("headless"), True) else 0,
+                "ordered": 1 if _normalize_bool(payload.get("ordered"), False) else 0,
+                "cron": str(payload.get("cron") or "").strip(),
+                "retry_times": int(payload.get("retry_times") or 0),
+                "status": str(payload.get("status") or "enabled").strip() or "enabled",
+                "runner_config": runner_config,
+            },
+        )
+        plan_id = int(insert_result.lastrowid or 0)
+
+    relation_rows = []
+    for index, case_ref_id in enumerate(selected_case_ref_ids):
+        relation_rows.append({
+            "created_at": now_dt,
+            "updated_at": now_dt,
+            "create_user": int(user_info["id"]),
+            "update_user": int(user_info["id"]),
+            "plan_id": plan_id,
+            "case_ref_id": case_ref_id,
+            "sort_index": index,
+        })
+    await session.execute(
+        text(
+            "INSERT INTO pity_ui_test_plan_case "
+            "(created_at, updated_at, deleted_at, create_user, update_user, plan_id, case_ref_id, sort_index, enabled) "
+            "VALUES "
+            "(:created_at, :updated_at, 0, :create_user, :update_user, :plan_id, :case_ref_id, :sort_index, 1)"
+        ),
+        relation_rows,
+    )
+    await session.commit()
+    _sync_ui_plan_scheduler(
+        plan_id,
+        name,
+        str(payload.get("cron") or "").strip(),
+        str(payload.get("status") or "enabled").strip() == "enabled",
+    )
+    return PityResponse.success({"id": plan_id})
+
+
+@router.post("/plan/run")
+async def run_ui_test_plan(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    payload = await request.json()
+    plan_id = int(payload.get("id") or 0)
+    if plan_id <= 0:
+        return PityResponse.failed("计划ID不能为空")
+    plan_row = await session.execute(
+        text("SELECT * FROM pity_ui_test_plan WHERE deleted_at=0 AND id=:id"),
+        {"id": plan_id},
+    )
+    plan = plan_row.mappings().first()
+    if not plan:
+        return PityResponse.failed("UI测试计划不存在")
+    case_rows = await session.execute(
+        text(
+            "SELECT pc.case_ref_id, r.file_title, r.node_title, r.node_path, r.dsl_json "
+            "FROM pity_ui_test_plan_case pc "
+            "LEFT JOIN pity_ui_test_case_ref r ON pc.case_ref_id=r.id "
+            "WHERE pc.deleted_at=0 AND pc.plan_id=:plan_id AND pc.enabled=1 AND r.deleted_at=0 AND r.status='valid' "
+            "ORDER BY pc.sort_index ASC, pc.id ASC"
+        ),
+        {"plan_id": plan_id},
+    )
+    cases = case_rows.mappings().all()
+    if not cases:
+        return PityResponse.failed("该计划没有可执行的UI自动化用例")
+
+    run_id = await _create_ui_plan_run(
+        session,
+        dict(plan),
+        cases,
+        create_user_id=int(user_info["id"]),
+        trigger_mode=str(payload.get("trigger_mode") or "manual"),
+    )
+    if not run_id:
+        await session.rollback()
+        return PityResponse.failed("该计划的UI自动化用例缺少可执行步骤，请重新扫描或校验用例")
+    await session.commit()
+    ai_model = await GConfigDao.get_active_ai_model_config()
+    bootstrap = _build_runner_bootstrap_payload(
+        request,
+        user_info,
+        int(plan["project_id"] or 0),
+        [run_id] if run_id else [],
+        plan_id,
+        ai_model,
+    )
+    _write_runner_bootstrap_file(bootstrap)
+    return PityResponse.success({
+        "run_ids": [run_id] if run_id else [],
+        "bucket": UI_BUCKET_NAME,
+        "object_prefix": UI_OBJECT_PREFIX,
+        "note": "已生成计划级 UI 测试执行记录与对象存储路径，Runner 接入后可直接消费该批次任务。",
+        "runner_bootstrap": bootstrap,
+    })
+
+
+@router.get("/run/list")
+async def list_ui_test_runs(
+        project_id: int = 0,
+        plan_id: int = 0,
+        case_ref_id: int = 0,
+        scope: str = "report",
+        status: str = "",
+        keyword: str = "",
+        page: int = 1,
+        size: int = 20,
+        paged: bool = False,
+        session=Depends(get_session),
+        user_info=Depends(Permission()),
+):
+    await ensure_ui_test_schema(session)
+    normalized_scope = str(scope or "report").strip().lower()
+    page, size, offset = _clamp_pagination(page, size, 200)
+    base_from = (
+        "FROM pity_ui_test_run r "
+        "LEFT JOIN pity_ui_test_plan p ON r.plan_id=p.id "
+        "LEFT JOIN pity_ui_test_case_ref c ON r.case_ref_id=c.id "
+    )
+    where_sql = "WHERE r.deleted_at=0 "
+    params = {}
+    if int(project_id or 0) > 0:
+        where_sql += "AND r.project_id=:project_id "
+        params["project_id"] = int(project_id)
+    if int(plan_id or 0) > 0:
+        where_sql += "AND r.plan_id=:plan_id "
+        params["plan_id"] = int(plan_id)
+    if int(case_ref_id or 0) > 0:
+        where_sql += "AND r.case_ref_id=:case_ref_id "
+        params["case_ref_id"] = int(case_ref_id)
+    if normalized_scope == "debug":
+        where_sql += "AND r.trigger_mode='trial' AND r.create_user=:create_user "
+        params["create_user"] = int(user_info["id"])
+    elif normalized_scope == "all":
+        pass
+    else:
+        where_sql += "AND r.trigger_mode<>'trial' "
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status:
+        if normalized_status == "running":
+            where_sql += "AND r.status IN ('claimed', 'running', 'uploading') "
+        else:
+            where_sql += "AND r.status=:status "
+            params["status"] = normalized_status
+    normalized_keyword = str(keyword or "").strip()
+    if normalized_keyword:
+        where_sql += (
+            "AND (CAST(r.id AS CHAR) LIKE :like_keyword OR r.run_name LIKE :like_keyword "
+            "OR p.name LIKE :like_keyword OR c.file_title LIKE :like_keyword "
+            "OR c.node_title LIKE :like_keyword OR c.node_path LIKE :like_keyword) "
+        )
+        params["like_keyword"] = f"%{normalized_keyword}%"
+
+    select_sql = (
+        "SELECT r.id, r.project_id, r.plan_id, r.case_ref_id, r.run_name, r.status, r.trigger_mode, "
+        "r.browser, r.headless, r.error_message, r.created_at, r.started_at, r.finished_at, "
+        "p.name AS plan_name, c.file_title, c.node_title, c.node_path "
+    )
+    sql = f"{select_sql}{base_from}{where_sql}ORDER BY r.id DESC"
+    if paged:
+        sql += " LIMIT :limit OFFSET :offset"
+        params["limit"] = size
+        params["offset"] = offset
+    rows = await session.execute(text(sql), params)
+    items = [dict(row) for row in rows.mappings().all()]
+    if not paged:
+        return PityResponse.success(items)
+
+    count_params = {key: value for key, value in params.items() if key not in {"limit", "offset"}}
+    count_row = await session.execute(text(f"SELECT COUNT(1) AS total {base_from}{where_sql}"), count_params)
+    total = int((count_row.mappings().first() or {}).get("total") or 0)
+    return PityResponse.success(_paged_payload(items, total, page, size))
+
+
+@router.get("/run/detail")
+async def get_ui_test_run_detail(
+        id: int,
+        include_payload: bool = True,
+        include_artifacts: bool = True,
+        include_step_payload: bool = True,
+        include_step_artifacts: bool = True,
+        session=Depends(get_session),
+        _=Depends(Permission()),
+):
+    await ensure_ui_test_schema(session)
+    run_payload_columns = ", r.runner_payload, r.result_payload" if include_payload else ""
+    run_row = await session.execute(
+        text(
+            "SELECT r.id, r.created_at, r.updated_at, r.create_user, r.project_id, r.plan_id, r.case_ref_id, "
+            "r.run_name, r.status, r.trigger_mode, r.browser, r.headless, r.artifact_bucket, r.artifact_prefix, "
+            "r.screenshot_dir, r.video_path, r.trace_path, r.report_path, r.result_json_path, "
+            "r.error_message, r.started_at, r.finished_at, "
+            "p.name AS plan_name, c.file_title, c.node_title, c.node_path "
+            f"{run_payload_columns} "
+            "FROM pity_ui_test_run r "
+            "LEFT JOIN pity_ui_test_plan p ON r.plan_id=p.id "
+            "LEFT JOIN pity_ui_test_case_ref c ON r.case_ref_id=c.id "
+            "WHERE r.deleted_at=0 AND r.id=:id"
+        ),
+        {"id": id},
+    )
+    run = run_row.mappings().first()
+    if not run:
+        return PityResponse.failed("UI测试执行记录不存在")
+    step_payload_columns = ", request_payload, result_payload" if include_step_payload else ""
+    step_rows = await session.execute(
+        text(
+            "SELECT id, step_index, step_name, step_type, status, screenshot_path, error_message, duration_ms "
+            f"{step_payload_columns} "
+            "FROM pity_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id ORDER BY step_index ASC, id ASC"
+        ),
+        {"run_id": id},
+    )
+    data = dict(run)
+    if include_payload:
+        data["runner_payload"] = _parse_json_text(data.get("runner_payload")) or {}
+        data["result_payload"] = _parse_json_text(data.get("result_payload")) or {}
+    else:
+        data["runner_payload"] = {}
+        data["result_payload"] = {}
+    client = None
+    if include_artifacts or include_step_artifacts:
+        try:
+            client = OssClient.get_oss_client()
+        except Exception:
+            client = None
+    steps = []
+    for row in step_rows.mappings().all():
+        item = dict(row)
+        if include_step_payload:
+            item["request_payload"] = _parse_json_text(item.get("request_payload")) or item.get("request_payload") or ""
+            item["result_payload"] = _parse_json_text(item.get("result_payload")) or item.get("result_payload") or ""
+        else:
+            item["request_payload"] = ""
+            item["result_payload"] = ""
+        if include_step_artifacts and client and item.get("screenshot_path"):
+            item["screenshot_artifact"] = await _build_artifact_descriptor(
+                client,
+                str(data.get("artifact_bucket") or UI_BUCKET_NAME or ""),
+                str(item.get("screenshot_path") or ""),
+                f"步骤{int(item.get('step_index') or 0)}截图",
+            )
+        else:
+            item["screenshot_artifact"] = None
+        steps.append(item)
+    data["steps"] = steps
+    data["analysis_summary"] = _build_run_analysis(data, steps)
+    artifact_bucket = str(data.get("artifact_bucket") or UI_BUCKET_NAME or "")
+    if include_artifacts and client:
+        data["artifacts"] = [item for item in [
+            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("report_path") or ""), "执行报告"),
+            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("video_path") or ""), "执行视频"),
+            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("trace_path") or ""), "Trace"),
+            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("result_json_path") or ""), "结果JSON"),
+        ] if item]
+    else:
+        data["artifacts"] = []
+    return PityResponse.success(data)
+
+
+@router.get("/run/step-detail")
+async def get_ui_test_run_step_detail(id: int, session=Depends(get_session), _=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    row = await session.execute(
+        text(
+            "SELECT id, run_id, step_index, step_name, step_type, status, screenshot_path, request_payload, "
+            "result_payload, error_message, duration_ms, created_at, updated_at "
+            "FROM pity_ui_test_step_result WHERE deleted_at=0 AND id=:id"
+        ),
+        {"id": id},
+    )
+    item = row.mappings().first()
+    if not item:
+        return PityResponse.failed("UI测试步骤结果不存在")
+    data = dict(item)
+    data["request_payload"] = _parse_json_text(data.get("request_payload")) or data.get("request_payload") or ""
+    data["result_payload"] = _parse_json_text(data.get("result_payload")) or data.get("result_payload") or ""
+    try:
+        client = OssClient.get_oss_client()
+    except Exception:
+        client = None
+    if client and data.get("screenshot_path"):
+        run_row = await session.execute(
+            text("SELECT artifact_bucket FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+            {"id": int(data.get("run_id") or 0)},
+        )
+        run = run_row.mappings().first() or {}
+        data["screenshot_artifact"] = await _build_artifact_descriptor(
+            client,
+            str(run.get("artifact_bucket") or UI_BUCKET_NAME or ""),
+            str(data.get("screenshot_path") or ""),
+            f"步骤{int(data.get('step_index') or 0)}截图",
+        )
+    else:
+        data["screenshot_artifact"] = None
+    return PityResponse.success(data)
+
+
+@router.post("/run/stop")
+async def stop_ui_test_run(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    payload = await request.json()
+    run_id = int(payload.get("id") or payload.get("run_id") or 0)
+    if run_id <= 0:
+        return PityResponse.failed("id不能为空")
+
+    row = await session.execute(
+        text("SELECT id, status FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+        {"id": run_id},
+    )
+    run = row.mappings().first()
+    if not run:
+        return PityResponse.failed("UI测试执行记录不存在")
+
+    current_status = str(run.get("status") or "").strip().lower()
+    if current_status in UI_RUN_TERMINAL_STATUSES:
+        return PityResponse.success({
+            "run_id": run_id,
+            "status": current_status,
+            "stopped": current_status == "cancelled",
+            "message": "当前执行记录已结束，无需停止。",
+        })
+    if current_status not in UI_RUN_ACTIVE_STATUSES:
+        return PityResponse.failed(f"当前状态不允许停止：{current_status or '-'}")
+
+    now_dt = datetime.now()
+    message = str(payload.get("reason") or "用户手动停止UI测试执行").strip()
+    result_payload = {
+        "status": "cancelled",
+        "message": message,
+        "stopped_by": int(user_info["id"]),
+        "stopped_at": now_dt.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    updated = await session.execute(
+        text(
+            "UPDATE pity_ui_test_run SET status='cancelled', result_payload=:result_payload, "
+            "error_message=:error_message, finished_at=:finished_at, update_user=:update_user, updated_at=:updated_at "
+            "WHERE id=:id AND deleted_at=0 AND status IN ('queued', 'claimed', 'running', 'uploading')"
+        ),
+        {
+            "id": run_id,
+            "result_payload": json.dumps(result_payload, ensure_ascii=False),
+            "error_message": message,
+            "finished_at": now_dt,
+            "update_user": int(user_info["id"]),
+            "updated_at": now_dt,
+        },
+    )
+    if int(updated.rowcount or 0) == 0:
+        await session.rollback()
+        return PityResponse.failed("执行记录状态已变化，请刷新后重试")
+    await session.commit()
+    return PityResponse.success({"run_id": run_id, "status": "cancelled", "stopped": True})
+
+
+@router.post("/run/retry")
+async def retry_ui_test_run(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    payload = await request.json()
+    run_id = int(payload.get("id") or 0)
+    if run_id <= 0:
+        return PityResponse.failed("id不能为空")
+
+    row = await session.execute(
+        text(
+            "SELECT id, project_id, plan_id, case_ref_id, browser, headless, run_name, runner_payload "
+            "FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"
+        ),
+        {"id": run_id},
+    )
+    source_run = row.mappings().first()
+    if not source_run:
+        return PityResponse.failed("UI测试执行记录不存在")
+
+    now_dt = datetime.now()
+    insert_result = await session.execute(
+        text(
+            "INSERT INTO pity_ui_test_run "
+            "(created_at, updated_at, deleted_at, create_user, update_user, project_id, plan_id, case_ref_id, run_name, status, trigger_mode, browser, headless, artifact_bucket, artifact_prefix, screenshot_dir, video_path, trace_path, report_path, result_json_path, runner_payload, started_at) "
+            "VALUES "
+            "(:created_at, :updated_at, 0, :create_user, :update_user, :project_id, :plan_id, :case_ref_id, :run_name, 'queued', 'retry', :browser, :headless, :artifact_bucket, '', '', '', '', '', '', :runner_payload, :started_at)"
+        ),
+        {
+            "created_at": now_dt,
+            "updated_at": now_dt,
+            "create_user": int(user_info["id"]),
+            "update_user": int(user_info["id"]),
+            "project_id": int(source_run["project_id"] or 0),
+            "plan_id": int(source_run["plan_id"] or 0),
+            "case_ref_id": int(source_run["case_ref_id"] or 0),
+            "run_name": f"{source_run['run_name']} Retry",
+            "browser": str(source_run.get("browser") or "chromium"),
+            "headless": int(source_run.get("headless") or 1),
+            "artifact_bucket": UI_BUCKET_NAME,
+            "runner_payload": str(source_run.get("runner_payload") or ""),
+            "started_at": now_dt,
+        },
+    )
+    new_run_id = int(insert_result.lastrowid or 0)
+    artifact_prefix = f"{UI_OBJECT_PREFIX}/{int(source_run['project_id'] or 0)}/{int(source_run['plan_id'] or 0)}/{new_run_id}"
+    await session.execute(
+        text(
+            "UPDATE pity_ui_test_run SET artifact_prefix=:artifact_prefix, screenshot_dir=:screenshot_dir, "
+            "video_path=:video_path, trace_path=:trace_path, report_path=:report_path, result_json_path=:result_json_path "
+            "WHERE id=:id"
+        ),
+        {
+            "id": new_run_id,
+            "artifact_prefix": artifact_prefix,
+            "screenshot_dir": f"{artifact_prefix}/screenshots/",
+            "video_path": f"{artifact_prefix}/videos/run.mp4",
+            "trace_path": f"{artifact_prefix}/traces/trace.zip",
+            "report_path": f"{artifact_prefix}/reports/report.html",
+            "result_json_path": f"{artifact_prefix}/logs/result.json",
+        },
+    )
+    await session.commit()
+    ai_model = await GConfigDao.get_active_ai_model_config()
+    bootstrap = _build_runner_bootstrap_payload(
+        request,
+        user_info,
+        int(source_run["project_id"] or 0),
+        [new_run_id],
+        int(source_run["plan_id"] or 0),
+        ai_model,
+    )
+    _write_runner_bootstrap_file(bootstrap)
+    return PityResponse.success({"run_id": new_run_id, "trigger_mode": "retry", "runner_bootstrap": bootstrap})
+
+
+@router.get("/resource/status")
+async def get_ui_test_resource_status(project_id: int = 0, session=Depends(get_session), _=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    sql = (
+        "SELECT "
+        "SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS queued_count, "
+        "SUM(CASE WHEN status IN ('claimed', 'running', 'uploading') THEN 1 ELSE 0 END) AS running_count, "
+        "SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success_count, "
+        "SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed_count "
+        "FROM pity_ui_test_run WHERE deleted_at=0 AND trigger_mode<>'trial' "
+    )
+    params = {}
+    if int(project_id or 0) > 0:
+        sql += "AND project_id=:project_id "
+        params["project_id"] = int(project_id)
+    row = await session.execute(text(sql), params)
+    stats = dict(row.mappings().first() or {})
+    for key in ("queued_count", "running_count", "success_count", "failed_count"):
+        stats[key] = int(stats.get(key) or 0)
+    stats["bucket"] = UI_BUCKET_NAME
+    stats["object_prefix"] = UI_OBJECT_PREFIX
+    stats["runner_status"] = "waiting_runner"
+    stats["oss_status"] = "configured" if UI_BUCKET_NAME else "missing_bucket"
+    return PityResponse.success(stats)
+
+
+@router.get("/plan/switch")
+async def switch_ui_test_plan(id: int, status: bool, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    now_dt = datetime.now()
+    row = await session.execute(
+        text("SELECT id, name, cron FROM pity_ui_test_plan WHERE deleted_at=0 AND id=:id"),
+        {"id": int(id)},
+    )
+    plan = row.mappings().first()
+    if not plan:
+        return PityResponse.failed("UI测试计划不存在")
+    await session.execute(
+        text("UPDATE pity_ui_test_plan SET status=:status, update_user=:update_user, updated_at=:updated_at WHERE id=:id"),
+        {
+            "id": int(id),
+            "status": "enabled" if bool(status) else "disabled",
+            "update_user": int(user_info["id"]),
+            "updated_at": now_dt,
+        },
+    )
+    await session.commit()
+    _sync_ui_plan_scheduler(int(id), str(plan.get("name") or ""), str(plan.get("cron") or ""), bool(status))
+    return PityResponse.success()
+
+
+@router.get("/plan/delete")
+async def delete_ui_test_plan(id: int, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    now_dt = datetime.now()
+    deleted_at = int(now_dt.timestamp())
+    row = await session.execute(
+        text("SELECT id FROM pity_ui_test_plan WHERE deleted_at=0 AND id=:id"),
+        {"id": int(id)},
+    )
+    plan = row.mappings().first()
+    if not plan:
+        return PityResponse.failed("UI测试计划不存在")
+    await session.execute(
+        text("UPDATE pity_ui_test_plan SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at WHERE id=:id"),
+        {
+            "id": int(id),
+            "deleted_at": deleted_at,
+            "update_user": int(user_info["id"]),
+            "updated_at": now_dt,
+        },
+    )
+    await session.execute(
+        text("UPDATE pity_ui_test_plan_case SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at WHERE plan_id=:plan_id AND deleted_at=0"),
+        {
+            "plan_id": int(id),
+            "deleted_at": deleted_at,
+            "update_user": int(user_info["id"]),
+            "updated_at": now_dt,
+        },
+    )
+    await session.commit()
+    try:
+        Scheduler.scheduler.remove_job(f"ui_test_plan_{int(id)}")
+    except JobLookupError:
+        pass
+    except Exception:
+        pass
+    return PityResponse.success()
+
+
+@router.post("/runner/claim")
+async def claim_ui_test_run(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    payload = await request.json()
+    project_id = int(payload.get("project_id") or 0)
+    plan_id = int(payload.get("plan_id") or 0)
+    run_id = int(payload.get("run_id") or 0)
+    any_project = _normalize_bool(payload.get("any_project"), False)
+    if project_id <= 0 and run_id <= 0 and not any_project:
+        return PityResponse.failed("project_id或run_id不能为空")
+
+    sql = (
+        "SELECT id, project_id, plan_id, case_ref_id, run_name, status, trigger_mode, browser, headless, "
+        "artifact_bucket, artifact_prefix, screenshot_dir, video_path, trace_path, report_path, result_json_path, "
+        "runner_payload, created_at, started_at "
+        "FROM pity_ui_test_run WHERE deleted_at=0 AND status='queued' "
+    )
+    params = {}
+    if run_id > 0:
+        sql += "AND id=:run_id "
+        params["run_id"] = run_id
+    else:
+        if not any_project:
+            sql += "AND project_id=:project_id "
+            params["project_id"] = project_id
+        if plan_id > 0:
+            sql += "AND plan_id=:plan_id "
+            params["plan_id"] = plan_id
+    sql += "ORDER BY id ASC LIMIT 1"
+
+    row = await session.execute(text(sql), params)
+    task = row.mappings().first()
+    if not task:
+        return PityResponse.success(None, msg="当前没有可领取的UI任务")
+
+    now_dt = datetime.now()
+    updated = await session.execute(
+        text(
+            "UPDATE pity_ui_test_run SET status='claimed', update_user=:update_user, updated_at=:updated_at, "
+            "started_at=COALESCE(started_at, :started_at) WHERE id=:id AND deleted_at=0 AND status='queued'"
+        ),
+        {
+            "id": int(task["id"]),
+            "update_user": int(user_info["id"]),
+            "updated_at": now_dt,
+            "started_at": now_dt,
+        },
+    )
+    if int(updated.rowcount or 0) == 0:
+        await session.rollback()
+        return PityResponse.success(None, msg="任务已被其他Runner领取")
+    await session.commit()
+
+    claimed = dict(task)
+    claimed["status"] = "claimed"
+    claimed["runner_payload"] = _parse_json_text(claimed.get("runner_payload")) or {}
+    return PityResponse.success(claimed)
+
+
+@router.get("/runner/run/status")
+async def get_runner_ui_test_run_status(run_id: int, session=Depends(get_session), _=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    row = await session.execute(
+        text("SELECT id, status, error_message, updated_at FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+        {"id": int(run_id or 0)},
+    )
+    run = row.mappings().first()
+    if not run:
+        return PityResponse.failed("UI测试执行记录不存在")
+    status = str(run.get("status") or "").strip().lower()
+    return PityResponse.success({
+        "run_id": int(run["id"]),
+        "status": status,
+        "cancelled": status == "cancelled",
+        "active": status in UI_RUN_ACTIVE_STATUSES,
+        "error_message": str(run.get("error_message") or ""),
+        "updated_at": run.get("updated_at"),
+    })
+
+
+@router.post("/runner/step/save")
+async def save_ui_test_step_result(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    payload = await request.json()
+    run_id = int(payload.get("run_id") or 0)
+    step_index = int(payload.get("step_index") or 0)
+    if run_id <= 0:
+        return PityResponse.failed("run_id不能为空")
+
+    run_row = await session.execute(
+        text("SELECT id, status FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+        {"id": run_id},
+    )
+    run = run_row.mappings().first()
+    if not run:
+        return PityResponse.failed("UI测试执行记录不存在")
+
+    step_name = str(payload.get("step_name") or f"Step {step_index}").strip()
+    step_type = str(payload.get("step_type") or "").strip()
+    status = _normalize_ui_step_status(payload.get("status"), "running")
+    screenshot_path = str(payload.get("screenshot_path") or "").strip()
+    request_payload = json.dumps(payload.get("request_payload"), ensure_ascii=False) if "request_payload" in payload else None
+    result_payload = json.dumps(payload.get("result_payload"), ensure_ascii=False) if "result_payload" in payload else None
+    error_message = str(payload.get("error_message") or "").strip()
+    duration_ms = int(payload.get("duration_ms") or 0)
+    now_dt = datetime.now()
+
+    existing_row = await session.execute(
+        text("SELECT id FROM pity_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id AND step_index=:step_index LIMIT 1"),
+        {"run_id": run_id, "step_index": step_index},
+    )
+    existing = existing_row.mappings().first()
+    if existing:
+        await session.execute(
+            text(
+                "UPDATE pity_ui_test_step_result SET step_name=:step_name, step_type=:step_type, status=:status, "
+                "screenshot_path=:screenshot_path, request_payload=:request_payload, result_payload=:result_payload, "
+                "error_message=:error_message, duration_ms=:duration_ms, update_user=:update_user, updated_at=:updated_at "
+                "WHERE id=:id"
+            ),
+            {
+                "id": int(existing["id"]),
+                "step_name": step_name,
+                "step_type": step_type,
+                "status": status,
+                "screenshot_path": screenshot_path,
+                "request_payload": request_payload,
+                "result_payload": result_payload,
+                "error_message": error_message,
+                "duration_ms": duration_ms,
+                "update_user": int(user_info["id"]),
+                "updated_at": now_dt,
+            },
+        )
+    else:
+        await session.execute(
+            text(
+                "INSERT INTO pity_ui_test_step_result "
+                "(created_at, updated_at, deleted_at, create_user, update_user, run_id, step_index, step_name, step_type, status, screenshot_path, request_payload, result_payload, error_message, duration_ms) "
+                "VALUES "
+                "(:created_at, :updated_at, 0, :create_user, :update_user, :run_id, :step_index, :step_name, :step_type, :status, :screenshot_path, :request_payload, :result_payload, :error_message, :duration_ms)"
+            ),
+            {
+                "created_at": now_dt,
+                "updated_at": now_dt,
+                "create_user": int(user_info["id"]),
+                "update_user": int(user_info["id"]),
+                "run_id": run_id,
+                "step_index": step_index,
+                "step_name": step_name,
+                "step_type": step_type,
+                "status": status,
+                "screenshot_path": screenshot_path,
+                "request_payload": request_payload,
+                "result_payload": result_payload,
+                "error_message": error_message,
+                "duration_ms": duration_ms,
+            },
+        )
+
+    if str(run.get("status") or "") in {"queued", "claimed"} and status in {"running", "success", "failed"}:
+        await session.execute(
+            text("UPDATE pity_ui_test_run SET status='running', update_user=:update_user, updated_at=:updated_at WHERE id=:id"),
+            {"id": run_id, "update_user": int(user_info["id"]), "updated_at": now_dt},
+        )
+    await session.commit()
+    return PityResponse.success({"run_id": run_id, "step_index": step_index, "status": status})
+
+
+@router.post("/runner/run/save")
+async def save_ui_test_run_result(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    payload = await request.json()
+    run_id = int(payload.get("run_id") or 0)
+    if run_id <= 0:
+        return PityResponse.failed("run_id不能为空")
+
+    run_row = await session.execute(
+        text("SELECT id, status FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+        {"id": run_id},
+    )
+    run = run_row.mappings().first()
+    if not run:
+        return PityResponse.failed("UI测试执行记录不存在")
+
+    now_dt = datetime.now()
+    status = _normalize_ui_run_status(payload.get("status"), "success")
+    current_status = str(run.get("status") or "").strip().lower()
+    if current_status == "cancelled" and status != "cancelled":
+        return PityResponse.success({
+            "run_id": run_id,
+            "status": "cancelled",
+            "ignored": True,
+            "message": "执行记录已被手动停止，忽略Runner后续状态回写。",
+        })
+    result_payload = json.dumps(payload.get("result_payload"), ensure_ascii=False) if "result_payload" in payload else None
+    error_message = str(payload.get("error_message") or "").strip()
+    step_count_row = await session.execute(
+        text("SELECT COUNT(1) AS step_count FROM pity_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id"),
+        {"run_id": run_id},
+    )
+    saved_step_count = int((step_count_row.mappings().first() or {}).get("step_count") or 0)
+    if status == "success" and saved_step_count <= 0:
+        status = "failed"
+        error_message = error_message or "Runner回写成功但没有任何步骤结果，已拦截为空执行"
+        parsed_result = payload.get("result_payload") if isinstance(payload.get("result_payload"), dict) else {}
+        parsed_result.update({
+            "status": "failed",
+            "guard_reason": "no_step_results",
+            "step_count": 0,
+            "message": error_message,
+        })
+        result_payload = json.dumps(parsed_result, ensure_ascii=False)
+
+    update_fields = {
+        "id": run_id,
+        "status": status,
+        "result_payload": result_payload,
+        "error_message": error_message,
+        "finished_at": now_dt if status in UI_RUN_TERMINAL_STATUSES else None,
+        "updated_at": now_dt,
+        "update_user": int(user_info["id"]),
+        "artifact_prefix": str(payload.get("artifact_prefix") or "").strip(),
+        "screenshot_dir": str(payload.get("screenshot_dir") or "").strip(),
+        "video_path": str(payload.get("video_path") or "").strip(),
+        "trace_path": str(payload.get("trace_path") or "").strip(),
+        "report_path": str(payload.get("report_path") or "").strip(),
+        "result_json_path": str(payload.get("result_json_path") or "").strip(),
+    }
+    await session.execute(
+        text(
+            "UPDATE pity_ui_test_run SET status=:status, result_payload=:result_payload, error_message=:error_message, "
+            "finished_at=CASE WHEN :finished_at IS NULL THEN finished_at ELSE :finished_at END, "
+            "updated_at=:updated_at, update_user=:update_user, "
+            "artifact_prefix=CASE WHEN :artifact_prefix='' THEN artifact_prefix ELSE :artifact_prefix END, "
+            "screenshot_dir=CASE WHEN :screenshot_dir='' THEN screenshot_dir ELSE :screenshot_dir END, "
+            "video_path=CASE WHEN :video_path='' THEN video_path ELSE :video_path END, "
+            "trace_path=CASE WHEN :trace_path='' THEN trace_path ELSE :trace_path END, "
+            "report_path=CASE WHEN :report_path='' THEN report_path ELSE :report_path END, "
+            "result_json_path=CASE WHEN :result_json_path='' THEN result_json_path ELSE :result_json_path END "
+            "WHERE id=:id"
+        ),
+        update_fields,
+    )
+    await session.commit()
+    return PityResponse.success({"run_id": run_id, "status": status})
+
+
+@router.post("/runner/artifact/upload")
+async def upload_ui_test_artifact(run_id: int = Form(...), object_key: str = Form(...), file: UploadFile = File(...),
+                                  session=Depends(get_session), _=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    run_row = await session.execute(
+        text("SELECT id, status, artifact_prefix, artifact_bucket FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+        {"id": int(run_id)},
+    )
+    run = run_row.mappings().first()
+    if not run:
+        return PityResponse.failed("UI测试执行记录不存在")
+    if str(run.get("status") or "").strip().lower() == "cancelled":
+        return PityResponse.failed("UI测试执行已停止，跳过产物上传")
+
+    normalized_key = str(object_key or "").replace("\\", "/").strip().strip("/")
+    artifact_prefix = str(run.get("artifact_prefix") or "").strip().strip("/")
+    if not normalized_key:
+        return PityResponse.failed("object_key不能为空")
+    if artifact_prefix and not normalized_key.startswith(f"{artifact_prefix}/") and normalized_key != artifact_prefix:
+        return PityResponse.failed("object_key不在当前run的artifact_prefix下")
+
+    client = OssClient.get_oss_client()
+    content = await file.read()
+    bucket_name = str(run.get("artifact_bucket") or UI_BUCKET_NAME or "").strip() or None
+    try:
+        upload_result, file_size, upload_attempts = await _upload_artifact_with_retry(
+            client,
+            normalized_key,
+            content,
+            bucket_name=bucket_name,
+            content_type=file.content_type or "application/octet-stream",
+        )
+    except Exception as exc:
+        return PityResponse.failed(str(exc))
+    upload_meta = normalize_oss_upload_result(client, upload_result, normalized_key, bucket_name=bucket_name)
+    return PityResponse.success({
+        "run_id": int(run_id),
+        "bucket_name": upload_meta.get("bucket_name") or bucket_name or "",
+        "object_key": upload_meta.get("object_key") or normalized_key,
+        "file_url": upload_meta.get("file_url") or "",
+        "file_size": int(file_size or 0),
+        "upload_attempts": upload_attempts,
+    })

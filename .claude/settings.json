@@ -10,7 +10,9 @@
       "Bash(python E:/github_argus/fix_quotes.py)",
       "Bash(python -c \"f=open\\('E:/github_argus/argus-front/generate_deepseek_doc.py','r',encoding='utf-8'\\); exec\\(f.read\\(\\)\\)\")",
       "Bash(python \"E:/github_argus/argus-front/generate_deepseek_doc.py\")",
-      "Bash(python \"E:/github_argus/fixpath.py\")"
+      "Bash(python \"E:/github_argus/fixpath.py\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:d.get\\(k\\) for k in ['name','dependencies','devDependencies']}, indent=2, ensure_ascii=False\\)\\)\")",
+      "Bash(npx eslint *)"
     ],
     "additionalDirectories": [
       "E:\\github_argus\\argus-front",
