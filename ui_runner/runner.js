@@ -648,11 +648,16 @@ async function markRunUploading(run, localRunDir, startedAt, caseResults, artifa
   }
 }
 
-function buildRuntimeVariables(dsl = {}, extracted = {}) {
+function buildRuntimeVariables(dsl = {}, extracted = {}, runtimeContext = {}) {
   const normalizedDsl = normalizePlainObject(dsl);
   const vars = {};
   const sceneConfig = normalizePlainObject(normalizedDsl.scene_config);
   Object.entries(sceneConfig).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && String(value).trim() !== '') {
+      vars[String(key)] = value;
+    }
+  });
+  Object.entries(runtimeContext || {}).forEach(([key, value]) => {
     if (value !== null && value !== undefined && String(value).trim() !== '') {
       vars[String(key)] = value;
     }
@@ -771,13 +776,32 @@ function resolveEntryUrl(dsl = {}, runtimeVariables = {}) {
   return '';
 }
 
-function normalizeGotoUrl(value, label) {
+function normalizeGotoUrl(value, label, baseUrl = '') {
   const url = String(value || '').trim();
   if (!url) {
     throw new Error(`${label}缺少可用 URL`);
   }
   if (hasUnresolvedTemplate(url)) {
     throw new Error(`${label}仍包含未解析变量：${url}`);
+  }
+  if (/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(url)) {
+    try {
+      new URL(url);
+    } catch {
+      throw new Error(`${label}不是有效 URL：${url}`);
+    }
+    return url;
+  }
+  const baseValue = String(baseUrl || '').trim().replace(/\/$/, '');
+  if (baseValue) {
+    const normalizedPath = url.startsWith('/') ? url : `/${url}`;
+    const merged = `${baseValue}${normalizedPath}`;
+    try {
+      new URL(merged);
+    } catch {
+      throw new Error(`${label}拼接基础地址后不是有效 URL：${merged}`);
+    }
+    return merged;
   }
   try {
     new URL(url);
@@ -818,6 +842,22 @@ async function settlePage(page, timeoutMs = 400) {
   await safe(() => page.waitForTimeout(80));
 }
 
+async function clearPageSelection(page) {
+  try {
+    await page.evaluate(() => {
+      try {
+        const selection = window.getSelection?.();
+        selection?.removeAllRanges?.();
+      } catch {}
+      try {
+        if (document.activeElement instanceof HTMLElement && typeof document.activeElement.blur === 'function') {
+          document.activeElement.blur();
+        }
+      } catch {}
+    });
+  } catch {}
+}
+
 async function capturePageScreenshot(page, targetPath, options = {}) {
   const {
     fullPage = false,
@@ -826,11 +866,13 @@ async function capturePageScreenshot(page, targetPath, options = {}) {
   if (settle) {
     await settlePage(page);
   }
+  await clearPageSelection(page);
   try {
     await page.screenshot({ path: targetPath, fullPage, animations: 'disabled' });
   } catch (error) {
     await page.locator('body').screenshot({ path: targetPath, animations: 'disabled' });
   }
+  await clearPageSelection(page);
 }
 
 const retryableStepTypes = new Set([
@@ -913,7 +955,9 @@ async function stableInput(agent, page, step = {}) {
   return withActionRetry(
     page,
     async () => {
+      await clearPageSelection(page);
       await agent.aiInput(value, target);
+      await clearPageSelection(page);
       await page.waitForTimeout(120);
       await agent.aiAssert(verifyPrompt);
     },
@@ -1096,6 +1140,7 @@ async function executeDslStep(agent, page, run, step, stepIndex, localRunDir, ru
   const screenshotObjectKey = `${run.screenshot_dir}${screenshotName}`;
   const normalizedDsl = normalizePlainObject(caseMeta.dsl);
   const templateVariables = buildTemplateVariables(normalizedDsl, runtimeVariables);
+  const currentBaseUrl = String(templateVariables.base_url || templateVariables.baseUrl || templateVariables['基础地址'] || '').trim();
   const resolvedStep = normalizeOpenStep(
     resolveDslValue(step, templateVariables),
     templateVariables,
@@ -1135,7 +1180,7 @@ async function executeDslStep(agent, page, run, step, stepIndex, localRunDir, ru
         }
         actionMeta = await withActionRetry(
           page,
-          () => page.goto(normalizeGotoUrl(resolvedStep.value, 'open 步骤 URL'), { waitUntil: 'domcontentloaded' }),
+          () => page.goto(normalizeGotoUrl(resolvedStep.value, 'open 步骤 URL', currentBaseUrl), { waitUntil: 'domcontentloaded' }),
           { attempts: 2, label: `打开 ${resolvedStep.value}` },
         );
         break;
@@ -1330,6 +1375,7 @@ async function executeDslStep(agent, page, run, step, stepIndex, localRunDir, ru
 
 async function executeRun(run) {
   const runnerPayload = normalizePlainObject(run.runner_payload);
+  const runnerConfig = normalizePlainObject(runnerPayload.runner_config);
   const runnerCases = buildRunnerCases(run);
   const primaryDsl = runnerCases[0]?.dsl || normalizePlainObject(runnerPayload.dsl);
   const browserName = primaryDsl.browser || run.browser || DEFAULT_BROWSER;
@@ -1371,6 +1417,35 @@ async function executeRun(run) {
   const artifactUploadQueue = new ArtifactUploadQueue(ARTIFACT_UPLOAD_CONCURRENCY);
   let globalStepIndex = 0;
   const multiCase = runnerCases.length > 1;
+  const runtimeContext = {};
+  const runtimeBaseUrl = pickTemplateSource(
+    runnerPayload.base_url,
+    runnerPayload.baseUrl,
+    runnerConfig.base_url,
+    runnerConfig.baseUrl,
+    runnerPayload.page_url,
+    runnerPayload.pageUrl,
+  );
+  const runtimeEntryUrl = pickTemplateSource(
+    runnerPayload.entry_url,
+    runnerPayload.entryUrl,
+    runnerConfig.entry_url,
+    runnerConfig.entryUrl,
+  );
+  if (runtimeBaseUrl) {
+    runtimeContext.base_url = runtimeBaseUrl;
+    runtimeContext.baseUrl = runtimeBaseUrl;
+    runtimeContext['基础地址'] = runtimeBaseUrl;
+  }
+  if (runtimeEntryUrl) {
+    runtimeContext.entry_url = runtimeEntryUrl;
+    runtimeContext.entryUrl = runtimeEntryUrl;
+    runtimeContext['页面入口'] = runtimeEntryUrl;
+  }
+  if (runnerPayload.env_name) {
+    runtimeContext.env_name = runnerPayload.env_name;
+    runtimeContext['执行环境'] = runnerPayload.env_name;
+  }
 
   try {
     const emptyStepCases = runnerCases.filter((caseItem, index) => {
@@ -1398,16 +1473,23 @@ async function executeRun(run) {
       const caseTitle = String(caseItem.node_title || dsl.ui_case_title || `用例${caseIndex + 1}`);
       const casePath = String(caseItem.node_path || dsl.ui_case_path || '');
       const caseExtracted = {};
-      const runtimeVariables = buildRuntimeVariables(dsl, extractedVariables);
+      const runtimeVariables = buildRuntimeVariables(dsl, extractedVariables, runtimeContext);
       const caseStartedAt = Date.now();
       let successStepCount = 0;
       let failedStepCount = 0;
       let caseError = '';
 
       const entryUrl = resolveEntryUrl(dsl, runtimeVariables);
-      if (entryUrl) {
-        await page.goto(normalizeGotoUrl(entryUrl, '用例入口 URL'), { waitUntil: 'domcontentloaded' });
-      }
+    if (entryUrl) {
+        await page.goto(
+          normalizeGotoUrl(
+            entryUrl,
+            '用例入口 URL',
+            String(runtimeVariables.base_url || runtimeVariables.baseUrl || runtimeVariables['基础地址'] || '').trim(),
+          ),
+          { waitUntil: 'domcontentloaded' },
+        );
+    }
 
       for (let stepIdx = 0; stepIdx < steps.length; stepIdx += 1) {
         await assertRunNotCancelled(run, `步骤${globalStepIndex + 1}开始前`);

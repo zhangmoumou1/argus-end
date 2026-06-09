@@ -9,6 +9,7 @@ class PityAddressForm(BaseModel):
     env: int = None
     name: str = ''
     gateway: str = ''
+    page_url: str = ''
 
     @validator("env", 'name')
     def name_not_empty(cls, v):
@@ -19,4 +20,11 @@ class PityAddressForm(BaseModel):
         if not v.startswith(("http://", "https://", "ws://", "wss://")):
             raise ParamsError("前缀不为http或ws")
         return v
+
+    @validator('page_url', whole=True)
+    def page_url_match(cls, v):
+        value = str(v or '').strip()
+        if value and not value.startswith(("/", "http://", "https://")):
+            raise ParamsError("页面地址必须以/、http:// 或 https:// 开头")
+        return value
 

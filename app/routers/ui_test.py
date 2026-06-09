@@ -81,6 +81,28 @@ def _looks_like_ui_case_node(node):
     return not any(_looks_like_ui_case_node(child) for child in children if not _is_ui_case_content_node(_node_text(child)))
 
 
+def _normalize_page_url(value):
+    text_value = str(value or "").strip()
+    if not text_value:
+        return ""
+    if text_value.startswith(("http://", "https://")):
+        return text_value.rstrip("/")
+    normalized = "/" + text_value.lstrip("/")
+    return normalized.rstrip("/") or "/"
+
+
+def _compose_plan_base_url(gateway, page_url=""):
+    gateway_value = str(gateway or "").strip().rstrip("/")
+    page_value = _normalize_page_url(page_url)
+    if not gateway_value:
+        return page_value
+    if not page_value or page_value == "/":
+        return gateway_value
+    if page_value.startswith(("http://", "https://")):
+        return page_value.rstrip("/")
+    return f"{gateway_value}{page_value}"
+
+
 def _node_children(node):
     if not isinstance(node, dict):
         return []
@@ -549,6 +571,16 @@ async def ensure_ui_test_schema(session):
     UI_SCHEMA_READY = True
 
 
+async def ensure_ui_test_gateway_schema(session):
+    result = await session.execute(text("SHOW COLUMNS FROM pity_gateway LIKE 'page_url'"))
+    if result.first() is None:
+        await session.execute(text(
+            "ALTER TABLE pity_gateway "
+            "ADD COLUMN page_url VARCHAR(255) NULL DEFAULT '' COMMENT '页面地址'"
+        ))
+        await session.commit()
+
+
 async def _scan_project_cases(session, project_id, operator_user_id):
     await ensure_ui_test_schema(session)
     file_rows = await session.execute(
@@ -560,18 +592,28 @@ async def _scan_project_cases(session, project_id, operator_user_id):
     )
     files = file_rows.mappings().all()
     now_dt = datetime.now()
-    await session.execute(
+
+    existing_rows = await session.execute(
         text(
-            "UPDATE pity_ui_test_case_ref SET deleted_at=:deleted_at, update_user=:user_id, updated_at=:updated_at "
-            "WHERE project_id=:project_id AND deleted_at=0"
+            "SELECT id, file_id, node_path, deleted_at "
+            "FROM pity_ui_test_case_ref "
+            "WHERE project_id=:project_id "
+            "ORDER BY CASE WHEN deleted_at=0 THEN 0 ELSE 1 END ASC, id ASC"
         ),
-        {
-            "deleted_at": int(now_dt.timestamp()),
-            "user_id": operator_user_id,
-            "updated_at": now_dt,
-            "project_id": project_id,
-        },
+        {"project_id": project_id},
     )
+    existing_by_path = {}
+    for row in existing_rows.mappings().all():
+        file_id = int(row.get("file_id") or 0)
+        node_path = str(row.get("node_path") or "").strip()
+        if not file_id or not node_path:
+            continue
+        path_key = f"{file_id}:{node_path}"
+        if path_key not in existing_by_path:
+            existing_by_path[path_key] = dict(row)
+
+    processed_case_ids = []
+    update_rows = []
     insert_rows = []
     for file_item in files:
         file_id = int(file_item["id"])
@@ -580,26 +622,55 @@ async def _scan_project_cases(session, project_id, operator_user_id):
         ui_nodes = _find_ui_nodes(case_data)
         for index, node_wrapper in enumerate(ui_nodes):
             compiled = _compile_ui_case(node_wrapper, project_id, file_id, file_title)
-            node_uid = hashlib.md5(f"{file_id}:{node_wrapper['path']}:{index}".encode("utf-8")).hexdigest()
-            insert_rows.append({
-                "deleted_at": 0,
-                "create_user": operator_user_id,
-                "update_user": operator_user_id,
-                "created_at": now_dt,
-                "updated_at": now_dt,
+            node_path = str(node_wrapper["path"] or "").strip()
+            node_uid = hashlib.md5(f"{file_id}:{node_path}".encode("utf-8")).hexdigest()
+            path_key = f"{file_id}:{node_path}"
+            matched_row = existing_by_path.get(path_key)
+            payload = {
                 "project_id": project_id,
                 "file_id": file_id,
                 "file_title": file_title,
                 "node_uid": node_uid,
                 "node_title": node_wrapper["title"],
-                "node_path": node_wrapper["path"],
+                "node_path": node_path,
                 "status": compiled["status"],
                 "step_count": int(compiled["step_count"] or 0),
                 "dsl_json": json.dumps(compiled.get("dsl"), ensure_ascii=False) if compiled.get("dsl") else "",
                 "validation_result": json.dumps({"message": compiled["message"]}, ensure_ascii=False),
                 "source_snapshot": json.dumps(node_wrapper["node"], ensure_ascii=False),
                 "last_scanned_at": now_dt,
-            })
+            }
+            if matched_row:
+                processed_case_ids.append(int(matched_row["id"]))
+                update_rows.append({
+                    "id": int(matched_row["id"]),
+                    "deleted_at": 0,
+                    "update_user": operator_user_id,
+                    "updated_at": now_dt,
+                    **payload,
+                })
+            else:
+                insert_rows.append({
+                    "deleted_at": 0,
+                    "create_user": operator_user_id,
+                    "update_user": operator_user_id,
+                    "created_at": now_dt,
+                    "updated_at": now_dt,
+                    **payload,
+                })
+    if update_rows:
+        await session.execute(
+            text(
+                "UPDATE pity_ui_test_case_ref SET "
+                "deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at, "
+                "project_id=:project_id, file_id=:file_id, file_title=:file_title, node_uid=:node_uid, "
+                "node_title=:node_title, node_path=:node_path, status=:status, step_count=:step_count, "
+                "dsl_json=:dsl_json, validation_result=:validation_result, source_snapshot=:source_snapshot, "
+                "last_scanned_at=:last_scanned_at "
+                "WHERE id=:id"
+            ),
+            update_rows,
+        )
     if insert_rows:
         await session.execute(
             text(
@@ -610,8 +681,35 @@ async def _scan_project_cases(session, project_id, operator_user_id):
             ),
             insert_rows,
         )
+    if processed_case_ids:
+        await session.execute(
+            text(
+                "UPDATE pity_ui_test_case_ref SET deleted_at=:deleted_at, update_user=:user_id, updated_at=:updated_at "
+                "WHERE project_id=:project_id AND deleted_at=0 AND id NOT IN :ids"
+            ).bindparams(bindparam("ids", expanding=True)),
+            {
+                "deleted_at": int(now_dt.timestamp()),
+                "user_id": operator_user_id,
+                "updated_at": now_dt,
+                "project_id": project_id,
+                "ids": processed_case_ids,
+            },
+        )
+    else:
+        await session.execute(
+            text(
+                "UPDATE pity_ui_test_case_ref SET deleted_at=:deleted_at, update_user=:user_id, updated_at=:updated_at "
+                "WHERE project_id=:project_id AND deleted_at=0"
+            ),
+            {
+                "deleted_at": int(now_dt.timestamp()),
+                "user_id": operator_user_id,
+                "updated_at": now_dt,
+                "project_id": project_id,
+            },
+        )
     await session.commit()
-    return {"file_count": len(files), "ui_case_count": len(insert_rows)}
+    return {"file_count": len(files), "ui_case_count": len(update_rows) + len(insert_rows)}
 
 
 def _normalize_bool(value, default=False):
@@ -697,6 +795,8 @@ async def _create_ui_plan_run(session, plan: dict, cases, create_user_id=0, trig
                 "source": "ui_test_plan",
                 "plan_id": plan_id,
                 "plan_name": str(plan.get("name") or ""),
+                "env_name": str(plan.get("env_name") or ""),
+                "base_url": str(plan.get("base_url") or ""),
                 "case_count": len(runner_cases),
                 "ordered": bool(plan.get("ordered")),
                 "runner_config": _parse_json_text(plan.get("runner_config")) or {},
@@ -1164,10 +1264,15 @@ async def preview_ui_test_case_dsl(request: Request, session=Depends(get_session
 @router.post("/case/trial-run")
 async def trial_run_ui_test_case(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_test_gateway_schema(session)
     payload = await request.json()
     case_ref_id = int(payload.get("id") or 0)
+    env_id = int(payload.get("env_id") or 0)
+    address_id = int(payload.get("address_id") or 0)
     if case_ref_id <= 0:
         return PityResponse.failed("id不能为空")
+    if env_id <= 0:
+        return PityResponse.failed("env_id不能为空")
 
     row = await session.execute(
         text(
@@ -1181,6 +1286,31 @@ async def trial_run_ui_test_case(request: Request, session=Depends(get_session),
         return PityResponse.failed("UI测试用例不存在")
     if str(case_ref["status"]) != "valid":
         return PityResponse.failed("该UI测试用例当前不可试运行")
+
+    env_row = await session.execute(
+        text("SELECT id, name FROM pity_environment WHERE deleted_at=0 AND id=:id"),
+        {"id": env_id},
+    )
+    env_data = env_row.mappings().first()
+    if not env_data:
+        return PityResponse.failed("所选环境不存在")
+    env_name = str(env_data.get("name") or "").strip()
+    address_name = ""
+    page_url = ""
+    resolved_base_url = ""
+    if address_id > 0:
+        gateway_row = await session.execute(
+            text("SELECT id, env, name, gateway, page_url FROM pity_gateway WHERE deleted_at=0 AND id=:id"),
+            {"id": address_id},
+        )
+        gateway_data = gateway_row.mappings().first()
+        if not gateway_data:
+            return PityResponse.failed("所选地址前缀不存在")
+        if int(gateway_data.get("env") or 0) != env_id:
+            return PityResponse.failed("地址前缀与所选环境不匹配")
+        address_name = str(gateway_data.get("name") or "").strip()
+        page_url = str(gateway_data.get("page_url") or "").strip()
+        resolved_base_url = _compose_plan_base_url(gateway_data.get("gateway"), page_url)
 
     now_dt = datetime.now()
     insert_result = await session.execute(
@@ -1213,6 +1343,12 @@ async def trial_run_ui_test_case(request: Request, session=Depends(get_session),
                 "source": "ui_test_trial_run",
                 "debug": True,
                 "debug_user_id": int(user_info["id"]),
+                "env_id": env_id,
+                "env_name": env_name,
+                "address_id": address_id,
+                "address_name": address_name,
+                "page_url": page_url,
+                "base_url": resolved_base_url,
                 "file_title": case_ref["file_title"],
                 "node_title": case_ref["node_title"],
                 "node_path": case_ref["node_path"],
@@ -1358,6 +1494,7 @@ async def get_ui_test_plan_detail(id: int, session=Depends(get_session), _=Depen
 @router.post("/plan/save")
 async def save_ui_test_plan(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_test_gateway_schema(session)
     payload = await request.json()
     plan_id = int(payload.get("id") or 0)
     project_id = int(payload.get("project_id") or 0)
@@ -1381,9 +1518,62 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
         return PityResponse.failed("包含不可执行或已失效的UI自动化用例")
 
     now_dt = datetime.now()
+    env_id = int(payload.get("env_id") or 0)
+    address_id = int(payload.get("address_id") or 0)
+    env_name = str(payload.get("env_name") or "").strip()
+    address_name = ""
+    page_url = ""
+    resolved_base_url = str(payload.get("base_url") or "").strip()
+    if env_id > 0:
+        env_row = await session.execute(
+            text("SELECT id, name FROM pity_environment WHERE deleted_at=0 AND id=:id"),
+            {"id": env_id},
+        )
+        env_data = env_row.mappings().first()
+        if not env_data:
+            return PityResponse.failed("所选环境不存在")
+        env_name = str(env_data.get("name") or "").strip()
+    if address_id > 0:
+        gateway_row = await session.execute(
+            text("SELECT id, env, name, gateway, page_url FROM pity_gateway WHERE deleted_at=0 AND id=:id"),
+            {"id": address_id},
+        )
+        gateway_data = gateway_row.mappings().first()
+        if not gateway_data:
+            return PityResponse.failed("所选地址前缀不存在")
+        if env_id > 0 and int(gateway_data.get("env") or 0) != env_id:
+            return PityResponse.failed("地址前缀与所选环境不匹配")
+        if env_id <= 0:
+            env_id = int(gateway_data.get("env") or 0)
+            env_row = await session.execute(
+                text("SELECT id, name FROM pity_environment WHERE deleted_at=0 AND id=:id"),
+                {"id": env_id},
+            )
+            env_data = env_row.mappings().first()
+            env_name = str((env_data or {}).get("name") or "").strip()
+        address_name = str(gateway_data.get("name") or "").strip()
+        page_url = str(gateway_data.get("page_url") or "").strip()
+        resolved_base_url = _compose_plan_base_url(gateway_data.get("gateway"), page_url)
+
+    ai_model_id = str(payload.get("ai_model_id") or "").strip()
+    ai_model_config = await GConfigDao.get_ai_model_config()
+    providers = ai_model_config.get("providers") if isinstance(ai_model_config, dict) else []
+    selected_model = next(
+        (item for item in (providers or []) if str(item.get("id") or "").strip() == ai_model_id),
+        None,
+    )
+    if ai_model_id and not selected_model:
+        return PityResponse.failed("所选AI模型不存在或未启用")
     runner_config = json.dumps({
-        "midscene_provider": payload.get("midscene_provider") or "",
-        "analysis_provider": payload.get("analysis_provider") or "",
+        "ai_model_id": ai_model_id,
+        "env_id": env_id,
+        "env_name": env_name,
+        "address_id": address_id,
+        "address_name": address_name,
+        "page_url": page_url,
+        "base_url": resolved_base_url,
+        "midscene_provider": str((selected_model or {}).get("provider_type") or payload.get("midscene_provider") or "").strip(),
+        "analysis_provider": str((selected_model or {}).get("provider_type") or payload.get("analysis_provider") or "").strip(),
         "record_video": _normalize_bool(payload.get("record_video"), True),
         "record_trace": _normalize_bool(payload.get("record_trace"), True),
         "capture_screenshot": _normalize_bool(payload.get("capture_screenshot"), True),
@@ -1408,8 +1598,8 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
                 "project_id": project_id,
                 "name": name,
                 "description": str(payload.get("description") or "").strip(),
-                "env_name": str(payload.get("env_name") or "").strip(),
-                "base_url": str(payload.get("base_url") or "").strip(),
+                "env_name": env_name,
+                "base_url": resolved_base_url,
                 "browser": str(payload.get("browser") or "chromium").strip() or "chromium",
                 "headless": 1 if _normalize_bool(payload.get("headless"), True) else 0,
                 "ordered": 1 if _normalize_bool(payload.get("ordered"), False) else 0,
@@ -1449,8 +1639,8 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
                 "project_id": project_id,
                 "name": name,
                 "description": str(payload.get("description") or "").strip(),
-                "env_name": str(payload.get("env_name") or "").strip(),
-                "base_url": str(payload.get("base_url") or "").strip(),
+                "env_name": env_name,
+                "base_url": resolved_base_url,
                 "browser": str(payload.get("browser") or "chromium").strip() or "chromium",
                 "headless": 1 if _normalize_bool(payload.get("headless"), True) else 0,
                 "ordered": 1 if _normalize_bool(payload.get("ordered"), False) else 0,
@@ -1556,6 +1746,7 @@ async def list_ui_test_runs(
         plan_id: int = 0,
         case_ref_id: int = 0,
         scope: str = "report",
+        source: str = "",
         status: str = "",
         keyword: str = "",
         page: int = 1,
@@ -1583,12 +1774,17 @@ async def list_ui_test_runs(
     if int(case_ref_id or 0) > 0:
         where_sql += "AND r.case_ref_id=:case_ref_id "
         params["case_ref_id"] = int(case_ref_id)
+    normalized_source = str(source or "").strip().lower()
     if normalized_scope == "debug":
         where_sql += "AND r.trigger_mode='trial' AND r.create_user=:create_user "
         params["create_user"] = int(user_info["id"])
     elif normalized_scope == "all":
         pass
-    else:
+    elif normalized_source != "trial":
+        where_sql += "AND r.trigger_mode<>'trial' "
+    if normalized_source == "trial":
+        where_sql += "AND r.trigger_mode='trial' "
+    elif normalized_source == "formal":
         where_sql += "AND r.trigger_mode<>'trial' "
     normalized_status = str(status or "").strip().lower()
     if normalized_status:
@@ -1609,7 +1805,7 @@ async def list_ui_test_runs(
     select_sql = (
         "SELECT r.id, r.project_id, r.plan_id, r.case_ref_id, r.run_name, r.status, r.trigger_mode, "
         "r.browser, r.headless, r.error_message, r.created_at, r.started_at, r.finished_at, "
-        "p.name AS plan_name, c.file_title, c.node_title, c.node_path "
+        "p.name AS plan_name, p.env_name AS plan_env_name, c.file_title, c.node_title, c.node_path, r.runner_payload "
     )
     sql = f"{select_sql}{base_from}{where_sql}ORDER BY r.id DESC"
     if paged:
@@ -1617,7 +1813,15 @@ async def list_ui_test_runs(
         params["limit"] = size
         params["offset"] = offset
     rows = await session.execute(text(sql), params)
-    items = [dict(row) for row in rows.mappings().all()]
+    items = []
+    for row in rows.mappings().all():
+        item = dict(row)
+        runner_payload = _parse_json_text(item.get("runner_payload")) or {}
+        item["env_name"] = str(item.get("plan_env_name") or runner_payload.get("env_name") or "").strip()
+        item["address_name"] = str(runner_payload.get("address_name") or "").strip()
+        item.pop("runner_payload", None)
+        item.pop("plan_env_name", None)
+        items.append(item)
     if not paged:
         return PityResponse.success(items)
 
@@ -1645,7 +1849,7 @@ async def get_ui_test_run_detail(
             "r.run_name, r.status, r.trigger_mode, r.browser, r.headless, r.artifact_bucket, r.artifact_prefix, "
             "r.screenshot_dir, r.video_path, r.trace_path, r.report_path, r.result_json_path, "
             "r.error_message, r.started_at, r.finished_at, "
-            "p.name AS plan_name, c.file_title, c.node_title, c.node_path "
+            "p.name AS plan_name, p.env_name AS plan_env_name, c.file_title, c.node_title, c.node_path "
             f"{run_payload_columns} "
             "FROM pity_ui_test_run r "
             "LEFT JOIN pity_ui_test_plan p ON r.plan_id=p.id "
@@ -1673,6 +1877,9 @@ async def get_ui_test_run_detail(
     else:
         data["runner_payload"] = {}
         data["result_payload"] = {}
+    data["env_name"] = str(data.get("plan_env_name") or data["runner_payload"].get("env_name") or "").strip()
+    data["address_name"] = str(data["runner_payload"].get("address_name") or "").strip()
+    data.pop("plan_env_name", None)
     client = None
     if include_artifacts or include_step_artifacts:
         try:
