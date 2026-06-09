@@ -44,6 +44,27 @@ services:
     volumes:
       - ./dev.env.ops:/pity/conf/dev.env
       - ../statics/knowledge:/pity/statics/knowledge
+      - ../ui_runner:/pity/ui_runner
+
+  ui_runner:
+    build:
+      context: ../ui_runner
+      dockerfile: Dockerfile
+    container_name: pity_ui_runner
+    restart: always
+    depends_on:
+      - pity
+    environment:
+      - TZ=Asia/Shanghai
+      - UI_RUNNER_SERVER=http://pity_server:7777
+      - UI_RUNNER_BROWSER=chromium
+      - UI_RUNNER_HEADLESS=true
+    networks:
+      pity_net:
+        aliases:
+          - pity_ui_runner
+    volumes:
+      - ../ui_runner:/app
 
 networks:
   pity_net:
