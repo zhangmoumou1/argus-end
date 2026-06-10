@@ -99,7 +99,13 @@ class PityTestPlanDao(Mapper):
                     plan.receiver = ",".join(map(str, plan.receiver))
                     plan.case_list = ",".join(map(str, plan.case_list))
                     plan.msg_type = ",".join(map(str, plan.msg_type))
+                    # Prevent update_model from clearing notification_config_id with None
+                    notify_form_value = plan.notification_config_id
+                    plan.notification_config_id = data.notification_config_id
                     changed = cls.update_model(data, plan, user)
+                    if notify_form_value is not None:
+                        data.notification_config_id = notify_form_value
+                        changed.append('notification_config_id')
                     await session.flush()
                     session.expunge(data)
                 if log:

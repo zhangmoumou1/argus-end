@@ -795,14 +795,168 @@ class Executor(object):
     @staticmethod
     async def notice(env: list, plan: PityTestPlan, project: Project, report_dict: dict, users: list):
         """
-        消息通知方法
-        :param env:
-        :param plan:
-        :param project:
-        :param report_dict:
-        :param users:
-        :return:
+        消息通知方法，支持新旧双模式
+        新模式：plan.notification_config_id 非空 -> 从通知配置读取渠道+模板+接收人
+        旧模式：使用 plan.msg_type + plan.receiver
         """
+        if hasattr(plan, 'notification_config_id') and plan.notification_config_id:
+            try:
+                return await Executor._notice_with_config(env, plan, report_dict)
+            except Exception as e:
+                Executor.log.exception(f"通知配置发送失败: {e}")
+                return
+        await Executor._notice_legacy(env, plan, project, report_dict, users)
+
+    @staticmethod
+    async def _notice_with_config(env: list, plan, report_dict: dict):
+        """使用通知配置系统发送"""
+        from app.crud.config.NotificationConfigDao import NotificationConfigDao
+        from app.crud.config.NotificationChannelDao import NotificationChannelDao
+        from app.crud.config.NotificationTemplateDao import NotificationTemplateDao
+        from app.crud.config.NotificationGroupDao import NotificationGroupDao
+        from app.crud.auth.UserDao import UserDao
+
+        config = await NotificationConfigDao.get_config(plan.notification_config_id)
+        if config is None:
+            Executor.log.warning(f"通知配置 {plan.notification_config_id} 不存在")
+            return
+
+        # 收集接收人用户ID
+        receiver_ids = set()
+        if config.receiver:
+            for rid in config.receiver.split(","):
+                if rid.strip().isdigit():
+                    receiver_ids.add(int(rid))
+        if config.group_ids:
+            gids = [int(x) for x in config.group_ids.split(",") if x.strip().isdigit()]
+            member_ids = await NotificationGroupDao.get_members_by_groups(gids)
+            receiver_ids.update(member_ids)
+
+        if not receiver_ids:
+            Executor.log.warning("通知配置无接收人")
+            return
+
+        users = await UserDao.list_user_touch(*list(receiver_ids))
+        if not users:
+            Executor.log.warning("通知配置接收人无联系方式")
+            return
+
+        # 加载渠道
+        channel_ids = [int(x) for x in config.channel_ids.split(",") if x.strip().isdigit()]
+        channels = await NotificationChannelDao.list_by_ids(channel_ids)
+        if not channels:
+            Executor.log.warning("通知配置无可用渠道")
+            return
+
+        # 加载模板
+        template = None
+        if config.template_id:
+            template = await NotificationTemplateDao.get_template(config.template_id)
+
+        for e in env:
+            rep = report_dict.get(e, {})
+            if not rep:
+                continue
+
+            # DingTalk 专用字段
+            ding_users = [r.get("phone") for r in users]
+            rep['notification_user'] = " ".join(map(lambda x: f"@{x}", ding_users)) if ding_users else ""
+            rep['result_color'] = '#67C23A' if rep.get('plan_result') == '通过' else '#E6A23C'
+
+            for channel in channels:
+                if not channel.enabled:
+                    continue
+                try:
+                    await Executor._send_by_channel(channel, template, plan, rep, users, ding_users)
+                except Exception as e:
+                    Executor.log.warning(f"渠道 {channel.name} 发送失败: {e}")
+
+    @staticmethod
+    def _format_duration(seconds):
+        """将秒转为可读格式"""
+        if not seconds:
+            return ""
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        if minutes < 60:
+            return f"{minutes}m{secs}s"
+        hours = int(minutes // 60)
+        minutes = int(minutes % 60)
+        return f"{hours}h{minutes}m{secs}s"
+
+    @staticmethod
+    async def _send_by_channel(channel, template, plan, report, users, ding_users):
+        """通过指定渠道发送通知"""
+        import json as json_module
+        from app.core.msg.dingtalk import DingTalk
+        from app.core.msg.wecom import WeCom
+        from app.core.msg.feishu import FeiShu
+        from app.core.msg.mail import Email
+
+        cfg = json_module.loads(channel.config_json) if channel.config_json else {}
+
+        # 渲染内容
+        subject = f"测试计划【{plan.name}】执行完毕"
+        content = None
+        if template:
+            try:
+                content = template.content_template.format(
+                    notification_user=report.get("notification_user", ""),
+                    plan_name=plan.name,
+                    env=report.get("env", ""),
+                    executor=report.get("executor", ""),
+                    plan_result=report.get("plan_result", ""),
+                    result_color=report.get("result_color", "#000000"),
+                    success=report.get("success", 0),
+                    failed=report.get("failed", 0),
+                    error=report.get("error", 0),
+                    skipped=report.get("skip", 0),
+                    duration=report.get("cost", ""),
+                    start_time=report.get("start_time", ""),
+                    end_time=report.get("end_time", ""),
+                    pass_rate=report.get("pass_rate", 100),
+                    report_url=report.get("report_url", ""),
+                )
+                if template.subject_template:
+                    subject = template.subject_template.format(
+                        plan_name=plan.name, env=report.get("env", ""),
+                        plan_result=report.get("plan_result", ""))
+            except Exception:
+                Executor.log.warning(f"模板渲染失败，使用默认内容")
+                content = None
+
+        if not content:
+            content = (
+                f"测试计划: {plan.name}\n"
+                f"环境: {report.get('env', '')}\n"
+                f"结果: {report.get('plan_result', '')}\n"
+                f"成功: {report.get('success', 0)} 失败: {report.get('failed', 0)} "
+                f"跳过: {report.get('skip', 0)} 出错: {report.get('error', 0)}\n"
+                f"耗时: {report.get('cost', '')}"
+            )
+
+        if channel.channel_type == 0:  # Email
+            html = Email.render_html(plan_name=plan.name, **report)
+            await Email.send_msg(subject, html, None, *[r.get("email") for r in users])
+
+        elif channel.channel_type == 1:  # DingTalk
+            ding = DingTalk(cfg.get("webhook_url", ""), cfg.get("secret"))
+            await ding.send_msg(subject, content, None, ding_users,
+                                link=report.get("report_url", ""))
+
+        elif channel.channel_type == 2:  # WeCom
+            wc = WeCom(cfg.get("webhook_url", ""))
+            await wc.send_msg(subject, content)
+
+        elif channel.channel_type == 3:  # Feishu
+            fs = FeiShu(cfg.get("webhook_url", ""))
+            await fs.send_msg(subject, content)
+
+    @staticmethod
+    async def _notice_legacy(env: list, plan: PityTestPlan, project: Project, report_dict: dict, users: list):
+        """旧版通知方式，保持向后兼容"""
         for e in env:
             msg_types = plan.msg_type.split(",")
             if msg_types and users:
@@ -903,11 +1057,13 @@ class Executor(object):
                         skip += 1
             cost = time.perf_counter() - st
             cost = "%.2f" % cost
+            # 格式化为可读时间
+            cost_display = Executor._format_duration(float(cost))
             # step5: 回写数据到报告
             report = await TestReportDao.end(report_id, ok, fail, error, skip, 3, cost)
             if report_dict is not None:
                 report_dict[env] = {
-                    "report_url": f"{Config.SERVER_REPORT}{report_id}",
+                    "report_url": f"{Config.SERVER_REPORT.rstrip('/')}/#/share/report/{report_id}",
                     "start_time": report.start_at.strftime("%Y-%m-%d %H:%M:%S"),
                     "end_time": report.finished_at.strftime("%Y-%m-%d %H:%M:%S"),
                     "success": ok,
@@ -916,9 +1072,10 @@ class Executor(object):
                     "error": error,
                     "skip": skip,
                     "executor": name,
-                    "cost": cost,
+                    "cost": cost_display,
                     "plan_result": "通过" if ok + fail + error + skip > 0 and fail + error == 0 else '未通过',
                     "env": current_env.name,
+                    "duration_seconds": float(cost) if cost else 0,
                 }
             return report_id
         except Exception as e:

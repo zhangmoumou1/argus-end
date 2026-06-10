@@ -96,7 +96,7 @@ class BaseConfig(BaseSettings):
     # markdown地址
     MARKDOWN_PATH: ClassVar[str] = os.path.join(ROOT, "templates", "markdown")
 
-    SERVER_REPORT: ClassVar[str] = "http://localhost:8000/#/record/report/"
+    SERVER_REPORT: ClassVar[str] = "http://localhost:8000"
 
     OSS_URL: ClassVar[str] = "http://oss.pity.fun"
 
@@ -140,7 +140,7 @@ class ProConfig(BaseConfig):
         extra="ignore",
     )
 
-    SERVER_REPORT: ClassVar[str] = "https://pity.fun/#/record/report/"
+    SERVER_REPORT: ClassVar[str] = "https://pity.fun"
     SERVER_HOST: str = "127.0.0.1"
 
 

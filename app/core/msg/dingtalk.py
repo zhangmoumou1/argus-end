@@ -1,51 +1,46 @@
-import os
-from urllib.parse import quote
+import hashlib
+import time
+import urllib.parse
 
 from app.core.msg.notification import Notification
 from app.middleware.AsyncHttpClient import AsyncRequest
-from config import Config
 
 
 class DingTalk(Notification):
-    dingtalk_md = os.path.join(Config.MARKDOWN_PATH, "test_report.md")
+    def __init__(self, webhook_url: str, secret: str = None):
+        self.webhook_url = webhook_url
+        self.secret = secret
 
-    def __init__(self, openapi: str):
-        """
-        钉钉通知openurl
-        :param openapi:
-        """
-        self.openapi = openapi
-
-    @staticmethod
-    def render_markdown(**testdata):
-        with open(DingTalk.dingtalk_md, 'r', encoding='utf-8') as f:
-            markdown_text = f.read()
-            return markdown_text.format(**testdata)
+    def _sign(self):
+        """钉钉加签：timestamp + \n + secret -> HMAC-SHA256 base64"""
+        if not self.secret:
+            return {}
+        timestamp = str(int(round(time.time() * 1000)))
+        sign_str = f"{timestamp}\n{self.secret}"
+        hmac_code = hashlib.sha256(sign_str.encode('utf-8')).digest()
+        import base64
+        sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+        return {"timestamp": timestamp, "sign": sign}
 
     async def send_msg(self, subject, content, attachment=None, *receiver, **kwargs):
+        params = self._sign()
+        url = self.webhook_url
+        if params:
+            url += f"?timestamp={params['timestamp']}&sign={params['sign']}"
+
         data = {
             "msgtype": "actionCard",
             "actionCard": {
                 "title": subject,
                 "text": "![screenshot](https://static.pity.fun/picture/走势监测.png)\n%s" % content,
                 "singleTitle": '👉 查看报告',
-                "singleURL": f"""dingtalk://dingtalkclient/page/link?url={quote(kwargs.get("link"))}&pc_slide=false"""
+                "singleURL": f"""dingtalk://dingtalkclient/page/link?url={urllib.parse.quote(kwargs.get("link", ""))}&pc_slide=false"""
             },
             "at": {
-                "atMobiles": receiver,
+                "atMobiles": list(receiver),
             }
         }
-        # data = {
-        #     "msgtype": "markdown",
-        #     "markdown": {
-        #         "title": subject,
-        #         "text": content,
-        #     },
-        #     "at": {
-        #         "atMobiles": receiver,
-        #     }
-        # }
-        r = AsyncRequest(self.openapi, headers={'Content-Type': 'application/json'}, timeout=15, json=data)
+        r = AsyncRequest(url, headers={'Content-Type': 'application/json'}, timeout=15, json=data)
         response = await r.invoke("POST")
         if not response.get("status"):
             raise Exception("发送钉钉通知失败")

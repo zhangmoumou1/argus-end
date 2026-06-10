@@ -567,6 +567,22 @@ async def ensure_ui_test_schema(session):
         "idx_ui_plan_case_enabled_order",
         "plan_id, enabled, deleted_at, sort_index, id",
     )
+    # add notification columns if not exist
+    existing_cols = set()
+    try:
+        result = await session.execute(text(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='pity_ui_test_plan'"
+        ))
+        existing_cols = {row[0] for row in result.fetchall()}
+    except Exception:
+        pass
+    for col, alter_sql in [
+        ('receiver', "ALTER TABLE pity_ui_test_plan ADD COLUMN receiver TEXT NULL COMMENT '推送用户ID，逗号分隔'"),
+        ('msg_type', "ALTER TABLE pity_ui_test_plan ADD COLUMN msg_type VARCHAR(64) NULL COMMENT '推送方式 0=邮件 1=钉钉 2=企业微信 3=飞书'"),
+        ('pass_rate', "ALTER TABLE pity_ui_test_plan ADD COLUMN pass_rate SMALLINT NOT NULL DEFAULT 80 COMMENT '合格率阈值'"),
+    ]:
+        if col not in existing_cols:
+            await session.execute(text(alter_sql))
     await session.commit()
     UI_SCHEMA_READY = True
 
@@ -1448,6 +1464,19 @@ async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str
         params["offset"] = offset
     rows = await session.execute(text(sql), params)
     items = [dict(row) for row in rows.mappings().all()]
+    # enrich with scheduler state
+    try:
+        for item in items:
+            job = Scheduler.scheduler.get_job(f"ui_test_plan_{item['id']}")
+            if job is None:
+                item['state'] = 2
+            elif job.next_run_time is None:
+                item['state'] = 3
+            else:
+                item['state'] = 1
+                item['next_run'] = job.next_run_time.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        pass
     if not paged:
         return PityResponse.success(items)
     count_sql = "SELECT COUNT(1) AS total FROM pity_ui_test_plan p WHERE p.deleted_at=0 "
@@ -1488,6 +1517,18 @@ async def get_ui_test_plan_detail(id: int, session=Depends(get_session), _=Depen
     data = dict(plan)
     data["runner_config"] = _parse_json_text(data.get("runner_config")) or {}
     data["cases"] = [dict(row) for row in case_rows.mappings().all()]
+    # enrich with scheduler state
+    try:
+        job = Scheduler.scheduler.get_job(f"ui_test_plan_{data['id']}")
+        if job is None:
+            data["state"] = 2
+        elif job.next_run_time is None:
+            data["state"] = 3
+        else:
+            data["state"] = 1
+            data["next_run"] = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        pass
     return PityResponse.success(data)
 
 
@@ -1591,6 +1632,7 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
                 "UPDATE pity_ui_test_plan SET project_id=:project_id, name=:name, description=:description, "
                 "env_name=:env_name, base_url=:base_url, browser=:browser, headless=:headless, ordered=:ordered, "
                 "cron=:cron, retry_times=:retry_times, status=:status, runner_config=:runner_config, "
+                "receiver=:receiver, msg_type=:msg_type, pass_rate=:pass_rate, notification_config_id=:notification_config_id, "
                 "update_user=:update_user, updated_at=:updated_at WHERE id=:id"
             ),
             {
@@ -1607,6 +1649,10 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
                 "retry_times": int(payload.get("retry_times") or 0),
                 "status": str(payload.get("status") or "enabled").strip() or "enabled",
                 "runner_config": runner_config,
+                "receiver": ",".join(str(x) for x in (payload.get("receiver") or []) if str(x).strip().isdigit()),
+                "msg_type": ",".join(str(x) for x in (payload.get("msg_type") or []) if str(x).strip().isdigit()),
+                "pass_rate": int(payload.get("pass_rate") or 80),
+                "notification_config_id": int(payload.get("notification_config_id") or 0) or None,
                 "update_user": int(user_info["id"]),
                 "updated_at": now_dt,
             },
@@ -1627,9 +1673,9 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
         insert_result = await session.execute(
             text(
                 "INSERT INTO pity_ui_test_plan "
-                "(created_at, updated_at, deleted_at, create_user, update_user, project_id, name, description, env_name, base_url, browser, headless, ordered, cron, retry_times, status, runner_config) "
+                "(created_at, updated_at, deleted_at, create_user, update_user, project_id, name, description, env_name, base_url, browser, headless, ordered, cron, retry_times, status, runner_config, receiver, msg_type, pass_rate, notification_config_id) "
                 "VALUES "
-                "(:created_at, :updated_at, 0, :create_user, :update_user, :project_id, :name, :description, :env_name, :base_url, :browser, :headless, :ordered, :cron, :retry_times, :status, :runner_config)"
+                "(:created_at, :updated_at, 0, :create_user, :update_user, :project_id, :name, :description, :env_name, :base_url, :browser, :headless, :ordered, :cron, :retry_times, :status, :runner_config, :receiver, :msg_type, :pass_rate, :notification_config_id)"
             ),
             {
                 "created_at": now_dt,
@@ -1648,6 +1694,10 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
                 "retry_times": int(payload.get("retry_times") or 0),
                 "status": str(payload.get("status") or "enabled").strip() or "enabled",
                 "runner_config": runner_config,
+                "receiver": ",".join(str(x) for x in (payload.get("receiver") or []) if str(x).strip().isdigit()),
+                "msg_type": ",".join(str(x) for x in (payload.get("msg_type") or []) if str(x).strip().isdigit()),
+                "pass_rate": int(payload.get("pass_rate") or 80),
+                "notification_config_id": int(payload.get("notification_config_id") or 0) or None,
             },
         )
         plan_id = int(insert_result.lastrowid or 0)
@@ -1762,6 +1812,7 @@ async def list_ui_test_runs(
         "FROM pity_ui_test_run r "
         "LEFT JOIN pity_ui_test_plan p ON r.plan_id=p.id "
         "LEFT JOIN pity_ui_test_case_ref c ON r.case_ref_id=c.id "
+        "LEFT JOIN pity_user u ON r.create_user=u.id "
     )
     where_sql = "WHERE r.deleted_at=0 "
     params = {}
@@ -1805,7 +1856,7 @@ async def list_ui_test_runs(
     select_sql = (
         "SELECT r.id, r.project_id, r.plan_id, r.case_ref_id, r.run_name, r.status, r.trigger_mode, "
         "r.browser, r.headless, r.error_message, r.created_at, r.started_at, r.finished_at, "
-        "p.name AS plan_name, p.env_name AS plan_env_name, c.file_title, c.node_title, c.node_path, r.runner_payload "
+        "p.name AS plan_name, p.env_name AS plan_env_name, c.file_title, c.node_title, c.node_path, u.name AS executor_name, r.runner_payload "
     )
     sql = f"{select_sql}{base_from}{where_sql}ORDER BY r.id DESC"
     if paged:
@@ -1849,11 +1900,102 @@ async def get_ui_test_run_detail(
             "r.run_name, r.status, r.trigger_mode, r.browser, r.headless, r.artifact_bucket, r.artifact_prefix, "
             "r.screenshot_dir, r.video_path, r.trace_path, r.report_path, r.result_json_path, "
             "r.error_message, r.started_at, r.finished_at, "
-            "p.name AS plan_name, p.env_name AS plan_env_name, c.file_title, c.node_title, c.node_path "
+            "p.name AS plan_name, p.env_name AS plan_env_name, u.name AS executor_name, c.file_title, c.node_title, c.node_path "
             f"{run_payload_columns} "
             "FROM pity_ui_test_run r "
             "LEFT JOIN pity_ui_test_plan p ON r.plan_id=p.id "
             "LEFT JOIN pity_ui_test_case_ref c ON r.case_ref_id=c.id "
+            "LEFT JOIN pity_user u ON r.create_user=u.id "
+            "WHERE r.deleted_at=0 AND r.id=:id"
+        ),
+        {"id": id},
+    )
+    run = run_row.mappings().first()
+    if not run:
+        return PityResponse.failed("UI测试执行记录不存在")
+    step_payload_columns = ", request_payload, result_payload" if include_step_payload else ""
+    step_rows = await session.execute(
+        text(
+            "SELECT id, step_index, step_name, step_type, status, screenshot_path, error_message, duration_ms "
+            f"{step_payload_columns} "
+            "FROM pity_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id ORDER BY step_index ASC, id ASC"
+        ),
+        {"run_id": id},
+    )
+    data = dict(run)
+    if include_payload:
+        data["runner_payload"] = _parse_json_text(data.get("runner_payload")) or {}
+        data["result_payload"] = _parse_json_text(data.get("result_payload")) or {}
+    else:
+        data["runner_payload"] = {}
+        data["result_payload"] = {}
+    data["env_name"] = str(data.get("plan_env_name") or data["runner_payload"].get("env_name") or "").strip()
+    data["address_name"] = str(data["runner_payload"].get("address_name") or "").strip()
+    data.pop("plan_env_name", None)
+    client = None
+    if include_artifacts or include_step_artifacts:
+        try:
+            client = OssClient.get_oss_client()
+        except Exception:
+            client = None
+    steps = []
+    for row in step_rows.mappings().all():
+        item = dict(row)
+        if include_step_payload:
+            item["request_payload"] = _parse_json_text(item.get("request_payload")) or item.get("request_payload") or ""
+            item["result_payload"] = _parse_json_text(item.get("result_payload")) or item.get("result_payload") or ""
+        else:
+            item["request_payload"] = ""
+            item["result_payload"] = ""
+        if include_step_artifacts and client and item.get("screenshot_path"):
+            item["screenshot_artifact"] = await _build_artifact_descriptor(
+                client,
+                str(data.get("artifact_bucket") or UI_BUCKET_NAME or ""),
+                str(item.get("screenshot_path") or ""),
+                f"步骤{int(item.get('step_index') or 0)}截图",
+            )
+        else:
+            item["screenshot_artifact"] = None
+        steps.append(item)
+    data["steps"] = steps
+    data["analysis_summary"] = _build_run_analysis(data, steps)
+    artifact_bucket = str(data.get("artifact_bucket") or UI_BUCKET_NAME or "")
+    if include_artifacts and client:
+        data["artifacts"] = [item for item in [
+            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("report_path") or ""), "执行报告"),
+            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("video_path") or ""), "执行视频"),
+            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("trace_path") or ""), "Trace"),
+            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("result_json_path") or ""), "结果JSON"),
+        ] if item]
+    else:
+        data["artifacts"] = []
+    return PityResponse.success(data)
+
+
+@router.get("/run/share-detail")
+async def get_ui_test_shared_run_detail(
+    id: int,
+    include_payload: bool = True,
+    include_artifacts: bool = True,
+    include_step_payload: bool = True,
+    include_step_artifacts: bool = True,
+    session=Depends(get_session),
+):
+    """公开分享接口，无需鉴权"""
+    await ensure_ui_test_schema(session)
+    run_payload_columns = ", r.runner_payload, r.result_payload" if include_payload else ""
+    run_row = await session.execute(
+        text(
+            "SELECT r.id, r.created_at, r.updated_at, r.create_user, r.project_id, r.plan_id, r.case_ref_id, "
+            "r.run_name, r.status, r.trigger_mode, r.browser, r.headless, r.artifact_bucket, r.artifact_prefix, "
+            "r.screenshot_dir, r.video_path, r.trace_path, r.report_path, r.result_json_path, "
+            "r.error_message, r.started_at, r.finished_at, "
+            "p.name AS plan_name, p.env_name AS plan_env_name, u.name AS executor_name, c.file_title, c.node_title, c.node_path "
+            f"{run_payload_columns} "
+            "FROM pity_ui_test_run r "
+            "LEFT JOIN pity_ui_test_plan p ON r.plan_id=p.id "
+            "LEFT JOIN pity_ui_test_case_ref c ON r.case_ref_id=c.id "
+            "LEFT JOIN pity_user u ON r.create_user=u.id "
             "WHERE r.deleted_at=0 AND r.id=:id"
         ),
         {"id": id},
@@ -1921,7 +2063,8 @@ async def get_ui_test_run_detail(
 
 
 @router.get("/run/step-detail")
-async def get_ui_test_run_step_detail(id: int, session=Depends(get_session), _=Depends(Permission())):
+async def get_ui_test_run_step_detail(id: int, session=Depends(get_session)):
+    """步骤详情对分享报告页开放，避免公开链接中的截图预览再次触发鉴权。"""
     await ensure_ui_test_schema(session)
     row = await session.execute(
         text(
@@ -2426,6 +2569,14 @@ async def save_ui_test_run_result(request: Request, session=Depends(get_session)
         update_fields,
     )
     await session.commit()
+    # trigger notification (only for terminal statuses)
+    if status in UI_RUN_TERMINAL_STATUSES:
+        try:
+            from app.core.ui_notice import UiNotice
+            import asyncio
+            asyncio.create_task(UiNotice.notify(0, run_id))
+        except Exception:
+            pass
     return PityResponse.success({"run_id": run_id, "status": status})
 
 

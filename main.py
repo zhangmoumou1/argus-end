@@ -24,6 +24,7 @@ from app.routers.config import router as config_router
 from app.routers.notification import router as msg_router
 from app.routers.online import router as online_router
 from app.routers.operation import router as operation_router
+from app.routers.notification_admin import router as notification_admin_router
 from app.routers.oss import router as oss_router
 from app.routers.performance import router as performance_router
 from app.routers.project import project
@@ -113,6 +114,7 @@ pity.include_router(workspace_router, dependencies=[Depends(request_info)])
 pity.include_router(performance_router, dependencies=[Depends(request_info)])
 pity.include_router(ui_test_router, dependencies=[Depends(request_info)])
 pity.include_router(share_router)
+pity.include_router(notification_admin_router, dependencies=[Depends(request_info)])
 
 pity.mount("/statics", StaticFiles(directory="statics"), name="statics")
 
@@ -308,6 +310,77 @@ async def ensure_testcase_api_columns():
             logger.bind(name=None).success("testcase api version columns checked.        ✔")
         except Exception as e:
             logger.bind(name=None).warning(f"testcase api version columns check failed: {e}")
+
+
+@pity.on_event('startup')
+async def ensure_notification_columns():
+    """idempotent migration for notification_config_id on test_plan and ui_test_plan"""
+    alter_pairs = [
+        ("pity_test_plan", "ALTER TABLE pity_test_plan ADD COLUMN notification_config_id INT NULL COMMENT '通知配置ID'"),
+        ("pity_ui_test_plan", "ALTER TABLE pity_ui_test_plan ADD COLUMN notification_config_id INT NULL COMMENT '通知配置ID'"),
+    ]
+    async with async_session() as session:
+        try:
+            for table, alter_sql in alter_pairs:
+                try:
+                    result = await session.execute(text(
+                        "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND COLUMN_NAME = 'notification_config_id'"
+                    ), {"t": table})
+                    if result.first() is None:
+                        await session.execute(text(alter_sql))
+                        logger.bind(name=None).info(f"added notification_config_id to {table}")
+                except Exception as e:
+                    logger.bind(name=None).warning(f"ensure notification column for {table} failed: {e}")
+            await session.commit()
+        except Exception as e:
+            logger.bind(name=None).warning(f"ensure notification columns failed: {e}")
+
+
+@pity.on_event('startup')
+async def seed_default_templates():
+    """初始化默认通知模板"""
+    from app.crud.config.NotificationTemplateDao import NotificationTemplateDao
+    from app.models.notification_template import PityNotificationTemplate
+    defaults = [
+        (1, "钉钉默认模板", "pity测试报告",
+         "#### {notification_user}\n"
+         "测试计划 **{plan_name}** 执行完毕\n"
+         "测试环境 **{env}** 执行人 **{executor}**\n"
+         "测试结果 <font color={result_color}>{plan_result}</font>\n"
+         "成功 <font color=#67C23A>{success}</font> 失败 <font color=#F56C6C>{failed}</font> 出错 <font color=#E6A23C>{error}</font>\n"
+         "开始时间: <font color=#909399>{start_time}</font>\n"
+         "完成时间: <font color=#909399>{end_time}</font>"),
+        (2, "企微默认模板", "pity测试报告",
+         "## pity测试报告\n"
+         "测试计划: **{plan_name}**\n"
+         "测试环境: {env} | 执行人: {executor}\n"
+         "测试结果: **{plan_result}**\n"
+         "成功: {success} 失败: {failed} 出错: {error}\n"
+         "开始时间: {start_time}\n"
+         "完成时间: {end_time}"),
+        (3, "飞书默认模板", "pity测试报告",
+         "## pity测试报告\n"
+         "测试计划: **{plan_name}**\n"
+         "测试环境: {env} | 执行人: {executor}\n"
+         "测试结果: **{plan_result}**\n"
+         "成功: {success} 失败: {failed} 出错: {error}\n"
+         "开始时间: {start_time}\n"
+         "完成时间: {end_time}"),
+    ]
+    async with async_session() as session:
+        try:
+            for ch_type, name, subj, content in defaults:
+                existing = await NotificationTemplateDao.query_record(
+                    session=session, name=name, deleted_at=0)
+                if existing is not None:
+                    continue
+                tpl = PityNotificationTemplate(name, ch_type, content, 0, subj, True)
+                session.add(tpl)
+            await session.commit()
+            logger.bind(name=None).success("default notification templates seeded.        ✔")
+        except Exception as e:
+            logger.bind(name=None).warning(f"seed notification templates failed: {e}")
 
 
 @pity.on_event('startup')
