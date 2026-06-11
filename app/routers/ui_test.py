@@ -579,7 +579,7 @@ async def ensure_ui_test_schema(session):
     for col, alter_sql in [
         ('receiver', "ALTER TABLE pity_ui_test_plan ADD COLUMN receiver TEXT NULL COMMENT '推送用户ID，逗号分隔'"),
         ('msg_type', "ALTER TABLE pity_ui_test_plan ADD COLUMN msg_type VARCHAR(64) NULL COMMENT '推送方式 0=邮件 1=钉钉 2=企业微信 3=飞书'"),
-        ('pass_rate', "ALTER TABLE pity_ui_test_plan ADD COLUMN pass_rate SMALLINT NOT NULL DEFAULT 80 COMMENT '合格率阈值'"),
+        ('pass_rate', "ALTER TABLE pity_ui_test_plan ADD COLUMN pass_rate SMALLINT NOT NULL DEFAULT 0 COMMENT '成功率阈值，0表示未配置'"),
     ]:
         if col not in existing_cols:
             await session.execute(text(alter_sql))
@@ -756,6 +756,18 @@ def _normalize_plan_cron(cron):
     if not fields:
         return ""
     return " ".join("*" if field == "?" else field for field in fields)
+
+
+def _normalize_optional_pass_rate(value, default=0):
+    if value in (None, ""):
+        return int(default or 0)
+    try:
+        rate = int(value)
+    except Exception:
+        return int(default or 0)
+    if rate <= 0:
+        return 0
+    return min(rate, 100)
 
 
 def _build_ui_plan_runner_cases(cases):
@@ -1704,7 +1716,7 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
                 "runner_config": runner_config,
                 "receiver": ",".join(str(x) for x in (payload.get("receiver") or []) if str(x).strip().isdigit()),
                 "msg_type": ",".join(str(x) for x in (payload.get("msg_type") or []) if str(x).strip().isdigit()),
-                "pass_rate": int(payload.get("pass_rate") or 80),
+                "pass_rate": _normalize_optional_pass_rate(payload.get("pass_rate"), 0),
                 "notification_config_id": int(payload.get("notification_config_id") or 0) or None,
                 "update_user": int(user_info["id"]),
                 "updated_at": now_dt,
@@ -1749,7 +1761,7 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
                 "runner_config": runner_config,
                 "receiver": ",".join(str(x) for x in (payload.get("receiver") or []) if str(x).strip().isdigit()),
                 "msg_type": ",".join(str(x) for x in (payload.get("msg_type") or []) if str(x).strip().isdigit()),
-                "pass_rate": int(payload.get("pass_rate") or 80),
+                "pass_rate": _normalize_optional_pass_rate(payload.get("pass_rate"), 0),
                 "notification_config_id": int(payload.get("notification_config_id") or 0) or None,
             },
         )

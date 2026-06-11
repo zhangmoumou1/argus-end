@@ -24,7 +24,6 @@ class NotificationConfigDao(Mapper):
         result = {
             "id": config.id,
             "name": config.name,
-            "pass_rate": config.pass_rate,
         }
         # channels
         from app.crud.config.NotificationChannelDao import NotificationChannelDao

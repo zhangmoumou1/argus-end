@@ -47,6 +47,38 @@ class TestReportDao(Mapper):
             raise Exception("更新报告失败")
 
     @staticmethod
+    async def stop(report_id: int) -> bool:
+        try:
+            async with async_session() as session:
+                async with session.begin():
+                    sql = select(PityReport).where(PityReport.id == report_id)
+                    data = await session.execute(sql)
+                    report = data.scalars().first()
+                    if report is None:
+                        raise Exception("报告不存在")
+                    if int(report.status or 0) != 1:
+                        return False
+                    report.status = 2
+                    report.finished_at = datetime.now()
+                    await session.flush()
+                    return True
+        except Exception as e:
+            TestReportDao.log.error(f"停止报告失败, error: {e}")
+            raise Exception("停止报告失败")
+
+    @staticmethod
+    async def is_stopped(report_id: int) -> bool:
+        try:
+            async with async_session() as session:
+                sql = select(PityReport.status).where(PityReport.id == report_id)
+                data = await session.execute(sql)
+                status = data.scalar()
+                return int(status or 0) == 2
+        except Exception as e:
+            TestReportDao.log.error(f"查询报告状态失败, error: {e}")
+            return False
+
+    @staticmethod
     async def end(report_id: int, success_count: int, failed_count: int,
                   error_count: int, skipped_count: int, status: int, cost: str) -> PityReport:
         try:
@@ -121,7 +153,10 @@ class TestReportDao(Mapper):
         """
         try:
             async with async_session() as session:
-                sql = select(PityReport).where(PityReport.start_at.between(start_time, end_time)).order_by(
+                sql = select(PityReport, PityTestPlan.name.label("plan_name")).outerjoin(
+                    PityTestPlan,
+                    PityTestPlan.id == PityReport.plan_id
+                ).where(PityReport.start_at.between(start_time, end_time)).order_by(
                     desc(PityReport.start_at))
                 if executor is not None:
                     executor = executor if executor != "CPU" else 0
@@ -132,7 +167,14 @@ class TestReportDao(Mapper):
                     return [], 0
                 sql = sql.offset((page - 1) * size).limit(size)
                 data = await session.execute(sql)
-                return data.scalars().all(), total
+                result = []
+                for report, plan_name in data.all():
+                    try:
+                        report.plan_name = plan_name or ""
+                    except Exception:
+                        pass
+                    result.append(report)
+                return result, total
         except Exception as e:
             TestReportDao.log.error(f"查询构建记录失败: {e}")
             raise Exception(f"查询构建记录失败: {e}")

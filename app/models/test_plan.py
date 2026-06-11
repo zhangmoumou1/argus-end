@@ -24,8 +24,8 @@ class PityTestPlan(PityBase):
     case_list = Column(TEXT, nullable=False)
     # 并行/串行(是否顺序执行)
     ordered = Column(BOOLEAN, default=False)
-    # 通过率低于这个数会自动发通知
-    pass_rate = Column(SMALLINT, default=80)
+    # 成功率阈值：为空则执行后总是通知；有值时仅在低于阈值时通知
+    pass_rate = Column(SMALLINT, nullable=True)
     # 通知用户，目前只有邮箱，后续用户表可能要完善手机号字段，为了通知
     receiver = Column(TEXT)
     # 通知方式 0: 邮件 1: 钉钉 2: 企业微信 3: 飞书 支持多选
@@ -59,7 +59,7 @@ class PityTestPlan(PityBase):
         self.priority = priority
         self.ordered = ordered
         self.cron = cron
-        self.pass_rate = pass_rate
+        self.pass_rate = int(pass_rate) if pass_rate not in (None, "") else None
         self.receiver = ",".join(map(str, receiver))
         self.msg_type = ",".join(map(str, msg_type))
         self.retry_minutes = retry_minutes

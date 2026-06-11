@@ -18,6 +18,20 @@ class UiNotice:
     """UI测试通知发送器"""
 
     @staticmethod
+    def _should_notify(plan: dict, report: dict) -> bool:
+        threshold = plan.get("pass_rate")
+        if threshold in (None, ""):
+            return True
+        try:
+            threshold_value = int(threshold)
+        except Exception:
+            return True
+        if threshold_value <= 0:
+            return True
+        actual_rate = int(report.get("actual_pass_rate", 100) or 0)
+        return actual_rate < threshold_value
+
+    @staticmethod
     async def notify(plan_id: int, run_id: int = 0):
         """
         根据测试计划ID发送通知
@@ -108,6 +122,9 @@ class UiNotice:
             # 构建报告数据
             run_result = await UiNotice._get_run_result(run_id or plan.get("last_run_id"))
             report = await UiNotice._build_report(plan, run_result)
+            if not UiNotice._should_notify(plan, report):
+                logger.info(f"[UiNotice] 计划 {plan_id} 本次成功率未低于阈值，跳过通知")
+                return
 
             # DingTalk 专用字段
             ding_users = [r.get("phone") for r in users if r.get("phone")]
@@ -285,7 +302,7 @@ class UiNotice:
         # 执行人
         executor = run_result.get("executor_name", "") or "pity机器人"
 
-        pass_rate = plan.get("pass_rate", 80)
+        pass_rate = plan.get("pass_rate")
         if total > 0:
             actual_rate = int((success / total) * 100)
         else:
@@ -293,7 +310,7 @@ class UiNotice:
 
         plan_result = "通过"
         if failed > 0 or error > 0:
-            if actual_rate < pass_rate:
+            if pass_rate not in (None, "") and int(pass_rate) > 0 and actual_rate < int(pass_rate):
                 plan_result = "失败"
             else:
                 plan_result = "警告"
@@ -317,6 +334,7 @@ class UiNotice:
             "skip": skip,
             "total": total,
             "pass_rate": pass_rate,
+            "actual_pass_rate": actual_rate,
             "start_time": run_result.get("created_at", "") if isinstance(run_result.get("created_at"), str)
             else (run_result.get("created_at").strftime("%Y-%m-%d %H:%M:%S") if run_result.get("created_at") else ""),
             "end_time": run_result.get("updated_at", "") if isinstance(run_result.get("updated_at"), str)

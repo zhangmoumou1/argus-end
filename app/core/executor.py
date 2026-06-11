@@ -72,6 +72,20 @@ class Executor(object):
     _snowflake_seq = 0
     _snowflake_lock = threading.Lock()
 
+    @staticmethod
+    def _should_notify_by_pass_rate(plan, report: dict) -> bool:
+        threshold = getattr(plan, "pass_rate", None)
+        if threshold in (None, ""):
+            return True
+        try:
+            threshold_value = int(threshold)
+        except Exception:
+            return True
+        if threshold_value <= 0:
+            return True
+        actual_rate = int(report.get("actual_pass_rate", 100) or 0)
+        return actual_rate < threshold_value
+
     def __init__(self, log: CaseLog = None, runtime_user_id: int = 0):
         # 这里是一个彩蛋, 奔驰大G LB（括弧1.3T）
         self.glb = None
@@ -645,6 +659,8 @@ class Executor(object):
     @staticmethod
     async def run_single(env: int, data, report_id, case_id, params_pool: dict = None, path="主case", retry_minutes=0,
                          runtime_user_id: int = 0):
+        if await TestReportDao.is_stopped(report_id):
+            return
         test_data = await PityTestcaseDataDao.list_testcase_data_by_env(env, case_id)
         if not test_data:
             await Executor.run_with_test_data(env, data, report_id, case_id, params_pool, dict(), path,
@@ -854,8 +870,10 @@ class Executor(object):
             template = await NotificationTemplateDao.get_template(config.template_id)
 
         for e in env:
-            rep = report_dict.get(e, {})
+            rep = Executor.normalize_report_pass_rate(report_dict.get(e, {}))
             if not rep:
+                continue
+            if not Executor._should_notify_by_pass_rate(plan, rep):
                 continue
 
             # DingTalk 专用字段
@@ -958,6 +976,9 @@ class Executor(object):
     async def _notice_legacy(env: list, plan: PityTestPlan, project: Project, report_dict: dict, users: list):
         """旧版通知方式，保持向后兼容"""
         for e in env:
+            report_dict[e] = Executor.normalize_report_pass_rate(report_dict.get(e, {}))
+            if not Executor._should_notify_by_pass_rate(plan, report_dict.get(e, {})):
+                continue
             msg_types = plan.msg_type.split(",")
             if msg_types and users:
                 for m in msg_types:
@@ -979,6 +1000,22 @@ class Executor(object):
                         ding = DingTalk(project.dingtalk_url)
                         await ding.send_msg("pity测试报告", render_markdown, None, ding_users,
                                             link=report_dict[e]['report_url'])
+
+    @staticmethod
+    def normalize_report_pass_rate(report: dict):
+        if not isinstance(report, dict):
+            return report
+        if "actual_pass_rate" in report:
+            return report
+        success = int(report.get("success", 0) or 0)
+        failed = int(report.get("failed", 0) or 0)
+        error = int(report.get("error", 0) or 0)
+        skipped = int(report.get("skip", report.get("skipped", 0)) or 0)
+        total = int(report.get("total", 0) or 0)
+        if total <= 0:
+            total = success + failed + error + skipped
+        report["actual_pass_rate"] = int((success / total) * 100) if total > 0 else 100
+        return report
 
     @staticmethod
     @lock("test_plan")
@@ -1042,6 +1079,8 @@ class Executor(object):
                 # 顺序执行，后一个接口可以复用前一个接口提取变量
                 shared_params = dict()
                 for c in case_list:
+                    if await TestReportDao.is_stopped(report_id):
+                        break
                     await Executor.run_single(env, result_data, report_id, c, params_pool=shared_params,
                                               retry_minutes=retry_minutes, runtime_user_id=executor)
             ok, fail, skip, error = 0, 0, 0, 0
@@ -1060,7 +1099,8 @@ class Executor(object):
             # 格式化为可读时间
             cost_display = Executor._format_duration(float(cost))
             # step5: 回写数据到报告
-            report = await TestReportDao.end(report_id, ok, fail, error, skip, 3, cost)
+            final_status = 2 if await TestReportDao.is_stopped(report_id) else 3
+            report = await TestReportDao.end(report_id, ok, fail, error, skip, final_status, cost)
             if report_dict is not None:
                 report_dict[env] = {
                     "report_url": f"{Config.SERVER_REPORT.rstrip('/')}/#/share/report/{report_id}",
@@ -1073,12 +1113,10 @@ class Executor(object):
                     "skip": skip,
                     "executor": name,
                     "cost": cost_display,
-                    "plan_result": "通过" if ok + fail + error + skip > 0 and fail + error == 0 else '未通过',
+                    "plan_result": "通过" if final_status != 2 and ok + fail + error + skip > 0 and fail + error == 0 else '未通过',
                     "env": current_env.name,
                     "duration_seconds": float(cost) if cost else 0,
                 }
             return report_id
         except Exception as e:
             raise Exception(f"批量执行用例失败: {e}")
-
-

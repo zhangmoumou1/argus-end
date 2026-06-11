@@ -1258,6 +1258,17 @@ async def list_report(page: int, size: int, start_time: str, end_time: str, exec
     return PityResponse.success_with_size(data=report_list, total=total)
 
 
+@router.post("/report/stop")
+async def stop_report(payload: dict, _=Depends(Permission())):
+    report_id = int((payload or {}).get("id") or (payload or {}).get("report_id") or 0)
+    if report_id <= 0:
+        return PityResponse.failed("report_id不能为空")
+    stopped = await TestReportDao.stop(report_id)
+    if not stopped:
+        return PityResponse.failed("当前报告不是运行中状态，无法停止")
+    return PityResponse.success({"id": report_id, "status": 2, "stopped": True})
+
+
 @router.get("/pending-review/list")
 async def list_pending_review_cases(project_id: int = None, url: str = "", create_user: int = None,
                                     _=Depends(Permission())):

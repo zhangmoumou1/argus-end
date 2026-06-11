@@ -347,7 +347,6 @@ async def list_configs(user_info=Depends(Permission(Config.ADMIN))):
             "channel_count": ch_count,
             "receiver_count": receiver_count,
             "group_count": group_count,
-            "pass_rate": item.pass_rate,
             "created_at": item.created_at.strftime("%Y-%m-%d %H:%M:%S") if item.created_at else "",
             "updated_at": item.updated_at.strftime("%Y-%m-%d %H:%M:%S") if item.updated_at else "",
         })
@@ -370,8 +369,7 @@ async def insert_config(request: Request, user_info=Depends(Permission(Config.AD
     template_id = body.get("template_id")
     receiver = ",".join(str(x) for x in (body.get("receiver") or []) if str(x).strip().isdigit())
     group_ids = ",".join(str(x) for x in (body.get("group_ids") or []) if str(x).strip().isdigit())
-    pass_rate = int(body.get("pass_rate", 80))
-    model = PityNotificationConfig(name, channel_ids, user_info["id"], template_id, receiver, group_ids, pass_rate)
+    model = PityNotificationConfig(name, channel_ids, user_info["id"], template_id, receiver, group_ids)
     result = await NotificationConfigDao.insert(model=model)
     return PityResponse.success(result)
 
@@ -394,8 +392,6 @@ async def update_config(request: Request, user_info=Depends(Permission(Config.AD
         config.receiver = ",".join(str(x) for x in body["receiver"] if str(x).strip().isdigit())
     if "group_ids" in body:
         config.group_ids = ",".join(str(x) for x in body["group_ids"] if str(x).strip().isdigit())
-    if "pass_rate" in body:
-        config.pass_rate = int(body.get("pass_rate", 80))
     config.updated_at = datetime.now()
     config.update_user = user_info["id"]
     from app.crud import async_session
@@ -421,7 +417,7 @@ async def delete_config(request: Request, user_info=Depends(Permission(Config.AD
 async def list_all_configs(user_info=Depends(Permission())):
     """所有用户可用的通知配置列表（仅id和name）"""
     data = await NotificationConfigDao.list_configs()
-    result = [{"id": item.id, "name": item.name, "pass_rate": item.pass_rate} for item in data]
+    result = [{"id": item.id, "name": item.name} for item in data]
     return PityResponse.success(result)
 
 
