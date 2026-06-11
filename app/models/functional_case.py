@@ -1,4 +1,5 @@
 from sqlalchemy import BIGINT, Column, ForeignKey, INT, String, TEXT
+from sqlalchemy.dialects.mysql import LONGTEXT
 
 from app.models.basic import PityBase
 
@@ -82,7 +83,7 @@ class PityFunctionalCaseSkillDoc(PityBase):
     title = Column(String(128), nullable=False, comment="文档名称")
     description = Column(String(500), nullable=True, comment="文档描述")
     doc_type = Column(String(32), nullable=False, default="skill_md", comment="文档类型")
-    content = Column(TEXT, nullable=False, comment="Markdown内容")
+    content = Column(LONGTEXT, nullable=False, comment="Markdown内容")
     is_shared = Column(INT, nullable=False, default=1, comment="是否共享")
 
     __fields__ = [title]
@@ -103,32 +104,34 @@ class PityFunctionalCaseSkillTask(PityBase):
     __tablename__ = "pity_functional_case_skill_task"
 
     project_id = Column(INT, nullable=False, default=0, comment="所属项目")
+    case_file_id = Column(INT, nullable=False, default=0, comment="目标功能用例文件ID")
     title = Column(String(128), nullable=False, comment="用例标题")
     status = Column(String(32), nullable=False, default="pending", comment="任务状态")
-    requirement_text = Column(TEXT, nullable=True, comment="需求文本")
-    instruction_text = Column(TEXT, nullable=True, comment="额外提示")
-    selected_doc_ids = Column(TEXT, nullable=True, comment="选中文档ID")
-    input_payload = Column(TEXT, nullable=True, comment="任务输入")
+    requirement_text = Column(LONGTEXT, nullable=True, comment="需求文本")
+    instruction_text = Column(LONGTEXT, nullable=True, comment="额外提示")
+    selected_doc_ids = Column(LONGTEXT, nullable=True, comment="选中文档ID")
+    input_payload = Column(LONGTEXT, nullable=True, comment="任务输入")
     runtime_dir = Column(String(255), nullable=True, comment="运行目录")
     stage = Column(String(64), nullable=False, default="queued", comment="执行阶段")
     stage_text = Column(String(255), nullable=True, comment="阶段说明")
     progress = Column(INT, nullable=False, default=0, comment="进度")
     review_provider = Column(String(32), nullable=True, comment="评审模型")
     review_rounds = Column(INT, nullable=False, default=0, comment="评审轮次")
-    task_logs = Column(TEXT, nullable=True, comment="任务日志")
+    task_logs = Column(LONGTEXT, nullable=True, comment="任务日志")
     result_file_path = Column(String(255), nullable=True, comment="结果JSON路径")
     result_md_path = Column(String(255), nullable=True, comment="结果Markdown路径")
     result_xmind_path = Column(String(255), nullable=True, comment="结果XMind路径")
     result_title = Column(String(128), nullable=True, comment="结果标题")
     result_case_count = Column(INT, nullable=False, default=0, comment="生成用例数")
-    result_payload = Column(TEXT, nullable=True, comment="结果JSON")
-    error_message = Column(TEXT, nullable=True, comment="失败原因")
+    result_payload = Column(LONGTEXT, nullable=True, comment="结果JSON")
+    error_message = Column(LONGTEXT, nullable=True, comment="失败原因")
     finished_at = Column(BIGINT, nullable=False, default=0, comment="完成时间戳")
 
     __fields__ = [title]
     __tag__ = "技能任务"
     __alias__ = dict(
         project_id="所属项目",
+        case_file_id="目标用例文件ID",
         title="任务标题",
         status="状态",
         requirement_text="需求文本",
@@ -141,9 +144,10 @@ class PityFunctionalCaseSkillTask(PityBase):
     )
     __show__ = 1
 
-    def __init__(self, project_id, title, user, requirement_text="", instruction_text="", selected_doc_ids=""):
+    def __init__(self, project_id, title, user, requirement_text="", instruction_text="", selected_doc_ids="", case_file_id=0):
         super().__init__(user)
         self.project_id = project_id
+        self.case_file_id = int(case_file_id or 0)
         self.title = title
         self.status = "pending"
         self.requirement_text = requirement_text

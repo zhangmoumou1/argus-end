@@ -83,17 +83,21 @@ def _normalize_plan_cron_for_scheduler(cron: str) -> str:
 async def request_info(request: Request):
     logger.bind(name=None).debug(f"{request.method} {request.url}")
     try:
-        body = await request.json()
-        logger.bind(payload=_trim_request_payload(body), name=None).debug("request_json: ")
-    except:
+        body = await request.body()
+        if len(body) == 0:
+            return
+        # 大请求体不再额外做一次 JSON 解析，避免日志链路把请求处理成本放大
+        if len(body) > 200 * 1024:
+            logger.bind(payload=f"<skipped large request body: {len(body)} bytes>", name=None).debug("request_body: ")
+            return
         try:
-            body = await request.body()
-            if len(body) != 0:
-                # 有请求体，记录日志
-                logger.bind(payload=_trim_request_payload(body), name=None).debug("request_body: ")
-        except:
-            # 忽略文件上传类型的数据
-            pass
+            parsed = json.loads(body.decode("utf-8"))
+            logger.bind(payload=_trim_request_payload(parsed), name=None).debug("request_json: ")
+        except Exception:
+            logger.bind(payload=_trim_request_payload(body), name=None).debug("request_body: ")
+    except Exception:
+        # 忽略文件上传类型的数据
+        pass
 
 
 # 注册路由

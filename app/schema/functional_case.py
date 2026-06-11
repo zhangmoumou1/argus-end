@@ -135,12 +135,19 @@ class FunctionalCaseSkillRequirementItemForm(BaseModel):
 
 class FunctionalCaseSkillTaskForm(BaseModel):
     project_id: int
+    case_file_id: Optional[int] = 0
     title: str
     requirement_text: Optional[str] = ""
     instruction_text: Optional[str] = ""
+    generate_instruction_text: Optional[str] = ""
+    review_instruction_text: Optional[str] = ""
     images: List[str] = []
     requirement_items: List[FunctionalCaseSkillRequirementItemForm] = []
     doc_ids: List[int] = []
+    rule_doc_ids: List[int] = []
+    reference_doc_ids: List[int] = []
+    generate_doc_ids: List[int] = []
+    review_doc_ids: List[int] = []
 
     @validator("title")
     def validate_task_title(cls, value):
@@ -149,7 +156,7 @@ class FunctionalCaseSkillTaskForm(BaseModel):
             raise ValueError("用例名称不能为空")
         return value
 
-    @validator("requirement_text", "instruction_text", pre=True, always=True)
+    @validator("requirement_text", "instruction_text", "generate_instruction_text", "review_instruction_text", pre=True, always=True)
     def normalize_task_text(cls, value):
         return str(value or "").strip()
 
@@ -169,7 +176,7 @@ class FunctionalCaseSkillTaskForm(BaseModel):
             return value
         return []
 
-    @validator("doc_ids", pre=True, always=True)
+    @validator("doc_ids", "rule_doc_ids", "reference_doc_ids", "generate_doc_ids", "review_doc_ids", pre=True, always=True)
     def normalize_doc_ids(cls, value):
         if not value:
             return []
@@ -182,3 +189,10 @@ class FunctionalCaseSkillTaskForm(BaseModel):
                     continue
             return ans
         return []
+
+    @validator("case_file_id", pre=True, always=True)
+    def normalize_case_file_id(cls, value):
+        try:
+            return max(int(value or 0), 0)
+        except Exception:
+            return 0

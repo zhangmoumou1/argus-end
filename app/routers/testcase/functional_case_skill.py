@@ -1,10 +1,12 @@
 import base64
 import asyncio
+import gzip
 import json
 import os
 import re
 import shutil
 import time
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime
 
@@ -36,6 +38,9 @@ AI_INSTRUCTION_LIMIT = 6000
 AI_IMAGE_LIMIT = 6
 AI_IMAGE_DATA_URL_LIMIT = 2_000_000
 SKILL_TASK_SCHEMA_READY = False
+COMPRESSED_PAYLOAD_PREFIX = "gz:"
+
+
 def serialize_model(model):
     return PityResponse.model_to_dict(model)
 
@@ -47,6 +52,7 @@ async def ensure_skill_task_schema(session):
     try:
         for column_name, sql in [
             ("description", "ALTER TABLE pity_functional_case_skill_doc ADD COLUMN description VARCHAR(500) NULL COMMENT '文档描述'"),
+            ("case_file_id", "ALTER TABLE pity_functional_case_skill_task ADD COLUMN case_file_id INT NOT NULL DEFAULT 0 COMMENT '目标功能用例文件ID'"),
             ("input_payload", "ALTER TABLE pity_functional_case_skill_task ADD COLUMN input_payload TEXT NULL COMMENT '任务输入'"),
             ("stage", "ALTER TABLE pity_functional_case_skill_task ADD COLUMN stage VARCHAR(64) NOT NULL DEFAULT 'queued' COMMENT '执行阶段'"),
             ("stage_text", "ALTER TABLE pity_functional_case_skill_task ADD COLUMN stage_text VARCHAR(255) NULL COMMENT '阶段说明'"),
@@ -58,6 +64,21 @@ async def ensure_skill_task_schema(session):
             result = await session.execute(text(f"SHOW COLUMNS FROM {'pity_functional_case_skill_doc' if column_name == 'description' else 'pity_functional_case_skill_task'} LIKE '{column_name}'"))
             if result.first() is None:
                 await session.execute(text(sql))
+
+        for alter_sql in [
+            "ALTER TABLE pity_functional_case_skill_doc MODIFY COLUMN content LONGTEXT NOT NULL COMMENT 'Markdown内容'",
+            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN requirement_text LONGTEXT NULL COMMENT '需求文本'",
+            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN instruction_text LONGTEXT NULL COMMENT '额外提示'",
+            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN selected_doc_ids LONGTEXT NULL COMMENT '选中文档ID'",
+            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN input_payload LONGTEXT NULL COMMENT '任务输入'",
+            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN task_logs LONGTEXT NULL COMMENT '任务日志'",
+            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN result_payload LONGTEXT NULL COMMENT '结果JSON'",
+            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN error_message LONGTEXT NULL COMMENT '失败原因'",
+        ]:
+            try:
+                await session.execute(text(alter_sql))
+            except Exception:
+                pass
         await session.commit()
     except OperationalError as exc:
         if "Duplicate column name" not in str(exc):
@@ -85,6 +106,35 @@ def preview_text(value, limit=300):
     return f"{text_value[:limit]} ...<truncated {len(text_value) - limit} chars>"
 
 
+def encode_task_input_payload(payload):
+    try:
+        raw_text = json.dumps(payload or {}, ensure_ascii=False)
+    except Exception:
+        raw_text = "{}"
+    try:
+        compressed = gzip.compress(raw_text.encode("utf-8"))
+        encoded = base64.b64encode(compressed).decode("ascii")
+        if len(encoded) < len(raw_text):
+            return f"{COMPRESSED_PAYLOAD_PREFIX}{encoded}"
+    except Exception:
+        pass
+    return raw_text
+
+
+def decode_task_input_payload(value):
+    text_value = str(value or "")
+    if not text_value:
+        return {}
+    try:
+        if text_value.startswith(COMPRESSED_PAYLOAD_PREFIX):
+            compressed = base64.b64decode(text_value[len(COMPRESSED_PAYLOAD_PREFIX):])
+            text_value = gzip.decompress(compressed).decode("utf-8")
+        payload = json.loads(text_value)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
 def read_text_if_exists(path):
     if not path or not os.path.exists(path):
         return ""
@@ -106,6 +156,73 @@ def get_builtin_context_text():
     return "\n\n".join(parts)
 
 
+def get_builtin_doc_text(relative_path):
+    return read_text_if_exists(os.path.join(AI_CASE_CREATOR_ROOT, relative_path))
+
+
+def dedupe_int_list(values):
+    result = []
+    seen = set()
+    for item in values or []:
+        try:
+            value = int(item)
+        except Exception:
+            continue
+        if value <= 0 or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def normalize_task_doc_groups(task_payload):
+    groups = {
+        "rule_doc_ids": dedupe_int_list(task_payload.get("rule_doc_ids") or []),
+        "reference_doc_ids": dedupe_int_list(task_payload.get("reference_doc_ids") or []),
+        "generate_doc_ids": dedupe_int_list(task_payload.get("generate_doc_ids") or []),
+        "review_doc_ids": dedupe_int_list(task_payload.get("review_doc_ids") or []),
+    }
+    legacy_doc_ids = dedupe_int_list(task_payload.get("doc_ids") or [])
+    if legacy_doc_ids and not any(groups.values()):
+        groups["rule_doc_ids"] = legacy_doc_ids
+    all_doc_ids = []
+    seen = set()
+    for key in ("rule_doc_ids", "reference_doc_ids", "generate_doc_ids", "review_doc_ids"):
+        for item in groups[key]:
+            if item in seen:
+                continue
+            seen.add(item)
+            all_doc_ids.append(item)
+    groups["all_doc_ids"] = all_doc_ids
+    return groups
+
+
+def group_visible_docs_by_usage(docs, doc_groups):
+    doc_map = {int(item["id"]): item for item in (docs or []) if int(item.get("id") or 0) > 0}
+    result = {}
+    for key in ("rule_doc_ids", "reference_doc_ids", "generate_doc_ids", "review_doc_ids"):
+        result[key] = [doc_map[item] for item in (doc_groups.get(key) or []) if item in doc_map]
+    result["rule_docs"] = result["rule_doc_ids"]
+    result["reference_docs"] = result["reference_doc_ids"]
+    result["generate_docs"] = result["generate_doc_ids"]
+    result["review_docs"] = result["review_doc_ids"]
+    result["all_doc_ids"] = list(doc_groups.get("all_doc_ids") or [])
+    return result
+
+
+def render_docs_as_text(title, docs, limit=24000):
+    visible_docs = [item for item in (docs or []) if isinstance(item, dict)]
+    if not visible_docs:
+        return ""
+    blocks = []
+    for index, doc in enumerate(visible_docs, start=1):
+        blocks.append(
+            f"{title}{index}：{doc.get('title') or '未命名文档'}\n"
+            f"{truncate_ai_text(doc.get('content') or '', limit)}"
+        )
+    return "\n\n".join(blocks)
+
+
 def summarize_ai_images(images):
     summary = []
     for index, image in enumerate(images or [], start=1):
@@ -119,24 +236,38 @@ def summarize_ai_images(images):
     return summary
 
 
-def summarize_skill_task_request(task_payload, content):
-    text_blocks = [
-        item.get("text") or ""
-        for item in content
-        if isinstance(item, dict) and item.get("type") == "text"
-    ]
-    sent_images = [
-        item.get("image_url", {}).get("url")
-        for item in content
-        if isinstance(item, dict) and item.get("type") == "image_url"
-    ]
+def summarize_skill_task_request(task_payload, messages):
+    text_blocks = []
+    sent_images = []
+    for message_item in messages or []:
+        content = message_item.get("content") if isinstance(message_item, dict) else None
+        if isinstance(content, str):
+            text_blocks.append(content)
+            continue
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text":
+                text_blocks.append(item.get("text") or "")
+            elif item.get("type") == "image_url":
+                sent_images.append(item.get("image_url", {}).get("url"))
+    doc_groups = normalize_task_doc_groups(task_payload)
     return {
         "project_id": task_payload.get("project_id"),
         "title": task_payload.get("title"),
         "requirement_length": len(str(task_payload.get("requirement_text") or "")),
         "instruction_length": len(str(task_payload.get("instruction_text") or "")),
+        "generate_instruction_length": len(str(task_payload.get("generate_instruction_text") or "")),
+        "review_instruction_length": len(str(task_payload.get("review_instruction_text") or "")),
         "requirement_group_count": len(task_payload.get("requirement_items") or []),
-        "doc_count": len(task_payload.get("doc_ids") or []),
+        "rule_doc_count": len(doc_groups.get("rule_doc_ids") or []),
+        "reference_doc_count": len(doc_groups.get("reference_doc_ids") or []),
+        "generate_doc_count": len(doc_groups.get("generate_doc_ids") or []),
+        "review_doc_count": len(doc_groups.get("review_doc_ids") or []),
+        "doc_count": len(doc_groups.get("all_doc_ids") or []),
+        "message_count": len(messages or []),
         "sent_image_count": len(sent_images),
         "prompt_text_length": sum(len(block) for block in text_blocks),
         "prompt_text_preview": preview_text("\n\n".join(text_blocks), 1000),
@@ -235,28 +366,47 @@ def order_ai_model_configs(config):
     return ordered
 
 
-def build_skill_task_prompt_content(task_payload, docs):
+def build_skill_task_system_prompt(task_payload, grouped_docs):
     title = str(task_payload.get("title") or "功能用例").strip() or "功能用例"
+    rule_doc_text = render_docs_as_text("规则文档", grouped_docs.get("rule_docs"))
+    blocks = [
+        "你是资深测试分析师，负责根据输入的需求材料生成功能测试用例脑图。",
+        f"当前用例标题：{title}",
+    ]
+    if rule_doc_text:
+        blocks.append(f"用户选择的规则文档：\n{truncate_ai_text(rule_doc_text, 24000)}")
+    return "\n\n".join(blocks)
+
+
+def build_skill_task_assistant_prompt(task_payload, grouped_docs):
+    generate_instruction_text = truncate_ai_text(task_payload.get("generate_instruction_text"), AI_INSTRUCTION_LIMIT)
+    review_instruction_text = truncate_ai_text(task_payload.get("review_instruction_text"), AI_INSTRUCTION_LIMIT)
+    legacy_instruction_text = truncate_ai_text(task_payload.get("instruction_text"), AI_INSTRUCTION_LIMIT)
+    generate_doc_text = render_docs_as_text("生成要求文档", grouped_docs.get("generate_docs"))
+    review_doc_text = render_docs_as_text("审查要求文档", grouped_docs.get("review_docs"))
+    blocks = []
+    if generate_doc_text:
+        blocks.append(f"用户选择的生成要求文档：\n{truncate_ai_text(generate_doc_text, 24000)}")
+    if generate_instruction_text:
+        blocks.append(f"生成补充说明：\n{generate_instruction_text}")
+    if review_doc_text:
+        blocks.append(f"用户选择的审查要求文档：\n{truncate_ai_text(review_doc_text, 24000)}")
+    if review_instruction_text:
+        blocks.append(f"审查补充说明：\n{review_instruction_text}")
+    if legacy_instruction_text and not (generate_instruction_text or review_instruction_text):
+        blocks.append(f"兼容旧版额外说明：\n{legacy_instruction_text}")
+    return "\n\n".join(blocks)
+
+
+def build_skill_task_user_content(task_payload, grouped_docs):
     requirement_text = truncate_ai_text(task_payload.get("requirement_text"), AI_TEXT_LIMIT)
-    instruction_text = truncate_ai_text(task_payload.get("instruction_text"), AI_INSTRUCTION_LIMIT)
-    extra_context_text = build_extra_context(docs)
     requirement_items = task_payload.get("requirement_items") or []
     content = []
     remaining_image_slots = AI_IMAGE_LIMIT
 
-    intro_lines = [
-        "你是资深测试分析师，请根据需求材料生成功能测试用例脑图。",
-        f"当前用例标题：{title}",
-        "请严格遵循技能文档中的输出结构，只输出最终 Markdown，不要输出解释、分析过程、注释或代码块标记。",
-        "请尽量按 模块-功能-子功能-字段-用例名称-预期 的层级组织内容，覆盖正常、异常、边界场景。",
-        "用例名称行请保留优先级标记，如 P0/P1/P2，便于系统自动识别优先级。",
-    ]
-    if extra_context_text:
-        intro_lines.append(f"补充技能与规范材料：\n{truncate_ai_text(extra_context_text, 24000)}")
+    intro_lines = ["以下是本次生成的真实需求材料，请据此输出结果。"]
     if requirement_text:
         intro_lines.append(f"需求总述：\n{requirement_text}")
-    if instruction_text:
-        intro_lines.append(f"额外生成要求：\n{instruction_text}")
     if requirement_items:
         intro_lines.append("以下按需求组提供材料。每组的说明、设计链接和图片属于同一上下文，禁止跨组混用。")
     content.append({"type": "text", "text": "\n\n".join(intro_lines)})
@@ -332,6 +482,16 @@ def build_skill_task_prompt_content(task_payload, docs):
     return content
 
 
+def build_skill_task_messages(task_payload, docs):
+    doc_groups = normalize_task_doc_groups(task_payload)
+    grouped_docs = group_visible_docs_by_usage(docs, doc_groups)
+    return [
+        {"role": "system", "content": build_skill_task_system_prompt(task_payload, grouped_docs)},
+        {"role": "assistant", "content": build_skill_task_assistant_prompt(task_payload, grouped_docs)},
+        {"role": "user", "content": build_skill_task_user_content(task_payload, grouped_docs)},
+    ]
+
+
 def build_loggable_kimi_payload(payload):
     try:
         cloned = json.loads(json.dumps(payload, ensure_ascii=False))
@@ -389,8 +549,49 @@ def clean_outline_node_text(text_value):
     text = str(text_value or "").strip()
     text = re.sub(r"^[\-\*\+]\s+", "", text)
     text = re.sub(r"^\d+\.\s+", "", text)
+    text = re.sub(r"^#+\s*", "", text)
     text = re.sub(r"[（(]\s*P\s*[0-9]\s*[）)]", "", text, flags=re.IGNORECASE)
     return text.strip() or "未命名节点"
+
+
+def _label_outline_level(text_value):
+    normalized = str(text_value or "").strip()
+    normalized = re.sub(r"^[\-\*\+\d\.\s#]+", "", normalized).strip()
+    normalized = normalized.replace("：", ":")
+    label = normalized.split(":", 1)[0].strip().lower()
+    mapping = {
+        "模块": 0,
+        "功能": 1,
+        "子功能": 2,
+        "字段": 3,
+        "用例名称": 4,
+        "预期": 5,
+    }
+    return mapping.get(label)
+
+
+def _load_json_from_text(text_value):
+    normalized_text = normalize_model_text(strip_fenced_markdown(text_value))
+    if not normalized_text:
+        return None
+    try:
+        return json.loads(normalized_text)
+    except Exception:
+        return None
+
+
+def _looks_like_case_json_payload(payload):
+    if not isinstance(payload, dict):
+        return False
+    if isinstance(payload.get("root"), dict):
+        return True
+    if isinstance(payload.get("children"), list):
+        return True
+    if isinstance(payload.get("data"), dict) and isinstance(payload.get("children"), list):
+        return True
+    if isinstance(payload.get("data"), dict) and payload.get("data", {}).get("text"):
+        return True
+    return False
 
 
 def parse_markdown_outline_to_case_data(text_value, fallback_title):
@@ -400,10 +601,19 @@ def parse_markdown_outline_to_case_data(text_value, fallback_title):
         if not str(raw_line or "").strip():
             continue
         normalized_line = raw_line.replace("\t", "  ")
-        if not re.match(r"^\s*([\-\*\+]|\d+\.)\s+", normalized_line):
-            continue
         indent = re.match(r"^\s*", normalized_line).group(0)
-        level = max(0, len(indent) // 2)
+        level = None
+        if re.match(r"^\s*([\-\*\+]|\d+\.)\s+", normalized_line):
+            level = max(0, len(indent) // 2)
+        elif re.match(r"^\s*#{1,6}\s+", normalized_line):
+            heading = re.match(r"^\s*(#{1,6})\s+", normalized_line)
+            level = max(0, len(heading.group(1)) - 1) if heading else 0
+        else:
+            labeled_level = _label_outline_level(normalized_line)
+            if labeled_level is not None:
+                level = labeled_level
+        if level is None:
+            continue
         lines.append({
             "level": level,
             "text": clean_outline_node_text(normalized_line),
@@ -456,6 +666,9 @@ def normalize_ai_node(node):
 
 def normalize_ai_case_data(payload, fallback_title):
     if isinstance(payload, str):
+        json_payload = _load_json_from_text(payload)
+        if _looks_like_case_json_payload(json_payload):
+            return normalize_ai_case_data(json_payload, fallback_title)
         return parse_markdown_outline_to_case_data(payload, fallback_title)
     if not isinstance(payload, dict):
         raise ValueError("AI 返回结果格式不正确")
@@ -479,15 +692,24 @@ def analyze_case_data(data):
     def walk(node):
         nonlocal case_count
         node_data = node.get("data") if isinstance(node, dict) else {}
+        node_text = str(node_data.get("text") or "").strip() if isinstance(node_data, dict) else ""
         node_icons = node_data.get("icon") if isinstance(node_data, dict) else []
         icons = node_icons if isinstance(node_icons, list) else [node_icons] if node_icons else []
-        if any(isinstance(icon, str) and icon.startswith("priority_") for icon in icons):
+        has_priority_icon = any(isinstance(icon, str) and icon.startswith("priority_") for icon in icons)
+        has_priority_text = re.search(r"(^|[\s_（(-])P[0-2]([\s_）)-]|$)", node_text, re.IGNORECASE) is not None
+        if has_priority_icon or has_priority_text:
             case_count += 1
         for child in node.get("children") or []:
             walk(child)
 
     walk(data)
     return {"case_count": case_count}
+
+
+def build_ai_case_result(ai_payload, fallback_title):
+    case_title, case_data = normalize_ai_case_data(ai_payload, fallback_title)
+    stats = analyze_case_data(case_data)
+    return case_title, case_data, stats
 
 
 def call_active_model_generate(task_payload, docs, ai_config):
@@ -502,23 +724,18 @@ def call_active_model_generate(task_payload, docs, ai_config):
     if not model:
         raise ValueError("未配置 AI 模型名称")
 
-    prompt_content = build_skill_task_prompt_content(task_payload, docs)
-    request_summary = summarize_skill_task_request(task_payload, prompt_content)
+    messages = build_skill_task_messages(task_payload, docs)
+    request_summary = summarize_skill_task_request(task_payload, messages)
     supports_image_content = provider_supports_image_content(provider, model)
-    user_content = prompt_content if supports_image_content else flatten_prompt_content_to_text(prompt_content, provider, model)
+    request_messages = json.loads(json.dumps(messages, ensure_ascii=False))
+    if not supports_image_content:
+        for message_item in request_messages:
+            if message_item.get("role") == "user":
+                message_item["content"] = flatten_prompt_content_to_text(message_item.get("content") or [], provider, model)
     request_payload = {
         "model": model,
         "temperature": 1,
-        "messages": [
-            {
-                "role": "system",
-                "content": "你是资深测试分析师。请严格遵循输入中的技能文档和规范文档，只输出最终 Markdown 大纲，不要输出解释、分析过程、注释或代码块标记。",
-            },
-            {
-                "role": "user",
-                "content": user_content,
-            },
-        ],
+        "messages": request_messages,
     }
     loggable_payload = build_loggable_kimi_payload(request_payload)
     logger.info(f"functional skill task ai provider={provider}, model={model}, base_url={base_url}")
@@ -599,6 +816,16 @@ async def generate_with_fallback(task_payload, docs):
         task_payload,
         docs,
         ai_config,
+    )
+
+
+async def convert_ai_payload_to_case_result(ai_payload, fallback_title):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        build_ai_case_result,
+        ai_payload,
+        fallback_title,
     )
 
 
@@ -794,34 +1021,30 @@ async def load_skill_docs(session, user_id, doc_ids):
 
 
 def load_task_request_payload(task, task_dir):
-    payload = {}
-    try:
-        payload = json.loads(task.input_payload or "{}")
-        if not isinstance(payload, dict):
-            payload = {}
-    except Exception:
-        payload = {}
-    request_payload_path = str(payload.get("request_payload_path") or "").strip()
-    if request_payload_path and os.path.exists(request_payload_path):
-        try:
-            file_payload = json.loads(read_text_if_exists(request_payload_path) or "{}")
-            if isinstance(file_payload, dict):
-                payload.update(file_payload)
-        except Exception:
-            pass
+    payload = decode_task_input_payload(task.input_payload)
     payload.setdefault("project_id", task.project_id)
     payload.setdefault("title", task.title)
     payload.setdefault("requirement_text", task.requirement_text or "")
     payload.setdefault("instruction_text", task.instruction_text or "")
+    payload.setdefault("generate_instruction_text", "")
+    payload.setdefault("review_instruction_text", "")
     payload.setdefault("images", [])
     payload.setdefault("requirement_items", [])
     try:
         selected_doc_ids = json.loads(task.selected_doc_ids or "[]")
         if isinstance(selected_doc_ids, list):
             payload.setdefault("doc_ids", selected_doc_ids)
+        elif isinstance(selected_doc_ids, dict):
+            for key in ("doc_ids", "rule_doc_ids", "reference_doc_ids", "generate_doc_ids", "review_doc_ids", "all_doc_ids"):
+                if key in selected_doc_ids and key not in payload:
+                    payload[key] = selected_doc_ids.get(key)
     except Exception:
         pass
     payload.setdefault("doc_ids", [])
+    payload.setdefault("rule_doc_ids", [])
+    payload.setdefault("reference_doc_ids", [])
+    payload.setdefault("generate_doc_ids", [])
+    payload.setdefault("review_doc_ids", [])
     return payload
 
 
@@ -918,7 +1141,7 @@ async def append_skill_task_result_operation_log(
         await session.commit()
 
 
-async def execute_skill_task(task_id):
+async def execute_skill_task(task_id, task_payload=None, docs=None):
     async with async_session() as session:
         await ensure_skill_task_schema(session)
         result = await session.execute(
@@ -931,31 +1154,21 @@ async def execute_skill_task(task_id):
         if task is None:
             return
         user_id = task.create_user
-        task_dir = task.runtime_dir or os.path.join(SKILL_TASK_DIR, str(user_id), str(task.id))
-        if not task.runtime_dir:
-            task.runtime_dir = task_dir
-            await session.commit()
-        task_payload = load_task_request_payload(task, task_dir)
-        docs = await load_skill_docs(session, user_id, task_payload.get("doc_ids") or [])
+        if task_payload is None:
+            task_payload = load_task_request_payload(task, "")
+        if docs is None:
+            docs = await load_skill_docs(session, user_id, task_payload.get("doc_ids") or [])
 
     review_provider = ""
     review_rounds = 0
     task_started_at = time.perf_counter()
     try:
-        await update_task_state(task_id, user_id, status="running", stage="prepare", stage_text="正在组装需求目录与技能材料", progress=10)
-        export_runtime_materials(
-            task_dir,
-            task_payload.get("requirement_text"),
-            task_payload.get("instruction_text"),
-            task_payload.get("images"),
-            docs,
-            task_payload.get("requirement_items") or [],
-        )
+        await update_task_state(task_id, user_id, status="running", stage="prepare", stage_text="正在组装模型请求", progress=10)
 
         ai_config = await GConfigDao.get_active_ai_model_config()
         review_provider = ai_config.get("provider") or ""
         logger.info(
-            f"functional skill task execute task_id={task_id}, generator=model-api, "
+            f"functional skill task execute task_id={task_id}, generator=structured-messages, "
             f"system_active_ai_provider={ai_config.get('provider')}, "
             f"system_active_ai_model={ai_config.get('model')}, "
             f"system_active_ai_base_url={ai_config.get('base_url')}"
@@ -981,12 +1194,15 @@ async def execute_skill_task(task_id):
             review_provider=review_provider,
             review_rounds=review_rounds,
         )
-        case_title, case_data = normalize_ai_case_data(ai_payload, task_payload.get("title") or "功能用例")
-        stats = analyze_case_data(case_data)
-        result_json_path = os.path.join(task_dir, "generated_case.json")
-        result_md_path = os.path.join(task_dir, "generated_case.md")
-        write_text(result_json_path, json.dumps(case_data, ensure_ascii=False, indent=2))
-        write_text(result_md_path, str(ai_payload or ""))
+        try:
+            case_title, case_data, stats = await convert_ai_payload_to_case_result(
+                ai_payload,
+                task_payload.get("title") or "功能用例",
+            )
+        except Exception as parse_exc:
+            raise ValueError(
+                f"{parse_exc}；模型返回预览：{preview_text(ai_payload, 800)}"
+            ) from parse_exc
 
         await update_task_state(
             task_id,
@@ -997,8 +1213,8 @@ async def execute_skill_task(task_id):
             progress=100,
             result_title=case_title,
             result_case_count=int(stats["case_count"] or 0),
-            result_file_path=result_json_path,
-            result_md_path=result_md_path,
+            result_file_path="",
+            result_md_path="",
             result_xmind_path="",
             result_payload=json.dumps({
                 "title": case_title,
@@ -1007,6 +1223,7 @@ async def execute_skill_task(task_id):
                 "case_num": int(stats["case_count"] or 0),
                 "provider": review_provider,
                 "model": model_name,
+                "markdown": str(ai_payload or ""),
             }, ensure_ascii=False),
             error_message="",
             finished_at=int(time.time()),
@@ -1027,8 +1244,6 @@ async def execute_skill_task(task_id):
                 case_data=case_data,
                 ai_payload=ai_payload,
                 stats=stats,
-                result_json_path=result_json_path,
-                result_md_path=result_md_path,
             )
         except Exception as log_exc:
             logger.warning(f"functional skill task result log skipped: {log_exc}")
@@ -1071,105 +1286,74 @@ async def try_finalize_task_from_runtime(task_id, user_id):
             )
         )
         task = result.scalars().first()
-        if task is None:
-            return None
-        if task.create_user != user_id:
-            return task
-        if task.status in ("success", "failed"):
-            return task
-        task_dir = task.runtime_dir or os.path.join(SKILL_TASK_DIR, str(task.create_user), str(task.id))
-        result_json_path = task.result_file_path or os.path.join(task_dir, "generated_case.json")
-        if not os.path.exists(result_json_path):
-            return task
-        result_text = read_text_if_exists(result_json_path)
-        if not result_text.strip():
-            return task
-        if time.time() - os.path.getmtime(result_json_path) < 3:
-            return task
-    try:
-        result_payload = json.loads(result_text)
-        case_title, case_data = normalize_ai_case_data(result_payload, task.title or "功能用例")
-        stats = analyze_case_data(case_data)
-        result_md_path = task.result_md_path or os.path.join(task_dir, "generated_case.md")
-        updated_task = await update_task_state(
-            task_id,
-            user_id,
-            status="success",
-            stage="success",
-            stage_text="检测到结果文件已生成，已自动完成画布回填",
-            progress=100,
-            result_title=case_title,
-            result_case_count=int(stats["case_count"] or 0),
-            result_file_path=result_json_path,
-            result_md_path=result_md_path if os.path.exists(result_md_path) else "",
-            result_xmind_path="",
-            result_payload=json.dumps({
-                "title": case_title,
-                "data": case_data,
-                "case_count": int(stats["case_count"] or 0),
-                "case_num": int(stats["case_count"] or 0),
-                "provider": task.review_provider or "",
-                "model": "",
-            }, ensure_ascii=False),
-            error_message="",
-            finished_at=int(time.time()),
-            review_provider=task.review_provider or "",
-            review_rounds=int(task.review_rounds or 0),
-        )
-        try:
-            task_payload = load_task_request_payload(task, task_dir)
-            elapsed_seconds = round(max(0, time.time() - float(task.created_at.timestamp() if task.created_at else time.time())), 2)
-            await append_skill_task_result_operation_log(
-                task,
-                [None] * int(task_payload.get("visible_doc_count") or 0),
-                task_payload.get("requirement_items") or [],
-                "success",
-                elapsed_seconds,
-                task.review_provider or "",
-                "",
-                case_title=case_title,
-                case_data=case_data,
-                ai_payload=result_text,
-                stats=stats,
-                result_json_path=result_json_path,
-                result_md_path=result_md_path if os.path.exists(result_md_path) else "",
-            )
-        except Exception as log_exc:
-            logger.warning(f"fallback skill task result log skipped: {log_exc}")
-        return updated_task
-    except Exception as exc:
-        logger.warning(f"fallback finalize skipped: {exc}")
         return task
 
 
 def build_task_result(task):
     payload = {}
     logs = []
-    if task.result_payload:
+    is_mapping = isinstance(task, Mapping)
+    task_result_payload = task.get("result_payload") if is_mapping else task.result_payload
+    task_logs_payload = task.get("task_logs") if is_mapping else task.task_logs
+    task_result_case_count = task.get("result_case_count") if is_mapping else task.result_case_count
+    task_result_md_path = task.get("result_md_path") if is_mapping else task.result_md_path
+    task_result_xmind_path = task.get("result_xmind_path") if is_mapping else task.result_xmind_path
+    task_case_file_id = task.get("case_file_id") if is_mapping else getattr(task, "case_file_id", 0)
+    task_id = task.get("id") if is_mapping else task.id
+    task_project_id = task.get("project_id") if is_mapping else task.project_id
+    task_status = task.get("status") if is_mapping else task.status
+    task_stage = task.get("stage") if is_mapping else task.stage
+    task_stage_text = task.get("stage_text") if is_mapping else task.stage_text
+    task_progress = task.get("progress") if is_mapping else task.progress
+    task_review_provider = task.get("review_provider") if is_mapping else task.review_provider
+    task_review_rounds = task.get("review_rounds") if is_mapping else task.review_rounds
+    task_error_message = task.get("error_message") if is_mapping else task.error_message
+    if task_result_payload:
         try:
-            payload = json.loads(task.result_payload)
+            payload = json.loads(task_result_payload)
         except Exception:
             payload = {}
-    if task.task_logs:
+    if task_logs_payload:
         try:
-            logs = json.loads(task.task_logs)
+            logs = json.loads(task_logs_payload)
             if not isinstance(logs, list):
                 logs = []
         except Exception:
             logs = []
+    markdown_value = str(payload.get("markdown") or "")
+    data_value = payload.get("data")
+    data_children = data_value.get("children") if isinstance(data_value, dict) else []
+    data_text = str((data_value.get("data") or {}).get("text") or "") if isinstance(data_value, dict) else ""
+    if markdown_value and isinstance(data_value, dict) and not data_children and data_text in {"", "未命名节点"}:
+        try:
+            rebuilt_title, rebuilt_data = parse_markdown_outline_to_case_data(
+                markdown_value,
+                payload.get("title") or "功能用例",
+            )
+            rebuilt_stats = analyze_case_data(rebuilt_data)
+            payload["title"] = payload.get("title") or rebuilt_title
+            payload["data"] = rebuilt_data
+            payload["case_count"] = int(rebuilt_stats.get("case_count") or 0)
+            payload["case_num"] = int(rebuilt_stats.get("case_count") or 0)
+        except Exception:
+            pass
     payload.update({
-        "task_id": task.id,
-        "status": task.status,
-        "stage": task.stage,
-        "stage_text": task.stage_text,
-        "progress": task.progress,
-        "review_provider": task.review_provider,
-        "review_rounds": task.review_rounds,
-        "error_message": task.error_message,
-        "result_md_path": task.result_md_path,
-        "result_xmind_path": task.result_xmind_path,
-        "result_md_url": file_path_to_static_url(task.result_md_path),
-        "result_xmind_url": file_path_to_static_url(task.result_xmind_path),
+        "task_id": task_id,
+        "project_id": task_project_id,
+        "case_file_id": int(task_case_file_id or 0),
+        "status": task_status,
+        "stage": task_stage,
+        "stage_text": task_stage_text,
+        "progress": task_progress,
+        "review_provider": task_review_provider,
+        "review_rounds": task_review_rounds,
+        "case_count": int(payload.get("case_count") or payload.get("case_num") or task_result_case_count or 0),
+        "case_num": int(payload.get("case_num") or payload.get("case_count") or task_result_case_count or 0),
+        "error_message": task_error_message,
+        "result_md_path": task_result_md_path,
+        "result_xmind_path": task_result_xmind_path,
+        "result_md_url": file_path_to_static_url(task_result_md_path),
+        "result_xmind_url": file_path_to_static_url(task_result_xmind_path),
         "task_logs": logs,
     })
     return payload
@@ -1333,18 +1517,64 @@ async def delete_skill_doc(id: int, user_info=Depends(Permission())):
 @router.post("/skill-task/create")
 async def create_skill_task(form: FunctionalCaseSkillTaskForm, user_info=Depends(Permission())):
     requirement_items = [item.dict() for item in (form.requirement_items or [])]
-    if not form.requirement_text and not form.instruction_text and not form.images and not has_requirement_items(requirement_items):
-        return PityResponse.failed("请至少提供需求说明、需求图片、设计链接或生成提示词")
+    doc_groups = {
+        "rule_doc_ids": dedupe_int_list(form.rule_doc_ids),
+        "reference_doc_ids": dedupe_int_list(form.reference_doc_ids),
+        "generate_doc_ids": dedupe_int_list(form.generate_doc_ids),
+        "review_doc_ids": dedupe_int_list(form.review_doc_ids),
+    }
+    legacy_doc_ids = dedupe_int_list(form.doc_ids)
+    if legacy_doc_ids and not any(doc_groups.values()):
+        doc_groups["rule_doc_ids"] = legacy_doc_ids
+    all_doc_ids = dedupe_int_list(
+        (doc_groups["rule_doc_ids"] or [])
+        + (doc_groups["reference_doc_ids"] or [])
+        + (doc_groups["generate_doc_ids"] or [])
+        + (doc_groups["review_doc_ids"] or [])
+    )
+    if not (
+        form.requirement_text
+        or form.instruction_text
+        or form.generate_instruction_text
+        or form.review_instruction_text
+        or form.images
+        or has_requirement_items(requirement_items)
+        or all_doc_ids
+    ):
+        return PityResponse.failed("请至少提供需求说明、需求图片、设计链接、规则文档或生成补充说明")
+    execution_payload = {
+        "project_id": form.project_id,
+        "case_file_id": int(form.case_file_id or 0),
+        "title": form.title,
+        "requirement_text": form.requirement_text,
+        "instruction_text": form.instruction_text,
+        "generate_instruction_text": form.generate_instruction_text,
+        "review_instruction_text": form.review_instruction_text,
+        "images": form.images,
+        "requirement_items": requirement_items,
+        "doc_ids": all_doc_ids,
+        "all_doc_ids": all_doc_ids,
+        **doc_groups,
+        "visible_doc_count": 0,
+        "image_count": len(form.images or []),
+        "requirement_group_count": len(requirement_items),
+    }
     async with async_session() as session:
         await ensure_skill_task_schema(session)
-        docs = await load_skill_docs(session, user_info["id"], form.doc_ids)
+        docs = await load_skill_docs(session, user_info["id"], all_doc_ids)
+        execution_payload["visible_doc_count"] = len(docs)
         task = PityFunctionalCaseSkillTask(
             project_id=form.project_id,
+            case_file_id=int(form.case_file_id or 0),
             title=form.title,
             user=user_info["id"],
             requirement_text=form.requirement_text,
-            instruction_text=form.instruction_text,
-            selected_doc_ids=json.dumps(form.doc_ids, ensure_ascii=False),
+            instruction_text=form.instruction_text or form.generate_instruction_text,
+            selected_doc_ids=json.dumps({
+                "all_doc_ids": all_doc_ids,
+                "doc_ids": all_doc_ids,
+                **doc_groups,
+            }, ensure_ascii=False),
         )
         task.status = "queued"
         task.stage = "queued"
@@ -1355,71 +1585,75 @@ async def create_skill_task(form: FunctionalCaseSkillTaskForm, user_info=Depends
             "stage": "queued",
             "text": "任务已创建，等待后台执行",
         }], ensure_ascii=False)
-        task.input_payload = json.dumps({
-            "project_id": form.project_id,
-            "title": form.title,
-            "doc_ids": form.doc_ids,
-            "visible_doc_count": len(docs),
-            "image_count": len(form.images or []),
-            "requirement_group_count": len(requirement_items),
-        }, ensure_ascii=False)
+        task.input_payload = ""
         session.add(task)
         await session.flush()
         await session.commit()
         await session.refresh(task)
-
-        task_dir = os.path.join(SKILL_TASK_DIR, str(user_info["id"]), str(task.id))
-        ensure_dir(task_dir)
-        request_payload_path = os.path.join(task_dir, "request_payload.json")
-        write_text(request_payload_path, json.dumps({
-            "project_id": form.project_id,
-            "title": form.title,
-            "requirement_text": form.requirement_text,
-            "instruction_text": form.instruction_text,
-            "images": form.images,
-            "requirement_items": requirement_items,
-            "doc_ids": form.doc_ids,
-            "visible_doc_count": len(docs),
-        }, ensure_ascii=False))
-        task.runtime_dir = task_dir
-        task.input_payload = json.dumps({
-            "project_id": form.project_id,
-            "title": form.title,
-            "doc_ids": form.doc_ids,
-            "visible_doc_count": len(docs),
-            "image_count": len(form.images or []),
-            "requirement_group_count": len(requirement_items),
-            "request_payload_path": request_payload_path,
-        }, ensure_ascii=False)
-        await session.commit()
     try:
         ai_config = await GConfigDao.get_active_ai_model_config()
         logger.info(
-            f"functional skill task create task_id={task.id}, generator=model-api, "
+            f"functional skill task create task_id={task.id}, generator=structured-messages, "
             f"system_active_ai_provider={ai_config.get('provider')}, system_active_ai_model={ai_config.get('model')}, system_active_ai_base_url={ai_config.get('base_url')}"
         )
     except Exception as config_exc:
         logger.warning(f"functional skill task create task_id={task.id}, load ai config failed: {config_exc}")
-    asyncio.create_task(execute_skill_task(task.id))
+    asyncio.create_task(execute_skill_task(task.id, task_payload=execution_payload, docs=docs))
     return PityResponse.success({"task_id": task.id, "status": task.status, "stage": task.stage, "progress": task.progress})
 
 
 @router.get("/skill-task/status")
 async def query_skill_task_status(id: int, user_info=Depends(Permission())):
     async with async_session() as session:
-        await ensure_skill_task_schema(session)
         result = await session.execute(
-            select(PityFunctionalCaseSkillTask).where(
+            select(
+                PityFunctionalCaseSkillTask.id,
+                PityFunctionalCaseSkillTask.project_id,
+                PityFunctionalCaseSkillTask.case_file_id,
+                PityFunctionalCaseSkillTask.status,
+                PityFunctionalCaseSkillTask.stage,
+                PityFunctionalCaseSkillTask.stage_text,
+                PityFunctionalCaseSkillTask.progress,
+                PityFunctionalCaseSkillTask.review_provider,
+                PityFunctionalCaseSkillTask.review_rounds,
+                PityFunctionalCaseSkillTask.result_case_count,
+                PityFunctionalCaseSkillTask.error_message,
+                PityFunctionalCaseSkillTask.create_user,
+            ).where(
                 PityFunctionalCaseSkillTask.id == id,
                 PityFunctionalCaseSkillTask.deleted_at == 0,
             )
         )
-        task = result.scalars().first()
+        task = result.mappings().first()
         if task is None:
             return PityResponse.failed("任务不存在")
-        if task.create_user != user_info["id"]:
+        if int(task.get("create_user") or 0) != int(user_info["id"]):
             return PityResponse.failed("只能查看自己的任务")
-    task = await try_finalize_task_from_runtime(id, user_info["id"]) or task
+        normalized_status = str(task.get("status") or "").strip().lower()
+        normalized_stage = str(task.get("stage") or "").strip().lower()
+        if normalized_status not in {"success", "failed"} and normalized_stage not in {"success", "failed"}:
+            return PityResponse.success(build_task_result(task))
+        detail_result = await session.execute(
+            select(
+                PityFunctionalCaseSkillTask.id,
+                PityFunctionalCaseSkillTask.project_id,
+                PityFunctionalCaseSkillTask.case_file_id,
+                PityFunctionalCaseSkillTask.status,
+                PityFunctionalCaseSkillTask.stage,
+                PityFunctionalCaseSkillTask.stage_text,
+                PityFunctionalCaseSkillTask.progress,
+                PityFunctionalCaseSkillTask.review_provider,
+                PityFunctionalCaseSkillTask.review_rounds,
+                PityFunctionalCaseSkillTask.task_logs,
+                PityFunctionalCaseSkillTask.result_payload,
+                PityFunctionalCaseSkillTask.result_md_path,
+                PityFunctionalCaseSkillTask.result_xmind_path,
+                PityFunctionalCaseSkillTask.result_case_count,
+                PityFunctionalCaseSkillTask.error_message,
+            ).where(
+                PityFunctionalCaseSkillTask.id == id,
+                PityFunctionalCaseSkillTask.deleted_at == 0,
+            )
+        )
+        task = detail_result.mappings().first() or task
     return PityResponse.success(build_task_result(task))
-
-
