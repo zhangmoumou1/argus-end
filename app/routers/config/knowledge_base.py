@@ -1,13 +1,15 @@
-import os
 import uuid
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import Depends, File, Form, UploadFile
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select, func, text
 
 from app.crud.config.KnowledgeBaseDao import KnowledgeBaseDao
 from app.handler.fatcory import PityResponse
+from app.middleware.oss import OssClient, normalize_oss_upload_result
 from app.models import async_session
 from app.models.knowledge_base import PityKnowledgeBase
 from app.models.user import User
@@ -16,7 +18,8 @@ from app.routers.config.environment import router
 from app.schema.knowledge_base import KnowledgeBaseForm
 from config import Config
 
-KNOWLEDGE_UPLOAD_ROOT = os.path.join("statics", "knowledge")
+KNOWLEDGE_BUCKET_NAME = "argus-end"
+KNOWLEDGE_OBJECT_PREFIX = "knowledge"
 KNOWLEDGE_CHARSET_READY = False
 KNOWLEDGE_MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 KNOWLEDGE_ALLOWED_SUFFIXES = {
@@ -42,24 +45,19 @@ KNOWLEDGE_ALLOWED_SUFFIXES = {
 }
 
 
-def _build_knowledge_url(relative_path: str):
-    return f"/statics/{str(relative_path or '').replace(os.sep, '/')}"
-
-
-def _build_knowledge_storage_path(filename: str):
+def _build_knowledge_object_key(filename: str):
     now = datetime.now()
-    relative_dir = os.path.join("knowledge", f"{now:%Y}", f"{now:%m}")
-    upload_dir = os.path.join("statics", relative_dir)
-    os.makedirs(upload_dir, exist_ok=True)
-
     suffix = Path(str(filename or "")).suffix.lower()
     if suffix not in KNOWLEDGE_ALLOWED_SUFFIXES:
         suffix = ".bin"
-
     stored_name = f"{uuid.uuid4().hex}{suffix}"
-    absolute_path = os.path.join(upload_dir, stored_name)
-    relative_path = os.path.join(relative_dir, stored_name)
-    return absolute_path, relative_path
+    return f"{KNOWLEDGE_OBJECT_PREFIX}/{now:%Y}/{now:%m}/{stored_name}"
+
+
+def _build_knowledge_asset_url(object_key: str, bucket_name: str = KNOWLEDGE_BUCKET_NAME):
+    encoded_key = quote(str(object_key or "").strip(), safe="/")
+    encoded_bucket = quote(str(bucket_name or KNOWLEDGE_BUCKET_NAME).strip(), safe="")
+    return f"/config/knowledge/asset/view?object_key={encoded_key}&bucket_name={encoded_bucket}"
 
 
 def _sanitize_mysql_utf8_text(value: str):
@@ -189,6 +187,25 @@ async def delete_knowledge(id: int, user_info=Depends(Permission(Config.ADMIN)),
     return PityResponse.success()
 
 
+@router.get("/knowledge/asset/view")
+async def view_knowledge_asset(object_key: str, bucket_name: str = KNOWLEDGE_BUCKET_NAME):
+    try:
+        normalized_key = str(object_key or "").replace("\\", "/").strip().strip("/")
+        if not normalized_key:
+            return PityResponse.failed("object_key不能为空")
+        client = OssClient.get_oss_client()
+        detail = await client.get_object_detail(
+            normalized_key,
+            bucket_name=str(bucket_name or KNOWLEDGE_BUCKET_NAME).strip() or KNOWLEDGE_BUCKET_NAME,
+        )
+        view_url = str(detail.get("view_url") or "").strip()
+        if not view_url:
+            return PityResponse.failed("资源访问地址不存在")
+        return RedirectResponse(url=view_url, status_code=307)
+    except Exception as exc:
+        return PityResponse.failed(f"资源访问失败: {exc}")
+
+
 @router.post("/knowledge/upload")
 async def upload_knowledge_file(
     file: UploadFile = File(...),
@@ -201,16 +218,32 @@ async def upload_knowledge_file(
             return PityResponse.failed("文件不能为空")
         if len(content) > KNOWLEDGE_MAX_UPLOAD_SIZE:
             return PityResponse.failed("文件不能超过20MB")
-        absolute_path, relative_path = _build_knowledge_storage_path(file.filename)
-        with open(absolute_path, "wb") as f:
-            f.write(content)
+        object_key = _build_knowledge_object_key(file.filename)
+        client = OssClient.get_oss_client()
+        upload_result, file_size = await client.create_file(
+            object_key,
+            content,
+            bucket_name=KNOWLEDGE_BUCKET_NAME,
+            content_type=file.content_type or "application/octet-stream",
+        )
+        upload_meta = normalize_oss_upload_result(
+            client,
+            upload_result,
+            object_key,
+            bucket_name=KNOWLEDGE_BUCKET_NAME,
+        )
+        asset_url = _build_knowledge_asset_url(
+            upload_meta.get("object_key") or object_key,
+            upload_meta.get("bucket_name") or KNOWLEDGE_BUCKET_NAME,
+        )
         return PityResponse.success({
             "file_name": file.filename,
-            "stored_name": os.path.basename(absolute_path),
+            "stored_name": Path(object_key).name,
             "kind": kind or "file",
-            "size": len(content),
-            "url": _build_knowledge_url(relative_path),
+            "size": int(file_size or len(content)),
+            "url": asset_url,
+            "bucket_name": upload_meta.get("bucket_name") or KNOWLEDGE_BUCKET_NAME,
+            "object_key": upload_meta.get("object_key") or object_key,
         })
     except Exception as exc:
         return PityResponse.failed(f"上传失败: {exc}")
-

@@ -8,8 +8,10 @@ import uuid
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi.responses import RedirectResponse
 import requests
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import OperationalError
@@ -43,6 +45,7 @@ AI_TEXT_LIMIT = 12000
 AI_INSTRUCTION_LIMIT = 6000
 AI_IMAGE_LIMIT = 3
 AI_IMAGE_DATA_URL_LIMIT = 800000
+FUNCTIONAL_CASE_ASSET_BASE_PATH = "functionalcase"
 
 
 def serialize_model(model):
@@ -119,6 +122,12 @@ def build_static_url(path_value: str):
         return ""
     relative_path = os.path.relpath(normalized, statics_root)
     return f"/statics/{relative_path.replace(os.sep, '/')}"
+
+
+def build_functional_case_asset_url(object_key: str, bucket_name: str = None):
+    encoded_key = quote(str(object_key or "").strip(), safe="/")
+    encoded_bucket = quote(str(bucket_name or get_default_bucket_name() or "").strip(), safe="")
+    return f"/functional-case/file/asset/view?object_key={encoded_key}&bucket_name={encoded_bucket}"
 
 
 def build_loggable_kimi_payload(payload):
@@ -1350,6 +1359,26 @@ async def delete_file(id: int, project_id: int = None, user_info=Depends(Permiss
     return PityResponse.success()
 
 
+@router.get("/file/asset/view")
+async def view_functional_case_asset(object_key: str, bucket_name: str = ""):
+    try:
+        normalized_key = str(object_key or "").replace("\\", "/").strip().strip("/")
+        if not normalized_key:
+            return PityResponse.failed("object_key不能为空")
+        client = OssClient.get_oss_client()
+        detail = await client.get_object_detail(
+            normalized_key,
+            bucket_name=str(bucket_name or get_default_bucket_name() or "").strip() or None,
+        )
+        view_url = str(detail.get("view_url") or "").strip()
+        if not view_url:
+            return PityResponse.failed("资源访问地址不存在")
+        return RedirectResponse(url=view_url, status_code=307)
+    except Exception as exc:
+        logger.exception(f"访问功能用例资源失败: {exc}")
+        return PityResponse.failed("资源访问失败")
+
+
 @router.post("/file/image/upload")
 async def upload_functional_case_image(
     file: UploadFile = File(...),
@@ -1372,21 +1401,23 @@ async def upload_functional_case_image(
         upload_result, _ = await client.create_file(
             stored_name,
             content,
-            base_path="functionalcase",
+            base_path=FUNCTIONAL_CASE_ASSET_BASE_PATH,
             bucket_name=bucket_name,
             content_type=file.content_type,
         )
-        file_url = normalize_oss_upload_result(
+        upload_meta = normalize_oss_upload_result(
             client,
             upload_result,
             stored_name,
             bucket_name=bucket_name,
-            base_path="functionalcase",
-        )["file_url"]
+            base_path=FUNCTIONAL_CASE_ASSET_BASE_PATH,
+        )
+        object_key = upload_meta.get("object_key") or f"{FUNCTIONAL_CASE_ASSET_BASE_PATH}/{stored_name}"
+        file_url = build_functional_case_asset_url(object_key, upload_meta.get("bucket_name") or bucket_name)
         return PityResponse.success({
             "name": stored_name,
             "url": file_url,
-            "file_path": f"functionalcase/{stored_name}",
+            "file_path": object_key,
             "bucket": get_default_bucket_name(),
             "size": len(content),
         })
@@ -1413,22 +1444,24 @@ async def upload_functional_case_attachment(
         upload_result, _ = await client.create_file(
             stored_name,
             content,
-            base_path="functionalcase",
+            base_path=FUNCTIONAL_CASE_ASSET_BASE_PATH,
             bucket_name=bucket_name,
             content_type=file.content_type,
         )
-        file_url = normalize_oss_upload_result(
+        upload_meta = normalize_oss_upload_result(
             client,
             upload_result,
             stored_name,
             bucket_name=bucket_name,
-            base_path="functionalcase",
-        )["file_url"]
+            base_path=FUNCTIONAL_CASE_ASSET_BASE_PATH,
+        )
+        object_key = upload_meta.get("object_key") or f"{FUNCTIONAL_CASE_ASSET_BASE_PATH}/{stored_name}"
+        file_url = build_functional_case_asset_url(object_key, upload_meta.get("bucket_name") or bucket_name)
         return PityResponse.success({
             "name": file.filename or stored_name,
             "stored_name": stored_name,
             "url": file_url,
-            "file_path": f"functionalcase/{stored_name}",
+            "file_path": object_key,
             "bucket": get_default_bucket_name(),
             "size": len(content),
             "content_type": file.content_type or "application/octet-stream",
@@ -1436,4 +1469,3 @@ async def upload_functional_case_attachment(
     except Exception as e:
         logger.exception(f"上传功能用例节点附件失败: {e}")
         return PityResponse.failed("上传节点附件失败")
-
