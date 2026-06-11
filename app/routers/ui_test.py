@@ -1008,6 +1008,59 @@ def _build_run_analysis(run_data, steps):
     }
 
 
+def _extract_ui_run_counts(result_payload, run_status=""):
+    payload = result_payload if isinstance(result_payload, dict) else _parse_json_text(result_payload) or {}
+    success_count = failed_count = skipped_count = error_count = 0
+    total_count = 0
+    report_status = ""
+
+    if isinstance(payload, dict):
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+        base = summary or stats or payload
+        success_count = int(base.get("success_count") or base.get("success_case_count") or base.get("passed") or 0)
+        failed_count = int(base.get("failed_count") or base.get("failed_case_count") or base.get("failed") or 0)
+        skipped_count = int(base.get("skipped_count") or base.get("skipped_case_count") or base.get("skipped") or 0)
+        error_count = int(base.get("error_count") or base.get("error") or 0)
+        total_count = int(base.get("total_count") or base.get("total") or base.get("case_count") or 0)
+        report_status = str(base.get("report_status") or payload.get("report_status") or "").strip().lower()
+
+        if not any((success_count, failed_count, skipped_count, error_count)) and isinstance(payload.get("case_results"), list):
+            for case_item in payload.get("case_results") or []:
+                case_status = str((case_item or {}).get("status") or "").strip().lower()
+                if case_status == "success":
+                    success_count += 1
+                elif case_status == "failed":
+                    failed_count += 1
+                elif case_status == "skipped":
+                    skipped_count += 1
+                elif case_status:
+                    error_count += 1
+
+    if total_count <= 0:
+        total_count = success_count + failed_count + skipped_count + error_count
+
+    normalized_run_status = str(run_status or "").strip().lower()
+    if not report_status:
+        if normalized_run_status in {"queued", "claimed", "running", "uploading", "cancelled"}:
+            report_status = normalized_run_status
+        elif failed_count > 0 or error_count > 0:
+            report_status = "failed"
+        elif success_count > 0 and failed_count == 0 and error_count == 0:
+            report_status = "success"
+        elif skipped_count > 0 and total_count == skipped_count:
+            report_status = "skipped"
+
+    return {
+        "total_count": int(total_count or 0),
+        "success_count": int(success_count or 0),
+        "failed_count": int(failed_count or 0),
+        "skipped_count": int(skipped_count or 0),
+        "error_count": int(error_count or 0),
+        "report_status": report_status,
+    }
+
+
 def _guess_artifact_preview_type(path_value: str):
     suffix = Path(str(path_value or "").lower()).suffix
     if suffix in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg"}:
@@ -1795,10 +1848,14 @@ async def list_ui_test_runs(
         project_id: int = 0,
         plan_id: int = 0,
         case_ref_id: int = 0,
+        executor_id: int = 0,
+        env_name: str = "",
         scope: str = "report",
         source: str = "",
         status: str = "",
         keyword: str = "",
+        started_at_start: str = "",
+        started_at_end: str = "",
         page: int = 1,
         size: int = 20,
         paged: bool = False,
@@ -1825,6 +1882,9 @@ async def list_ui_test_runs(
     if int(case_ref_id or 0) > 0:
         where_sql += "AND r.case_ref_id=:case_ref_id "
         params["case_ref_id"] = int(case_ref_id)
+    if int(executor_id or 0) > 0:
+        where_sql += "AND r.create_user=:executor_id "
+        params["executor_id"] = int(executor_id)
     normalized_source = str(source or "").strip().lower()
     if normalized_scope == "debug":
         where_sql += "AND r.trigger_mode='trial' AND r.create_user=:create_user "
@@ -1837,6 +1897,11 @@ async def list_ui_test_runs(
         where_sql += "AND r.trigger_mode='trial' "
     elif normalized_source == "formal":
         where_sql += "AND r.trigger_mode<>'trial' "
+    normalized_env_name = str(env_name or "").strip()
+    if normalized_env_name:
+        where_sql += "AND (p.env_name=:env_name OR r.runner_payload LIKE :env_name_like) "
+        params["env_name"] = normalized_env_name
+        params["env_name_like"] = f'%"env_name": "{normalized_env_name}"%'
     normalized_status = str(status or "").strip().lower()
     if normalized_status:
         if normalized_status == "running":
@@ -1844,6 +1909,14 @@ async def list_ui_test_runs(
         else:
             where_sql += "AND r.status=:status "
             params["status"] = normalized_status
+    normalized_started_at_start = str(started_at_start or "").strip()
+    if normalized_started_at_start:
+        where_sql += "AND COALESCE(r.started_at, r.created_at) >= :started_at_start "
+        params["started_at_start"] = normalized_started_at_start
+    normalized_started_at_end = str(started_at_end or "").strip()
+    if normalized_started_at_end:
+        where_sql += "AND COALESCE(r.started_at, r.created_at) <= :started_at_end "
+        params["started_at_end"] = normalized_started_at_end
     normalized_keyword = str(keyword or "").strip()
     if normalized_keyword:
         where_sql += (
@@ -1854,9 +1927,10 @@ async def list_ui_test_runs(
         params["like_keyword"] = f"%{normalized_keyword}%"
 
     select_sql = (
-        "SELECT r.id, r.project_id, r.plan_id, r.case_ref_id, r.run_name, r.status, r.trigger_mode, "
+        "SELECT r.id, r.project_id, r.plan_id, r.case_ref_id, r.create_user, r.run_name, r.status, r.trigger_mode, "
         "r.browser, r.headless, r.error_message, r.created_at, r.started_at, r.finished_at, "
-        "p.name AS plan_name, p.env_name AS plan_env_name, c.file_title, c.node_title, c.node_path, u.name AS executor_name, r.runner_payload "
+        "p.name AS plan_name, p.env_name AS plan_env_name, c.file_title, c.node_title, c.node_path, "
+        "u.name AS executor_name, r.runner_payload, r.result_payload "
     )
     sql = f"{select_sql}{base_from}{where_sql}ORDER BY r.id DESC"
     if paged:
@@ -1868,9 +1942,12 @@ async def list_ui_test_runs(
     for row in rows.mappings().all():
         item = dict(row)
         runner_payload = _parse_json_text(item.get("runner_payload")) or {}
+        result_payload = _parse_json_text(item.get("result_payload")) or {}
         item["env_name"] = str(item.get("plan_env_name") or runner_payload.get("env_name") or "").strip()
         item["address_name"] = str(runner_payload.get("address_name") or "").strip()
+        item.update(_extract_ui_run_counts(result_payload, item.get("status")))
         item.pop("runner_payload", None)
+        item.pop("result_payload", None)
         item.pop("plan_env_name", None)
         items.append(item)
     if not paged:
