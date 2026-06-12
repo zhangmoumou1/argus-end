@@ -40,7 +40,7 @@ async def start_proxy(log):
         if errorcheck_addon is not None:
             m.addons.remove(errorcheck_addon)
         m.addons.add(*addons)
-        log.bind(name=None).debug(f"mock server is running at http://0.0.0.0:{Config.PROXY_PORT}")
+        log.bind(name=None).success(f"mock server is running at http://0.0.0.0:{Config.PROXY_PORT}.        ✔")
         await m.run()
     except BaseException as e:
         log.bind(name=None).error(f"mock server running failed, please check: {e}")

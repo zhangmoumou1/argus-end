@@ -6,19 +6,20 @@ from os.path import isfile
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Request, WebSocket, WebSocketDisconnect, Depends
-from sqlalchemy import text
 from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from app import pity, init_logging
+from app.core.platform_worker import platform_task_worker
+from app.core.platform_mq import rabbit_connection
 from app.core.msg.wss_msg import WebSocketMessage
 from app.core.ws_connection_manager import ws_manage
 from app.crud import create_table
 from app.crud.notification.NotificationDao import PityNotificationDao
 from app.enums.MessageEnum import MessageStateEnum, MessageTypeEnum
 from app.middleware.RedisManager import RedisHelper
-from app.models import async_session
+from app.middleware.oss import OssClient, get_default_bucket_name
 from app.routers.auth import user
 from app.routers.config import router as config_router
 from app.routers.notification import router as msg_router
@@ -27,6 +28,7 @@ from app.routers.operation import router as operation_router
 from app.routers.notification_admin import router as notification_admin_router
 from app.routers.oss import router as oss_router
 from app.routers.performance import router as performance_router
+from app.routers.platform_task import router as platform_task_router
 from app.routers.project import project
 from app.routers.request import http
 from app.routers.testcase import router as testcase_router
@@ -35,7 +37,7 @@ from app.routers.testcase.functional_case import router as functional_case_route
 from app.routers.testcase.functional_case_skill import router as functional_case_skill_router
 from app.routers.testcase.interface_manage import router as interface_manage_router
 from app.routers.testcase.mock_config import router as mock_config_router
-from app.routers.ui_test import restore_ui_test_scheduler_jobs, router as ui_test_router
+from app.routers.ui_test import router as ui_test_router
 from app.routers.workspace import router as workspace_router
 from app.utils.scheduler import Scheduler
 from config import Config, PITY_ENV, BANNER
@@ -47,6 +49,17 @@ logger.bind(name=None).opt(ansi=True).success(f"pity is running at <red>{PITY_EN
 logger.bind(name=None).success(BANNER)
 
 proxy_task = None
+platform_worker_task = None
+
+
+def _skip_request_logging(request: Request):
+    if not Config.REQUEST_LOG_ENABLED:
+        return True
+    path = str(getattr(request.url, "path", "") or "").strip()
+    for prefix in Config.REQUEST_LOG_SKIP_PATHS or []:
+        if path.startswith(str(prefix or "").strip()):
+            return True
+    return False
 
 
 def _handle_proxy_task_done(task):
@@ -81,13 +94,17 @@ def _normalize_plan_cron_for_scheduler(cron: str) -> str:
 
 
 async def request_info(request: Request):
+    if _skip_request_logging(request):
+        return
     logger.bind(name=None).debug(f"{request.method} {request.url}")
     try:
+        if str(request.method or "").upper() in {"GET", "HEAD", "OPTIONS"}:
+            return
         body = await request.body()
         if len(body) == 0:
             return
         # 大请求体不再额外做一次 JSON 解析，避免日志链路把请求处理成本放大
-        if len(body) > 200 * 1024:
+        if len(body) > int(Config.REQUEST_LOG_BODY_MAX_BYTES or 200 * 1024):
             logger.bind(payload=f"<skipped large request body: {len(body)} bytes>", name=None).debug("request_body: ")
             return
         try:
@@ -113,6 +130,7 @@ pity.include_router(config_router, dependencies=[Depends(request_info)])
 pity.include_router(online_router, dependencies=[Depends(request_info)])
 pity.include_router(oss_router, dependencies=[Depends(request_info)])
 pity.include_router(operation_router, dependencies=[Depends(request_info)])
+pity.include_router(platform_task_router, dependencies=[Depends(request_info)])
 pity.include_router(msg_router, dependencies=[Depends(request_info)])
 pity.include_router(workspace_router, dependencies=[Depends(request_info)])
 pity.include_router(performance_router, dependencies=[Depends(request_info)])
@@ -166,14 +184,25 @@ async def init_redis():
     """
     try:
         await RedisHelper.ping()
-        logger.bind(name=None).success("redis connected success.        ✔")
+        logger.bind(name=None).success("redis connected successfully.        ✔")
     except Exception as e:
         if not Config.REDIS_ON:
-            logger.bind(name=None).warning(
-                f"Redis is not selected, So we can't ensure that the task is not executed repeatedly.        🚫")
+            logger.bind(name=None).warning("redis disabled.        🚫")
             return
-        logger.bind(name=None).error(f"Redis connect failed, Please check config.py for redis config.        ❌")
+        logger.bind(name=None).warning(f"redis connect failed.        🚫 {e}")
         raise e
+
+
+@pity.on_event('startup')
+async def init_rabbitmq():
+    if not Config.PLATFORM_TASK_WORKER_ENABLED:
+        return
+    try:
+        with rabbit_connection():
+            pass
+        logger.bind(name=None).success("rabbitmq connected successfully.        ✔")
+    except Exception as e:
+        logger.bind(name=None).warning(f"rabbitmq connect failed.        🚫 {e}")
 
 
 @pity.on_event('startup')
@@ -182,7 +211,6 @@ def init_scheduler():
     初始化定时任务
     :return:
     """
-    # SQLAlchemyJobStore指定存储链接
     job_store = {
         'default': SQLAlchemyJobStore(url=Config.SQLALCHEMY_DATABASE_URI, engine_options={"pool_recycle": 1500},
                                       pickle_protocol=3)
@@ -191,70 +219,7 @@ def init_scheduler():
     Scheduler.init(scheduler)
     Scheduler.configure(jobstores=job_store)
     Scheduler.start()
-    logger.bind(name=None).success("ApScheduler started success.        ✔")
-
-
-@pity.on_event('startup')
-async def restore_test_plan_scheduler_jobs():
-    """
-    启动时按数据库中的测试计划重新注册调度任务。
-    手动执行成功而定时不触发，常见原因是进程重启后内存中的job没有恢复。
-    """
-    restored = 0
-    paused = 0
-    skipped = 0
-    failed = 0
-    async with async_session() as session:
-        try:
-            result = await session.execute(text("SHOW COLUMNS FROM pity_test_plan LIKE 'enabled'"))
-            if result.first() is None:
-                await session.execute(text(
-                    "ALTER TABLE pity_test_plan "
-                    "ADD COLUMN enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否开启计划调度'"
-                ))
-                await session.commit()
-        except Exception as e:
-            logger.bind(name=None).warning(f"restore test plan scheduler ensure enabled failed: {e}")
-        try:
-            rows = await session.execute(text(
-                "SELECT id, name, cron, enabled "
-                "FROM pity_test_plan WHERE deleted_at = 0"
-            ))
-            for row in rows.mappings().all():
-                plan_id = int(row.get("id") or 0)
-                plan_name = str(row.get("name") or f"plan-{plan_id}")
-                cron = _normalize_plan_cron_for_scheduler(row.get("cron"))
-                enabled = bool(row.get("enabled", 1))
-                if not plan_id or not cron:
-                    skipped += 1
-                    continue
-                try:
-                    Scheduler.edit_test_plan(plan_id, plan_name, cron)
-                    Scheduler.pause_resume_test_plan(plan_id, enabled)
-                    if enabled:
-                        restored += 1
-                    else:
-                        paused += 1
-                except Exception as job_exc:
-                    failed += 1
-                    logger.bind(name=None).warning(
-                        f"restore test plan scheduler job failed: plan_id={plan_id}, "
-                        f"name={plan_name}, cron={cron}, enabled={enabled}, error={job_exc}"
-                    )
-            logger.bind(name=None).success(
-                f"test plan scheduler restored.        ✔ enabled={restored}, paused={paused}, skipped={skipped}, failed={failed}"
-            )
-        except Exception as e:
-            logger.bind(name=None).warning(f"restore test plan scheduler jobs failed: {e}")
-
-
-@pity.on_event('startup')
-async def restore_ui_test_plan_scheduler_jobs():
-    try:
-        await restore_ui_test_scheduler_jobs()
-        logger.bind(name=None).success("ui test scheduler restored.        ✔")
-    except Exception as e:
-        logger.bind(name=None).warning(f"restore ui test scheduler jobs failed: {e}")
+    logger.bind(name=None).success("scheduler started successfully.        ✔")
 
 
 @pity.on_event('startup')
@@ -263,9 +228,12 @@ async def init_database():
     初始化数据库，建表
     :return:
     """
+    if not Config.RUNTIME_SCHEMA_MIGRATION_ENABLED:
+        logger.bind(name=None).success("database runtime migration disabled, use alembic.        ✔")
+        return
     try:
-        asyncio.create_task(create_table())
-        logger.bind(name=None).success("database and tables created success.        ✔")
+        await create_table()
+        logger.bind(name=None).success("database initialized successfully.        ✔")
     except Exception as e:
         logger.bind(name=None).error(f"database and tables  created failed.        ❌\nerror: {e}")
         raise
@@ -290,127 +258,43 @@ def stop_test():
 
 
 @pity.on_event('startup')
-async def ensure_testcase_api_columns():
-    """
-    为接口版本绑定字段做启动兜底迁移，避免历史库缺列导致查询失败
-    """
-    alter_sql_list = [
-        "ALTER TABLE pity_testcase ADD COLUMN api_service_id INT NOT NULL DEFAULT 0 COMMENT '绑定服务ID'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_endpoint_id INT NOT NULL DEFAULT 0 COMMENT '绑定接口ID'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_version_id INT NOT NULL DEFAULT 0 COMMENT '绑定接口版本ID'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_version_no VARCHAR(32) NULL COMMENT '绑定接口版本号'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_bind_mode VARCHAR(16) NOT NULL DEFAULT 'pinned' COMMENT '绑定模式'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_pending_update INT NOT NULL DEFAULT 0 COMMENT '是否待更新'",
-    ]
-    async with async_session() as session:
-        try:
-            for sql in alter_sql_list:
-                try:
-                    await session.execute(text(sql))
-                except Exception:
-                    # 列已存在等场景直接忽略，保证幂等
-                    pass
-            await session.commit()
-            logger.bind(name=None).success("testcase api version columns checked.        ✔")
-        except Exception as e:
-            logger.bind(name=None).warning(f"testcase api version columns check failed: {e}")
-
-
-@pity.on_event('startup')
-async def ensure_notification_columns():
-    """idempotent migration for notification_config_id on test_plan and ui_test_plan"""
-    alter_pairs = [
-        ("pity_test_plan", "ALTER TABLE pity_test_plan ADD COLUMN notification_config_id INT NULL COMMENT '通知配置ID'"),
-        ("pity_ui_test_plan", "ALTER TABLE pity_ui_test_plan ADD COLUMN notification_config_id INT NULL COMMENT '通知配置ID'"),
-    ]
-    async with async_session() as session:
-        try:
-            for table, alter_sql in alter_pairs:
-                try:
-                    result = await session.execute(text(
-                        "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
-                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND COLUMN_NAME = 'notification_config_id'"
-                    ), {"t": table})
-                    if result.first() is None:
-                        await session.execute(text(alter_sql))
-                        logger.bind(name=None).info(f"added notification_config_id to {table}")
-                except Exception as e:
-                    logger.bind(name=None).warning(f"ensure notification column for {table} failed: {e}")
-            await session.commit()
-        except Exception as e:
-            logger.bind(name=None).warning(f"ensure notification columns failed: {e}")
-
-
-@pity.on_event('startup')
-async def seed_default_templates():
-    """初始化默认通知模板"""
-    from app.crud.config.NotificationTemplateDao import NotificationTemplateDao
-    from app.models.notification_template import PityNotificationTemplate
-    defaults = [
-        (1, "钉钉默认模板", "pity测试报告",
-         "#### {notification_user}\n"
-         "测试计划 **{plan_name}** 执行完毕\n"
-         "测试环境 **{env}** 执行人 **{executor}**\n"
-         "测试结果 <font color={result_color}>{plan_result}</font>\n"
-         "成功 <font color=#67C23A>{success}</font> 失败 <font color=#F56C6C>{failed}</font> 出错 <font color=#E6A23C>{error}</font>\n"
-         "开始时间: <font color=#909399>{start_time}</font>\n"
-         "完成时间: <font color=#909399>{end_time}</font>"),
-        (2, "企微默认模板", "pity测试报告",
-         "## pity测试报告\n"
-         "测试计划: **{plan_name}**\n"
-         "测试环境: {env} | 执行人: {executor}\n"
-         "测试结果: **{plan_result}**\n"
-         "成功: {success} 失败: {failed} 出错: {error}\n"
-         "开始时间: {start_time}\n"
-         "完成时间: {end_time}"),
-        (3, "飞书默认模板", "pity测试报告",
-         "## pity测试报告\n"
-         "测试计划: **{plan_name}**\n"
-         "测试环境: {env} | 执行人: {executor}\n"
-         "测试结果: **{plan_result}**\n"
-         "成功: {success} 失败: {failed} 出错: {error}\n"
-         "开始时间: {start_time}\n"
-         "完成时间: {end_time}"),
-    ]
-    async with async_session() as session:
-        try:
-            for ch_type, name, subj, content in defaults:
-                existing = await NotificationTemplateDao.query_record(
-                    session=session, name=name, deleted_at=0)
-                if existing is not None:
-                    continue
-                tpl = PityNotificationTemplate(name, ch_type, content, 0, subj, True)
-                session.add(tpl)
-            await session.commit()
-            logger.bind(name=None).success("default notification templates seeded.        ✔")
-        except Exception as e:
-            logger.bind(name=None).warning(f"seed notification templates failed: {e}")
-
-
-@pity.on_event('startup')
 async def ensure_oss_file_columns():
-    """
-    为OSS文件记录表做启动兜底迁移，避免历史库缺列导致上传和详情查询失败
-    """
-    alter_sql_list = [
-        "ALTER TABLE pity_oss_file MODIFY COLUMN file_path VARCHAR(255) NOT NULL COMMENT '文件路径'",
-        "ALTER TABLE pity_oss_file MODIFY COLUMN view_url VARCHAR(256) NULL DEFAULT '' COMMENT '文件预览url'",
-        "ALTER TABLE pity_oss_file ADD COLUMN bucket_name VARCHAR(64) NOT NULL DEFAULT '' COMMENT '桶名称'",
-        "ALTER TABLE pity_oss_file ADD COLUMN object_key VARCHAR(255) NOT NULL DEFAULT '' COMMENT '对象key'",
-        "UPDATE pity_oss_file SET object_key = file_path WHERE object_key = ''",
-        "ALTER TABLE pity_oss_file DROP COLUMN view_url",
-    ]
-    async with async_session() as session:
+    """对象存储真实连通性检查"""
+    try:
+        client = OssClient.get_oss_client()
+        bucket_name = get_default_bucket_name() or None
+        if hasattr(client, 'client') and hasattr(client.client, 'head_bucket') and bucket_name:
+            client.client.head_bucket(Bucket=bucket_name)
+        else:
+            await client.list_objects(prefix='', recursive=False, bucket_name=bucket_name)
+        logger.bind(name=None).success("object storage connected successfully.        ✔")
+    except Exception as e:
+        logger.bind(name=None).warning(f"object storage connect failed.        🚫 {e}")
+
+
+@pity.on_event('startup')
+async def start_platform_task_worker():
+    global platform_worker_task
+    if not Config.PLATFORM_TASK_WORKER_ENABLED:
+        logger.bind(name=None).success("platform task worker disabled.        ✔")
+        return
+    if platform_worker_task is not None and not platform_worker_task.done():
+        return
+    platform_worker_task = asyncio.create_task(platform_task_worker.start())
+    logger.bind(name=None).success("platform task worker startup task created.        ✔")
+
+
+@pity.on_event('shutdown')
+async def stop_platform_task_worker():
+    global platform_worker_task
+    await platform_task_worker.stop()
+    if platform_worker_task is not None:
+        platform_worker_task.cancel()
         try:
-            for sql in alter_sql_list:
-                try:
-                    await session.execute(text(sql))
-                except Exception:
-                    pass
-            await session.commit()
-            logger.bind(name=None).success("oss file columns checked.        ✔")
-        except Exception as e:
-            logger.bind(name=None).warning(f"oss file columns check failed: {e}")
+            await platform_worker_task
+        except Exception:
+            pass
+        platform_worker_task = None
 
 
 @pity.websocket("/ws/{user_id}")

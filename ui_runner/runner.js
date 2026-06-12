@@ -31,6 +31,7 @@ let runtimePlanId = EXPLICIT_PLAN_ID;
 let preferredRunId = EXPLICIT_RUN_ID;
 let preferredRunIds = EXPLICIT_RUN_ID ? [EXPLICIT_RUN_ID] : [];
 let runtimeAnyProject = parseBool(EXPLICIT_ANY_PROJECT, !EXPLICIT_PROJECT_ID && !EXPLICIT_RUN_ID);
+let midsceneModelReady = false;
 
 function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
@@ -176,6 +177,16 @@ function validateStartupConfig() {
   if (problems.length) {
     throw new Error(problems.join('；'));
   }
+}
+
+function hasRunnableConfig() {
+  if (!runtimeServer) {
+    return false;
+  }
+  if (!runtimeProjectId && !preferredRunId && !preferredRunIds.length && !runtimeAnyProject) {
+    return false;
+  }
+  return getAuthMode() !== 'missing';
 }
 
 async function refreshBootstrapConfig() {
@@ -408,6 +419,7 @@ async function hydrateMidsceneModelEnv() {
   console.log(
     `[ui-runner] midscene model synced provider=${provider || 'custom'} model=${model} base_url=${baseUrl}`,
   );
+  midsceneModelReady = true;
 }
 
 async function claimTask() {
@@ -628,7 +640,7 @@ async function markRunUploading(run, localRunDir, startedAt, caseResults, artifa
         status: 'uploading',
         execution_status: extra.execution_status || 'success',
         artifact_phase: 'uploading',
-        message: extra.message || '步骤执行已完成，正在生成并上传截图、Trace、视频和报告产物。',
+        message: extra.message || '步骤执行已完成，正在生成并上传截图、录屏和报告产物。',
         elapsed_ms: Date.now() - startedAt,
         local_run_dir: localRunDir,
         case_count: caseResults.length,
@@ -637,7 +649,6 @@ async function markRunUploading(run, localRunDir, startedAt, caseResults, artifa
         artifact_warnings: artifactWarnings,
       },
       video_path: run.video_path,
-      trace_path: run.trace_path,
       report_path: run.report_path,
       result_json_path: run.result_json_path,
       screenshot_dir: run.screenshot_dir,
@@ -939,6 +950,157 @@ async function withActionRetry(page, action, options = {}) {
   throw retryError;
 }
 
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function resolveVisibleLocator(candidates = []) {
+  for (const locator of candidates) {
+    try {
+      if (await locator.count()) {
+        const first = locator.first();
+        await first.waitFor({ state: 'visible', timeout: 1200 });
+        return first;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function findNativeInputLocator(page, target) {
+  const pattern = new RegExp(escapeRegExp(target), 'i');
+  return resolveVisibleLocator([
+    page.getByLabel(pattern),
+    page.getByPlaceholder(pattern),
+    page.getByRole('textbox', { name: pattern }),
+    page.getByRole('searchbox', { name: pattern }),
+    page.locator(`input[placeholder*="${target}"], textarea[placeholder*="${target}"]`),
+  ]);
+}
+
+async function findNativeClickLocator(page, target) {
+  const pattern = new RegExp(escapeRegExp(target), 'i');
+  return resolveVisibleLocator([
+    page.getByRole('button', { name: pattern }),
+    page.getByRole('link', { name: pattern }),
+    page.getByRole('tab', { name: pattern }),
+    page.getByText(pattern),
+  ]);
+}
+
+async function findNativeSelectLocator(page, target) {
+  const pattern = new RegExp(escapeRegExp(target), 'i');
+  return resolveVisibleLocator([
+    page.getByLabel(pattern),
+    page.getByPlaceholder(pattern),
+    page.getByRole('combobox', { name: pattern }),
+    page.locator('select'),
+  ]);
+}
+
+async function readLocatorValue(locator) {
+  return locator.evaluate((node) => {
+    if (!node) {
+      return '';
+    }
+    if ('value' in node) {
+      return String(node.value || '');
+    }
+    return String(node.textContent || '');
+  });
+}
+
+async function performNativeInput(page, step = {}) {
+  const target = String(step.target || '').trim();
+  const value = String(step.value ?? '');
+  const locator = await findNativeInputLocator(page, target);
+  if (!locator) {
+    throw new Error(`未找到匹配输入框：${target}`);
+  }
+  await clearPageSelection(page);
+  await locator.click({ timeout: 1500 });
+  try {
+    await locator.fill(value, { timeout: 1500 });
+  } catch {
+    await locator.press('Control+A');
+    await locator.type(value, { delay: 20 });
+  }
+  const actualValue = await readLocatorValue(locator);
+  if (isSensitiveInputStep(step)) {
+    if (!String(actualValue || '').trim()) {
+      throw new Error(`输入框写入后仍为空：${target}`);
+    }
+  } else if (String(actualValue || '').trim() !== value.trim()) {
+    throw new Error(`输入框值校验失败：${target}`);
+  }
+}
+
+async function performNativeClick(page, step = {}) {
+  const target = String(step.target || '').trim();
+  const locator = await findNativeClickLocator(page, target);
+  if (!locator) {
+    throw new Error(`未找到匹配点击目标：${target}`);
+  }
+  await clearPageSelection(page);
+  await locator.click({ timeout: 1500 });
+}
+
+async function performNativeSelect(page, step = {}) {
+  const target = String(step.target || '').trim();
+  const value = String(step.value ?? '').trim();
+  const locator = await findNativeSelectLocator(page, target);
+  if (!locator) {
+    throw new Error(`未找到匹配选择控件：${target}`);
+  }
+  const tagName = await locator.evaluate((node) => String(node?.tagName || '').toLowerCase()).catch(() => '');
+  if (tagName === 'select') {
+    try {
+      await locator.selectOption({ label: value }, { timeout: 1500 });
+    } catch {
+      await locator.selectOption(value, { timeout: 1500 });
+    }
+    return;
+  }
+  await locator.click({ timeout: 1500 });
+  const optionPattern = new RegExp(escapeRegExp(value), 'i');
+  const option = await resolveVisibleLocator([
+    page.getByRole('option', { name: optionPattern }),
+    page.getByText(optionPattern),
+  ]);
+  if (!option) {
+    throw new Error(`未找到可选项：${value}`);
+  }
+  await option.click({ timeout: 1500 });
+}
+
+async function withPlaywrightFirst(page, nativeAction, aiAction, options = {}) {
+  const nativeAttempts = Number(options.nativeAttempts || 1);
+  const aiAttempts = Number(options.aiAttempts || 2);
+  const label = String(options.label || '步骤动作');
+  try {
+    const nativeMeta = await withActionRetry(page, nativeAction, {
+      attempts: nativeAttempts,
+      label: `${label}[Playwright]`,
+    });
+    return {
+      ...nativeMeta,
+      strategy: 'playwright',
+      used_ai: false,
+    };
+  } catch (nativeError) {
+    const aiMeta = await withActionRetry(page, aiAction, {
+      attempts: aiAttempts,
+      label: `${label}[AI兜底]`,
+    });
+    return {
+      ...aiMeta,
+      strategy: 'midscene',
+      used_ai: true,
+      fallback_error: String(nativeError?.message || nativeError || ''),
+    };
+  }
+}
+
 async function stableInput(agent, page, step = {}) {
   const target = String(step.target || '').trim();
   const value = String(step.value ?? '');
@@ -948,20 +1110,21 @@ async function stableInput(agent, page, step = {}) {
   if (!value) {
     throw new Error(`input 步骤缺少输入值：${target}`);
   }
-  const sensitive = isSensitiveInputStep(step);
-  const verifyPrompt = sensitive
-    ? `${target}输入框已经填写了内容`
-    : `${target}输入框的值已经是${value}`;
-  return withActionRetry(
+  return withPlaywrightFirst(
     page,
+    () => performNativeInput(page, step),
     async () => {
+      const sensitive = isSensitiveInputStep(step);
+      const verifyPrompt = sensitive
+        ? `${target}输入框已经填写了内容`
+        : `${target}输入框的值已经是${value}`;
       await clearPageSelection(page);
       await agent.aiInput(value, target);
       await clearPageSelection(page);
       await page.waitForTimeout(120);
       await agent.aiAssert(verifyPrompt);
     },
-    { attempts: 3, label: `输入 ${target}` },
+    { label: `输入 ${target}`, nativeAttempts: 1, aiAttempts: 2 },
   );
 }
 
@@ -1185,20 +1348,22 @@ async function executeDslStep(agent, page, run, step, stepIndex, localRunDir, ru
         );
         break;
       case 'click':
-        actionMeta = await withActionRetry(
+        actionMeta = await withPlaywrightFirst(
           page,
+          () => performNativeClick(page, resolvedStep),
           () => agent.aiTap(resolvedStep.target),
-          { attempts: 2, label: `点击 ${resolvedStep.target || ''}` },
+          { label: `点击 ${resolvedStep.target || ''}`, nativeAttempts: 1, aiAttempts: 2 },
         );
         break;
       case 'input':
         actionMeta = await stableInput(agent, page, resolvedStep);
         break;
       case 'select':
-        actionMeta = await withActionRetry(
+        actionMeta = await withPlaywrightFirst(
           page,
+          () => performNativeSelect(page, resolvedStep),
           () => agent.aiAct(`在${resolvedStep.target}中选择${resolvedStep.value}`),
-          { attempts: 2, label: `选择 ${resolvedStep.target || ''}` },
+          { label: `选择 ${resolvedStep.target || ''}`, nativeAttempts: 1, aiAttempts: 2 },
         );
         break;
       case 'wait_exists':
@@ -1291,6 +1456,7 @@ async function executeDslStep(agent, page, run, step, stepIndex, localRunDir, ru
       duration_ms: Date.now() - startedAt,
       error_message: '',
       artifact_warnings: screenshotUploadWarnings,
+      used_ai: Boolean(actionMeta.used_ai),
     };
     await saveStep({
       run_id: run.id,
@@ -1308,6 +1474,8 @@ async function executeDslStep(agent, page, run, step, stepIndex, localRunDir, ru
         action_meta: {
           retryable: actionMeta.retryable !== false,
           attempts: Number(actionMeta.attempts || 1),
+          strategy: String(actionMeta.strategy || 'playwright'),
+          used_ai: Boolean(actionMeta.used_ai),
         },
         artifact_warnings: screenshotUploadWarnings,
         local_screenshot_path: screenshotPath,
@@ -1343,6 +1511,7 @@ async function executeDslStep(agent, page, run, step, stepIndex, localRunDir, ru
       duration_ms: Date.now() - startedAt,
       error_message: String(error?.stack || error?.message || error),
       artifact_warnings: screenshotUploadWarnings,
+      used_ai: Boolean(actionMeta.used_ai),
     };
     await saveStep({
       run_id: run.id,
@@ -1361,6 +1530,8 @@ async function executeDslStep(agent, page, run, step, stepIndex, localRunDir, ru
         action_meta: {
           retryable: actionMeta.retryable !== false,
           attempts: Number(error?.__argus_retry_attempts || actionMeta.attempts || 1),
+          strategy: String(actionMeta.strategy || 'playwright'),
+          used_ai: Boolean(actionMeta.used_ai),
         },
         artifact_warnings: screenshotUploadWarnings,
         local_screenshot_path: screenshotPath,
@@ -1382,14 +1553,11 @@ async function executeRun(run) {
   const headless = typeof primaryDsl.headless === 'boolean' ? primaryDsl.headless : (run.headless ?? DEFAULT_HEADLESS);
   const launch = getBrowserLauncher(browserName);
   const localRunDir = buildLocalRunDir(run);
-  const localTraceDir = path.join(localRunDir, 'traces');
   const localVideoDir = path.join(localRunDir, 'videos');
   const localReportDir = path.join(localRunDir, 'reports');
   const localLogDir = path.join(localRunDir, 'logs');
-  const localTracePath = path.join(localTraceDir, 'trace.zip');
   const localResultJsonPath = path.join(localLogDir, 'result.json');
   const localReportPath = path.join(localReportDir, 'report.html');
-  await ensureDir(localTraceDir);
   await ensureDir(localVideoDir);
   await ensureDir(localReportDir);
   await ensureDir(localLogDir);
@@ -1405,8 +1573,6 @@ async function executeRun(run) {
       size: { width: 1440, height: 900 },
     },
   });
-  await context.tracing.start({ screenshots: true, snapshots: true });
-
   const page = await context.newPage();
   const agent = new PlaywrightAgent(page);
   const startedAt = Date.now();
@@ -1598,18 +1764,16 @@ async function executeRun(run) {
     await assertRunNotCancelled(run, '产物处理前');
     await markRunUploading(run, localRunDir, startedAt, caseResults, artifactWarnings, {
       execution_status: finalStatus,
-      message: '步骤执行已完成，正在生成并上传 Trace、视频和报告产物。',
+      message: '步骤执行已完成，正在生成并上传录屏和报告产物。',
     });
-    await context.tracing.stop({ path: localTracePath });
     await context.close();
     const video = page.video();
     const localVideoPath = video ? await video.path() : null;
     await browser.close();
 
-    enqueueUploadArtifact(artifactUploadQueue, run.id, run.trace_path, localTracePath, 'application/zip', artifactWarnings, 'Trace');
     enqueueUploadArtifact(artifactUploadQueue, run.id, run.report_path, localReportPath, 'text/html', artifactWarnings, '执行报告');
     if (localVideoPath) {
-      enqueueUploadArtifact(artifactUploadQueue, run.id, run.video_path, localVideoPath, 'video/mp4', artifactWarnings, '执行视频');
+      enqueueUploadArtifact(artifactUploadQueue, run.id, run.video_path, localVideoPath, 'video/mp4', artifactWarnings, '录屏');
     }
     await artifactUploadQueue.drain();
     await fs.writeFile(
@@ -1651,7 +1815,6 @@ async function executeRun(run) {
         artifact_warnings: artifactWarnings,
       },
       video_path: run.video_path,
-      trace_path: run.trace_path,
       report_path: run.report_path,
       result_json_path: run.result_json_path,
       screenshot_dir: run.screenshot_dir,
@@ -1661,9 +1824,6 @@ async function executeRun(run) {
     if (isRunCancelledError(error)) {
       const cancelMessage = String(error?.message || 'UI测试执行已被手动停止');
       artifactUploadQueue.cancel(cancelMessage);
-      try {
-        await context.tracing.stop({ path: localTracePath });
-      } catch {}
       try {
         await context.close();
       } catch {}
@@ -1687,7 +1847,6 @@ async function executeRun(run) {
           artifact_warnings: artifactWarnings,
         },
         video_path: run.video_path,
-        trace_path: run.trace_path,
         report_path: run.report_path,
         result_json_path: run.result_json_path,
         screenshot_dir: run.screenshot_dir,
@@ -1704,11 +1863,8 @@ async function executeRun(run) {
     await markRunUploading(run, localRunDir, startedAt, caseResults, artifactWarnings, {
       execution_status: 'failed',
       error_message: failureErrorText,
-      message: '步骤执行已结束，正在生成失败报告并上传截图、Trace、视频和报告产物。',
+      message: '步骤执行已结束，正在生成失败报告并上传截图、录屏和报告产物。',
     });
-    try {
-      await context.tracing.stop({ path: localTracePath });
-    } catch {}
     let localVideoPath = null;
     try {
       const video = page.video();
@@ -1758,10 +1914,9 @@ async function executeRun(run) {
         'utf-8',
       );
     } catch {}
-    enqueueUploadArtifact(artifactUploadQueue, run.id, run.trace_path, localTracePath, 'application/zip', artifactWarnings, 'Trace');
     enqueueUploadArtifact(artifactUploadQueue, run.id, run.report_path, localReportPath, 'text/html', artifactWarnings, '执行报告');
     if (localVideoPath) {
-      enqueueUploadArtifact(artifactUploadQueue, run.id, run.video_path, localVideoPath, 'video/mp4', artifactWarnings, '执行视频');
+      enqueueUploadArtifact(artifactUploadQueue, run.id, run.video_path, localVideoPath, 'video/mp4', artifactWarnings, '录屏');
     }
     await artifactUploadQueue.drain();
     await fs.writeFile(
@@ -1801,7 +1956,6 @@ async function executeRun(run) {
         error_message: failureErrorText,
       },
       video_path: run.video_path,
-      trace_path: run.trace_path,
       report_path: run.report_path,
       result_json_path: run.result_json_path,
       screenshot_dir: run.screenshot_dir,
@@ -1813,20 +1967,33 @@ async function executeRun(run) {
 async function main() {
   await refreshBootstrapConfig();
   printStartupSummary();
-  validateStartupConfig();
-
-  if (!runtimeToken) {
-    await loginAndGetToken();
+  if (!hasRunnableConfig()) {
+    console.log('[ui-runner] bootstrap or auth config missing, runner will stay idle and wait for config');
   } else {
-    console.log('[ui-runner] using configured token');
+    validateStartupConfig();
+    if (!runtimeToken) {
+      await loginAndGetToken();
+    } else {
+      console.log('[ui-runner] using configured token');
+    }
+    await hydrateMidsceneModelEnv();
+    console.log('[ui-runner] preflight passed');
   }
-
-  await hydrateMidsceneModelEnv();
-  console.log('[ui-runner] preflight passed');
 
   while (true) {
     try {
       await refreshBootstrapConfig();
+      if (!hasRunnableConfig()) {
+        await sleep(POLL_INTERVAL_MS);
+        continue;
+      }
+      if (!runtimeToken) {
+        await loginAndGetToken();
+      }
+      if (!midsceneModelReady) {
+        await hydrateMidsceneModelEnv();
+        console.log('[ui-runner] config detected, runner activated');
+      }
       const task = await claimTask();
       if (!task) {
         console.log('[ui-runner] 当前没有可领取的 UI 任务');

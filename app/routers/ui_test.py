@@ -10,13 +10,16 @@ from apscheduler.jobstores.base import JobLookupError
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import bindparam, text
 
+from app.core.platform_task import PlatformTaskService
 from app.crud.config.GConfigDao import GConfigDao
+from app.enums.platform_task import PlatformTaskType
 from app.handler.fatcory import PityResponse
 from app.middleware.oss import OssClient, get_default_bucket_name, normalize_oss_upload_result
 from app.middleware.Jwt import UserToken
 from app.models import async_session
 from app.routers import Permission, get_session
 from app.utils.scheduler import Scheduler
+from config import Config
 
 router = APIRouter(prefix="/ui-test")
 
@@ -415,6 +418,9 @@ async def ensure_ui_test_schema(session):
     global UI_SCHEMA_READY
     if UI_SCHEMA_READY:
         return
+    if not Config.RUNTIME_SCHEMA_MIGRATION_ENABLED:
+        UI_SCHEMA_READY = True
+        return
     await session.execute(text(
         "CREATE TABLE IF NOT EXISTS pity_ui_test_case_ref ("
         "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
@@ -588,6 +594,8 @@ async def ensure_ui_test_schema(session):
 
 
 async def ensure_ui_test_gateway_schema(session):
+    if not Config.RUNTIME_SCHEMA_MIGRATION_ENABLED:
+        return
     result = await session.execute(text("SHOW COLUMNS FROM pity_gateway LIKE 'page_url'"))
     if result.first() is None:
         await session.execute(text(
@@ -963,14 +971,14 @@ def _build_run_analysis(run_data, steps):
             "queued": "任务已入队，等待 Runner 领取执行。",
             "claimed": "任务已被 Runner 领取，等待开始执行步骤。",
             "running": "任务执行中，可稍后刷新查看步骤结果。",
-            "uploading": "步骤已执行完成，正在生成并上传截图、Trace、视频和报告产物。",
+            "uploading": "步骤已执行完成，正在生成并上传截图、录屏和报告产物。",
         }
         return {
             "status": status,
             "summary": summary_map.get(status) or "任务正在处理中。",
             "reason_type": "artifact_uploading" if status == "uploading" else "pending",
             "failed_step_count": len(failed_steps),
-            "suggestion": "等待对象存储产物上传完成后再查看截图、Trace、视频和报告。" if status == "uploading" else "等待 Runner 执行完成后再查看截图、trace 和报告产物。",
+            "suggestion": "等待对象存储产物上传完成后再查看截图、录屏和报告。" if status == "uploading" else "等待 Runner 执行完成后再查看截图、录屏和报告产物。",
         }
     if status == "success":
         if not steps:
@@ -1846,8 +1854,19 @@ async def run_ui_test_plan(request: Request, session=Depends(get_session), user_
         ai_model,
     )
     _write_runner_bootstrap_file(bootstrap)
+    platform_task = await PlatformTaskService.create_task(
+        task_type=PlatformTaskType.UI_TEST_RUN.value,
+        user_id=int(user_info["id"]),
+        biz_id=run_id,
+        biz_type="ui_test_run",
+        project_id=int(plan["project_id"] or 0),
+        plan_id=plan_id,
+        resource_key=f"ui_plan_{plan_id}",
+        payload={"plan_id": plan_id, "run_id": run_id, "executor": int(user_info["id"])},
+    )
     return PityResponse.success({
         "run_ids": [run_id] if run_id else [],
+        "platform_task_id": int(platform_task.id or 0),
         "bucket": UI_BUCKET_NAME,
         "object_prefix": UI_OBJECT_PREFIX,
         "note": "已生成计划级 UI 测试执行记录与对象存储路径，Runner 接入后可直接消费该批次任务。",
@@ -1989,10 +2008,12 @@ async def get_ui_test_run_detail(
             "r.run_name, r.status, r.trigger_mode, r.browser, r.headless, r.artifact_bucket, r.artifact_prefix, "
             "r.screenshot_dir, r.video_path, r.trace_path, r.report_path, r.result_json_path, "
             "r.error_message, r.started_at, r.finished_at, "
-            "p.name AS plan_name, p.env_name AS plan_env_name, u.name AS executor_name, c.file_title, c.node_title, c.node_path "
+            "p.name AS plan_name, p.env_name AS plan_env_name, pr.name AS project_name, "
+            "u.name AS executor_name, c.file_title, c.node_title, c.node_path "
             f"{run_payload_columns} "
             "FROM pity_ui_test_run r "
             "LEFT JOIN pity_ui_test_plan p ON r.plan_id=p.id "
+            "LEFT JOIN pity_project pr ON r.project_id=pr.id "
             "LEFT JOIN pity_ui_test_case_ref c ON r.case_ref_id=c.id "
             "LEFT JOIN pity_user u ON r.create_user=u.id "
             "WHERE r.deleted_at=0 AND r.id=:id"
@@ -2052,8 +2073,7 @@ async def get_ui_test_run_detail(
     if include_artifacts and client:
         data["artifacts"] = [item for item in [
             await _build_artifact_descriptor(client, artifact_bucket, str(data.get("report_path") or ""), "执行报告"),
-            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("video_path") or ""), "执行视频"),
-            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("trace_path") or ""), "Trace"),
+            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("video_path") or ""), "录屏"),
             await _build_artifact_descriptor(client, artifact_bucket, str(data.get("result_json_path") or ""), "结果JSON"),
         ] if item]
     else:
@@ -2079,10 +2099,12 @@ async def get_ui_test_shared_run_detail(
             "r.run_name, r.status, r.trigger_mode, r.browser, r.headless, r.artifact_bucket, r.artifact_prefix, "
             "r.screenshot_dir, r.video_path, r.trace_path, r.report_path, r.result_json_path, "
             "r.error_message, r.started_at, r.finished_at, "
-            "p.name AS plan_name, p.env_name AS plan_env_name, u.name AS executor_name, c.file_title, c.node_title, c.node_path "
+            "p.name AS plan_name, p.env_name AS plan_env_name, pr.name AS project_name, "
+            "u.name AS executor_name, c.file_title, c.node_title, c.node_path "
             f"{run_payload_columns} "
             "FROM pity_ui_test_run r "
             "LEFT JOIN pity_ui_test_plan p ON r.plan_id=p.id "
+            "LEFT JOIN pity_project pr ON r.project_id=pr.id "
             "LEFT JOIN pity_ui_test_case_ref c ON r.case_ref_id=c.id "
             "LEFT JOIN pity_user u ON r.create_user=u.id "
             "WHERE r.deleted_at=0 AND r.id=:id"
@@ -2142,8 +2164,7 @@ async def get_ui_test_shared_run_detail(
     if include_artifacts and client:
         data["artifacts"] = [item for item in [
             await _build_artifact_descriptor(client, artifact_bucket, str(data.get("report_path") or ""), "执行报告"),
-            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("video_path") or ""), "执行视频"),
-            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("trace_path") or ""), "Trace"),
+            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("video_path") or ""), "录屏"),
             await _build_artifact_descriptor(client, artifact_bucket, str(data.get("result_json_path") or ""), "结果JSON"),
         ] if item]
     else:

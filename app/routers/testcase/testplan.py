@@ -1,14 +1,14 @@
-import asyncio
 from types import SimpleNamespace
 
 from apscheduler.jobstores.base import JobLookupError
 from fastapi import Depends
 from sqlalchemy import text, select
 
-from app.core.executor import Executor
+from app.core.platform_task import PlatformTaskService
 from app.crud.operation.PityOperationDao import PityOperationDao
 from app.crud.test_case.TestPlan import PityTestPlanDao
 from app.enums.OperationEnum import OperationType
+from app.enums.platform_task import PlatformTaskType
 from app.handler.fatcory import PityResponse
 from app.models import async_session
 from app.models.test_case import TestCase
@@ -171,8 +171,16 @@ async def run_test_plan(id: int, user_info=Depends(Permission(Config.MEMBER))):
                     key=id,
                     changed=["action"],
                 )
-        asyncio.create_task(Executor.run_test_plan(id, user_info['id']))
-        return PityResponse.success("开始执行，请耐心等待")
+        platform_task = await PlatformTaskService.create_task(
+            task_type=PlatformTaskType.API_TEST_RUN.value,
+            user_id=user_info["id"],
+            biz_id=id,
+            biz_type="test_plan",
+            plan_id=id,
+            resource_key=f"api_plan_{id}",
+            payload={"plan_id": id, "executor": user_info["id"]},
+        )
+        return PityResponse.success({"message": "任务已入队，请耐心等待", "platform_task_id": platform_task.id})
     except Exception as e:
         return PityResponse.failed(str(e))
 

@@ -13,8 +13,11 @@ from datetime import datetime
 import requests
 from app.crud.config.GConfigDao import GConfigDao
 from app.crud.operation.PityOperationDao import PityOperationDao
+from app.core.platform_audit import PlatformAuditService
+from app.core.platform_task import PlatformTaskService
 from app.enums.OperationEnum import OperationType
-from fastapi import APIRouter, Depends
+from app.enums.platform_task import PlatformTaskStatus, PlatformTaskType
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 
@@ -48,6 +51,9 @@ def serialize_model(model):
 async def ensure_skill_task_schema(session):
     global SKILL_TASK_SCHEMA_READY
     if SKILL_TASK_SCHEMA_READY:
+        return
+    if not Config.RUNTIME_SCHEMA_MIGRATION_ENABLED:
+        SKILL_TASK_SCHEMA_READY = True
         return
     try:
         for column_name, sql in [
@@ -1163,6 +1169,18 @@ async def execute_skill_task(task_id, task_payload=None, docs=None):
     review_rounds = 0
     task_started_at = time.perf_counter()
     try:
+        await PlatformAuditService.record_ai_event(
+            user_id=user_id,
+            biz_id=task_id,
+            project_id=int(task_payload.get("project_id") or 0),
+            action="start",
+            summary="开始执行AI生成功能用例任务",
+            detail={
+                "task_id": int(task_id or 0),
+                "case_file_id": int(task_payload.get("case_file_id") or 0),
+                "doc_count": len(docs or []),
+            },
+        )
         await update_task_state(task_id, user_id, status="running", stage="prepare", stage_text="正在组装模型请求", progress=10)
 
         ai_config = await GConfigDao.get_active_ai_model_config()
@@ -1247,6 +1265,20 @@ async def execute_skill_task(task_id, task_payload=None, docs=None):
             )
         except Exception as log_exc:
             logger.warning(f"functional skill task result log skipped: {log_exc}")
+        await PlatformAuditService.record_ai_event(
+            user_id=user_id,
+            biz_id=task_id,
+            project_id=int(task_payload.get("project_id") or 0),
+            action="success",
+            summary="AI生成功能用例任务执行成功",
+            detail={
+                "task_id": int(task_id or 0),
+                "provider": review_provider,
+                "model": model_name,
+                "case_count": int(stats.get("case_count") or 0),
+                "elapsed_seconds": round(time.perf_counter() - task_started_at, 2),
+            },
+        )
     except Exception as exc:
         logger.error(f"functional skill task failed: {exc}")
         await update_task_state(
@@ -1275,6 +1307,19 @@ async def execute_skill_task(task_id, task_payload=None, docs=None):
             )
         except Exception as log_exc:
             logger.warning(f"functional skill task failed log skipped: {log_exc}")
+        await PlatformAuditService.record_ai_event(
+            user_id=user_id,
+            biz_id=task_id,
+            project_id=int((task_payload or {}).get("project_id") or 0),
+            action="failed",
+            summary="AI生成功能用例任务执行失败",
+            detail={
+                "task_id": int(task_id or 0),
+                "provider": review_provider,
+                "error_message": str(exc),
+                "elapsed_seconds": round(time.perf_counter() - task_started_at, 2),
+            },
+        )
 
 async def try_finalize_task_from_runtime(task_id, user_id):
     async with async_session() as session:
@@ -1598,8 +1643,43 @@ async def create_skill_task(form: FunctionalCaseSkillTaskForm, user_info=Depends
         )
     except Exception as config_exc:
         logger.warning(f"functional skill task create task_id={task.id}, load ai config failed: {config_exc}")
-    asyncio.create_task(execute_skill_task(task.id, task_payload=execution_payload, docs=docs))
-    return PityResponse.success({"task_id": task.id, "status": task.status, "stage": task.stage, "progress": task.progress})
+    platform_task = await PlatformTaskService.create_task(
+        task_type=PlatformTaskType.AI_FUNCTIONAL_CASE.value,
+        user_id=user_info["id"],
+        biz_id=task.id,
+        biz_type="functional_case_skill_task",
+        project_id=int(form.project_id or 0),
+        resource_key=f"functional_case_file_{int(form.case_file_id or 0) or task.id}",
+        payload={
+            "skill_task_id": int(task.id),
+            "task_payload": execution_payload,
+            "docs": docs,
+        },
+        max_retries=2,
+    )
+    if not getattr(platform_task, "published", False):
+        await update_task_state(
+            int(task.id or 0),
+            int(user_info["id"] or 0),
+            status="failed",
+            stage="failed",
+            stage_text="任务入队失败",
+            progress=100,
+            error_message="RabbitMQ 入队失败，请检查消息队列连接后重试",
+            finished_at=int(time.time()),
+        )
+        await PlatformTaskService.mark_failed(
+            int(platform_task.id or 0),
+            "RabbitMQ 入队失败，请检查消息队列连接后重试",
+        )
+        return PityResponse.failed("任务创建成功但消息队列入队失败，请检查 RabbitMQ 后重试")
+    return PityResponse.success({
+        "task_id": task.id,
+        "platform_task_id": int(platform_task.id or 0),
+        "status": task.status,
+        "stage": task.stage,
+        "progress": task.progress,
+    })
 
 
 @router.get("/skill-task/status")
@@ -1631,7 +1711,7 @@ async def query_skill_task_status(id: int, user_info=Depends(Permission())):
             return PityResponse.failed("只能查看自己的任务")
         normalized_status = str(task.get("status") or "").strip().lower()
         normalized_stage = str(task.get("stage") or "").strip().lower()
-        if normalized_status not in {"success", "failed"} and normalized_stage not in {"success", "failed"}:
+        if normalized_status not in {"success", "failed", "cancelled"} and normalized_stage not in {"success", "failed", "cancelled"}:
             return PityResponse.success(build_task_result(task))
         detail_result = await session.execute(
             select(
@@ -1656,4 +1736,69 @@ async def query_skill_task_status(id: int, user_info=Depends(Permission())):
             )
         )
         task = detail_result.mappings().first() or task
+    return PityResponse.success(build_task_result(task))
+
+
+@router.post("/skill-task/cancel")
+async def cancel_skill_task(request: Request, id: int = 0, user_info=Depends(Permission())):
+    payload = {}
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    task_id = int(id or payload.get("id") or payload.get("task_id") or 0)
+    if task_id <= 0:
+        return PityResponse.failed("id不能为空")
+    async with async_session() as session:
+        result = await session.execute(
+            select(PityFunctionalCaseSkillTask).where(
+                PityFunctionalCaseSkillTask.id == task_id,
+                PityFunctionalCaseSkillTask.deleted_at == 0,
+            )
+        )
+        task = result.scalars().first()
+        if task is None:
+            return PityResponse.failed("任务不存在")
+        if int(task.create_user or 0) != int(user_info["id"]):
+            return PityResponse.failed("只能停止自己的任务")
+        if str(task.status or "").lower() in {"success", "failed", "cancelled"}:
+            return PityResponse.success(build_task_result(task))
+    await update_task_state(
+        task_id,
+        user_info["id"],
+        status="cancelled",
+        stage="cancelled",
+        stage_text="任务已手动停止",
+        progress=100,
+        error_message="用户手动停止AI生成功能用例任务",
+        finished_at=int(time.time()),
+    )
+    try:
+        async with async_session() as session:
+            rows = await session.execute(text(
+                "SELECT id FROM pity_platform_task "
+                "WHERE deleted_at=0 AND task_type='ai_functional_case' "
+                "AND biz_type='functional_case_skill_task' AND biz_id=:biz_id "
+                "ORDER BY id DESC LIMIT 5"
+            ), {"biz_id": task_id})
+            platform_task_ids = [int(row[0]) for row in rows.fetchall()]
+        for platform_task_id in platform_task_ids:
+            await PlatformTaskService.update_task(
+                platform_task_id,
+                status=PlatformTaskStatus.CANCELLED.value,
+                stage="cancelled",
+                stage_text="关联AI生成功能用例任务已手动停止",
+                progress=100,
+                error_message="用户手动停止AI生成功能用例任务",
+            )
+    except Exception as exc:
+        logger.warning(f"cancel platform task skipped, skill_task_id={task_id}, error={exc}")
+    async with async_session() as session:
+        result = await session.execute(
+            select(PityFunctionalCaseSkillTask).where(
+                PityFunctionalCaseSkillTask.id == task_id,
+                PityFunctionalCaseSkillTask.deleted_at == 0,
+            )
+        )
+        task = result.scalars().first()
     return PityResponse.success(build_task_result(task))

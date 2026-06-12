@@ -168,6 +168,9 @@ async def ensure_functional_case_schema(session):
     global FUNCTIONAL_CASE_SCHEMA_READY
     if FUNCTIONAL_CASE_SCHEMA_READY:
         return
+    if not Config.RUNTIME_SCHEMA_MIGRATION_ENABLED:
+        FUNCTIONAL_CASE_SCHEMA_READY = True
+        return
     try:
         file_column = await session.execute(
             text("SHOW COLUMNS FROM pity_functional_case_file LIKE 'sort_index'")

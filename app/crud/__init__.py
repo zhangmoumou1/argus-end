@@ -24,6 +24,7 @@ from app.models.basic import PityRelationField, init_relation, PityBase
 from app.models.environment import Environment
 from app.models.gconfig import GConfig
 from app.models.operation_log import PityOperationLog
+from app.models.platform_task import PityPlatformAuditLog, PityPlatformTask
 from app.models.project import Project
 from app.models.project_role import ProjectRole
 from app.models.redis_config import PityRedis

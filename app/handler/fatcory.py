@@ -76,6 +76,24 @@ class PityResponse(object):
         return PityResponse.encode_json(dict(code=code, msg=msg, data=data), *exclude)
 
     @staticmethod
+    def page(items=None, total=0, page=1, size=20, code=0, msg="操作成功"):
+        return PityResponse.success({
+            "list": items or [],
+            "total": int(total or 0),
+            "page": int(page or 1),
+            "size": int(size or 20),
+        }, code=code, msg=msg)
+
+    @staticmethod
+    def task(data=None, code=0, msg="操作成功"):
+        payload = data or {}
+        return PityResponse.success({
+            "task": payload,
+            "task_id": payload.get("id") or payload.get("task_id") or 0,
+            "status": payload.get("status") or "",
+        }, code=code, msg=msg)
+
+    @staticmethod
     def records(data: list, code=0, msg="操作成功"):
         return dict(code=code, msg=msg, data=PityResponse.model_to_list(data))
 

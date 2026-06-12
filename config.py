@@ -76,10 +76,36 @@ class BaseConfig(BaseSettings):
     OSS_ACCESS_KEY_SECRET: str = ""
     OSS_BUCKET: str = ""
     OSS_AVATAR_BUCKET: str = ""
+    OSS_DEFAULT_BUCKET: str = "argus-end"
     OSS_REGION: str = "us-east-1"
     OSS_USE_SSL: bool = False
     OSS_FORCE_PATH_STYLE: bool = True
     OSS_PRESIGN_EXPIRE: int = 3600
+
+    # RabbitMQ for unified platform task dispatch
+    RABBITMQ_HOST: str = "114.132.241.138"
+    RABBITMQ_PORT: int = 5672
+    RABBITMQ_USER: str = "admin"
+    RABBITMQ_PASSWORD: str = "admin"
+    RABBITMQ_VHOST: str = "/"
+    RABBITMQ_EXCHANGE: str = "argus.platform"
+    RABBITMQ_QUEUE_PREFIX: str = "argus.platform"
+    PLATFORM_TASK_WORKER_ENABLED: bool = True
+    PLATFORM_TASK_WORKER_PREFETCH: int = 1
+    PLATFORM_TASK_DB_FALLBACK_ENABLED: bool = False
+    RABBITMQ_CONNECT_TIMEOUT: int = 2
+    RABBITMQ_RETRY_TTL_MS: int = 10000
+    RABBITMQ_DEAD_LETTER_SUFFIX: str = ".dead"
+    RABBITMQ_RETRY_SUFFIX: str = ".retry"
+    REQUEST_LOG_ENABLED: bool = True
+    REQUEST_LOG_BODY_MAX_BYTES: int = 204800
+    REQUEST_LOG_SKIP_PATHS: List[str] = Field(default_factory=lambda: [
+        "/functional-case/skill-task/status",
+        "/runner/run/status",
+        "/ui-test/runner/run/status",
+        "/favicon.ico",
+    ])
+    RUNTIME_SCHEMA_MIGRATION_ENABLED: bool = True
 
     # 测试报告路径
     REPORT_PATH: ClassVar[str] = os.path.join(ROOT, "templates", "report.html")

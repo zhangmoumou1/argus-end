@@ -1187,9 +1187,56 @@ async def list_case_and_constructor(constructor_type: int, suffix: bool):
     return PityResponse.success(ans)
 
 
+def _apply_report_list_style_status(report):
+    if report is None:
+        return None
+    try:
+        normalized_status = int(getattr(report, "status", 0) or 0)
+    except Exception:
+        normalized_status = 0
+    report.display_status = normalized_status
+    report.raw_status = normalized_status
+    if normalized_status == 1:
+        report.plan_result = "running"
+        report.plan_result_text = "运行中"
+        report.display_success_count = 0
+        report.display_failed_count = 0
+        report.display_error_count = 0
+        report.display_skipped_count = 0
+    elif normalized_status == 2:
+        report.plan_result = "cancelled"
+        report.plan_result_text = "停止"
+        report.display_success_count = int(getattr(report, "success_count", 0) or 0)
+        report.display_failed_count = int(getattr(report, "failed_count", 0) or 0)
+        report.display_error_count = int(getattr(report, "error_count", 0) or 0)
+        report.display_skipped_count = int(getattr(report, "skipped_count", 0) or 0)
+    elif normalized_status == 3:
+        failed_count = int(getattr(report, "failed_count", 0) or 0)
+        error_count = int(getattr(report, "error_count", 0) or 0)
+        report.display_success_count = int(getattr(report, "success_count", 0) or 0)
+        report.display_failed_count = failed_count
+        report.display_error_count = error_count
+        report.display_skipped_count = int(getattr(report, "skipped_count", 0) or 0)
+        if failed_count > 0 or error_count > 0:
+            report.plan_result = "failed"
+            report.plan_result_text = "测试失败"
+        else:
+            report.plan_result = "success"
+            report.plan_result_text = "测试成功"
+    else:
+        report.plan_result = "pending"
+        report.plan_result_text = "排队中"
+        report.display_success_count = 0
+        report.display_failed_count = 0
+        report.display_error_count = 0
+        report.display_skipped_count = 0
+    return report
+
+
 @router.get("/report")
 async def query_report(id: int, status: int = Query(default=None), user_info=Depends(Permission())):
     report, case_list, plan_name = await TestReportDao.query(id)
+    report = _apply_report_list_style_status(report)
     case_ids = [int(getattr(item, "case_id", 0) or 0) for item in case_list if int(getattr(item, "case_id", 0) or 0) > 0]
     pending_map = {}
     case_name_map = {}
@@ -1254,6 +1301,7 @@ async def list_report(page: int, size: int, start_time: str, end_time: str, exec
             ))
             pending_report_ids = {int(report_id) for report_id, in result.all()}
     for item in report_list:
+        _apply_report_list_style_status(item)
         item.pending_review = 1 if int(getattr(item, "id", 0) or 0) in pending_report_ids else 0
     return PityResponse.success_with_size(data=report_list, total=total)
 

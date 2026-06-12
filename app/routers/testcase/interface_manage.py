@@ -22,6 +22,7 @@ from app.utils.json_compare import JsonCompare
 from app.models.test_case import TestCase
 from app.models.testcase_directory import PityTestcaseDirectory
 from app.models.user import User
+from config import Config
 
 router = APIRouter(prefix="/interface-management")
 DEFAULT_SYNC_CRON = "0 0 * * *"
@@ -559,6 +560,9 @@ def resolve_swagger_payload(source_url: str):
 async def ensure_interface_schema(session):
     global _INTERFACE_SCHEMA_READY
     if _INTERFACE_SCHEMA_READY:
+        return
+    if not Config.RUNTIME_SCHEMA_MIGRATION_ENABLED:
+        _INTERFACE_SCHEMA_READY = True
         return
     async with _INTERFACE_SCHEMA_LOCK:
         if _INTERFACE_SCHEMA_READY:
@@ -1747,6 +1751,5 @@ async def review_endpoint_case(form: dict, user_info=Depends(Permission())):
         )
         await session.commit()
     return PityResponse.success({"case_id": case_id, "review_status": review_status})
-
 
 

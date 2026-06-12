@@ -29,7 +29,11 @@ def get_public_bucket_name():
 
 
 def get_default_bucket_name():
-    return str(getattr(Config, "OSS_BUCKET", "") or "").strip()
+    return str(
+        getattr(Config, "OSS_BUCKET", "")
+        or getattr(Config, "OSS_DEFAULT_BUCKET", "")
+        or "argus-end"
+    ).strip()
 
 
 def get_avatar_bucket_name():

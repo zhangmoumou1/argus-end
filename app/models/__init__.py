@@ -15,7 +15,7 @@ def create_database():
     当db不存在时，自动创建db
     """
     engine = create_engine('mysql+mysqlconnector://{}:{}@{}:{}'.format(
-        Config.MYSQL_USER, Config.MYSQL_PWD, Config.MYSQL_HOST, Config.MYSQL_PORT), echo=True)
+        Config.MYSQL_USER, Config.MYSQL_PWD, Config.MYSQL_HOST, Config.MYSQL_PORT), echo=False)
     with engine.connect() as conn:
         conn.execute("CREATE DATABASE IF NOT EXISTS pity default character set utf8mb4 collate utf8mb4_unicode_ci")
     # close engine

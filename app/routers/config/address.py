@@ -11,6 +11,8 @@ from config import Config
 
 
 async def ensure_gateway_schema():
+    if not Config.RUNTIME_SCHEMA_MIGRATION_ENABLED:
+        return
     from app.models import async_session
 
     async with async_session() as session:

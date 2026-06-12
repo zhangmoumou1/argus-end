@@ -18,8 +18,10 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy import desc, select, text
 
 from app.core.executor import Executor
+from app.core.platform_task import PlatformTaskService
 from app.crud.operation.PityOperationDao import PityOperationDao
 from app.enums.OperationEnum import OperationType
+from app.enums.platform_task import PlatformTaskType
 from app.handler.fatcory import PityResponse
 from app.middleware.AsyncHttpClient import AsyncRequest
 from app.middleware.oss import OssClient, get_public_bucket_name
@@ -36,6 +38,7 @@ from app.models.out_parameters import PityTestCaseOutParameters
 from app.routers import Permission
 from app.schema.performance import PityPerformanceParameterValidateForm, PityPerformancePlanForm
 from app.utils.logger import Log
+from config import Config
 
 router = APIRouter(prefix="/performance")
 log = Log("PerformanceRouter")
@@ -73,6 +76,9 @@ async def ensure_performance_schema(session):
     兼容已经创建过性能计划表的环境，避免新增字段需要手工迁移后才能使用。
     """
     global performance_schema_checked
+    if not Config.RUNTIME_SCHEMA_MIGRATION_ENABLED:
+        performance_schema_checked = True
+        return
     if performance_schema_checked:
         return
     try:
@@ -1991,8 +1997,20 @@ async def execute_performance_plan(id: int, user_info=Depends(Permission())):
         "plan_name": plan.name,
         "source_type": getattr(plan, "source_type", "single"),
     })
-    asyncio.create_task(run_plan_task(id, user_info["id"], report_id=report_id))
-    return PityResponse.success({"report_id": report_id}, msg="性能计划开始执行，请稍后查看执行记录")
+    platform_task = await PlatformTaskService.create_task(
+        task_type=PlatformTaskType.PERFORMANCE_TEST_RUN.value,
+        user_id=user_info["id"],
+        biz_id=report_id,
+        biz_type="performance_report",
+        project_id=int(getattr(plan, "project_id", 0) or 0),
+        plan_id=id,
+        resource_key=f"performance_plan_{id}",
+        payload={"plan_id": id, "report_id": report_id, "executor": user_info["id"]},
+    )
+    return PityResponse.success(
+        {"report_id": report_id, "platform_task_id": platform_task.id},
+        msg="性能计划已入队，请稍后查看执行记录",
+    )
 
 
 @router.get("/report/list")
