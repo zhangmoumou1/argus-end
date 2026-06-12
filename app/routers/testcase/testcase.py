@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 
 from app.core.request import get_convertor
 from app.core.request.generator import CaseGenerator
+from app.core.platform_task import PlatformTaskService
 from app.crud.config.GConfigDao import GConfigDao
 from app.crud.operation.PityOperationDao import PityOperationDao
 from app.crud.project.ProjectRoleDao import ProjectRoleDao
@@ -24,6 +25,7 @@ from app.crud.test_case.TestReport import TestReportDao
 from app.crud.test_case.TestcaseDataDao import PityTestcaseDataDao
 from app.enums.OperationEnum import OperationType
 from app.enums.ConvertorEnum import CaseConvertorType
+from app.enums.platform_task import PlatformTaskType
 from app.exception.error import AuthError
 from app.handler.fatcory import PityResponse
 from app.middleware.RedisManager import RedisHelper
@@ -1587,9 +1589,34 @@ async def record_requests(request: Request, regex: str, user_info=Depends(Permis
 
 
 @router.get("/record/stop", summary="停止录制接口请求")
-async def record_requests(request: Request, _=Depends(Permission())):
+async def record_requests(request: Request, user_info=Depends(Permission())):
+    recorded_requests = await RedisHelper.list_record_data(request.client.host)
     await RedisHelper.remove_address_record(request.client.host)
-    return PityResponse.success(msg="停止成功，快去生成用例吧~")
+    valid_requests = [item for item in (recorded_requests or []) if isinstance(item, dict) and str(item.get("url") or item.get("request_url") or "").strip()]
+    platform_task = None
+    if valid_requests:
+        resource_key = "record_associate_default"
+        platform_task = await PlatformTaskService.create_task(
+            PlatformTaskType.INTERFACE_RECORD_ASSOCIATE.value,
+            user_id=int(user_info["id"]),
+            biz_id=0,
+            biz_type="interface_record_associate",
+            project_id=0,
+            resource_key=resource_key,
+            payload={
+                "user_id": int(user_info["id"]),
+                "address": str(request.client.host or "").strip(),
+                "requests": valid_requests,
+                "request_count": len(valid_requests),
+            },
+            max_retries=1,
+        )
+    return PityResponse.success({
+        "status": "stopped",
+        "record_count": len(valid_requests),
+        "auto_associate_enqueued": bool(platform_task),
+        "platform_task_id": int(getattr(platform_task, "id", 0) or 0),
+    }, msg="停止成功，录制接口资产关联任务已入队")
 
 
 @router.get("/record/status", summary="获取录制接口请求状态")

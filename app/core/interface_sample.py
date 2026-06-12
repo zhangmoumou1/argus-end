@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 from loguru import logger
@@ -253,6 +254,89 @@ async def upsert_endpoint_sample_by_record(session, request_data: dict, user_id:
         matched_variant=matched_variant,
         sample=sample,
     )
+
+
+def normalize_record_request_item(request_data: dict):
+    payload = request_data if isinstance(request_data, dict) else {}
+    return {
+        "url": str(payload.get("url") or payload.get("request_url") or "").strip(),
+        "request_method": str(payload.get("request_method") or payload.get("method") or "GET").upper(),
+        "request_headers": payload.get("request_headers") or {},
+        "body": payload.get("body") or payload.get("request_body") or "",
+        "response_headers": payload.get("response_headers") or {},
+        "response_content": payload.get("response_content") or payload.get("response_body") or "",
+        "status_code": int(payload.get("status_code") or 0),
+        "created_at": str(payload.get("created_at") or payload.get("recorded_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    }
+
+
+async def batch_upsert_endpoint_samples_by_record(session, requests_data, user_id: int = 0):
+    await ensure_interface_sample_schema(session)
+    records = [normalize_record_request_item(item) for item in (requests_data or []) if isinstance(item, dict)]
+    matched_count = 0
+    saved_count = 0
+    skipped_manual_count = 0
+    missed_count = 0
+    affected_endpoint_ids = []
+    details = []
+
+    for item in records:
+        if not str(item.get("url") or "").strip():
+            continue
+        endpoint, service, matched_variant = await match_endpoint_for_record(session, item)
+        if endpoint is None or service is None:
+            missed_count += 1
+            details.append({
+                "url": item.get("url"),
+                "method": item.get("request_method"),
+                "status": "missed",
+            })
+            continue
+        matched_count += 1
+        sample = await get_endpoint_sample(session, endpoint.id)
+        source = str(getattr(sample, "sample_source", "") or "").lower()
+        if sample is not None and source in MANUAL_SAMPLE_SOURCES:
+            skipped_manual_count += 1
+            details.append({
+                "endpoint_id": int(endpoint.id or 0),
+                "service_id": int(service.id or 0),
+                "url": item.get("url"),
+                "method": item.get("request_method"),
+                "status": "skipped_manual_locked",
+            })
+            logger.bind(name=None).info(
+                f"record sample skipped endpoint_id={endpoint.id}, service_id={service.id}, reason=manual_sample_locked"
+            )
+            continue
+        await save_endpoint_sample(
+            session=session,
+            endpoint=endpoint,
+            service=service,
+            request_data=item,
+            user_id=user_id,
+            sample_source="record",
+            matched_variant=matched_variant,
+            sample=sample,
+        )
+        saved_count += 1
+        affected_endpoint_ids.append(int(endpoint.id or 0))
+        details.append({
+            "endpoint_id": int(endpoint.id or 0),
+            "service_id": int(service.id or 0),
+            "url": item.get("url"),
+            "method": item.get("request_method"),
+            "status": "saved",
+        })
+
+    return {
+        "total_count": len(records),
+        "matched_count": matched_count,
+        "saved_count": saved_count,
+        "skipped_manual_count": skipped_manual_count,
+        "missed_count": missed_count,
+        "affected_endpoint_ids": sorted(set(affected_endpoint_ids)),
+        "details": details,
+    }
 
 
 async def get_endpoint_sample(session, endpoint_id: int):

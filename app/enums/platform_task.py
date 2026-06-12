@@ -6,6 +6,7 @@ class PlatformTaskType(str, Enum):
     UI_TEST_RUN = "ui_test_run"
     PERFORMANCE_TEST_RUN = "performance_test_run"
     AI_FUNCTIONAL_CASE = "ai_functional_case"
+    INTERFACE_RECORD_ASSOCIATE = "interface_record_associate"
     NOTIFICATION = "notification"
 
 

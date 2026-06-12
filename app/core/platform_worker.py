@@ -28,6 +28,7 @@ class PlatformTaskWorker:
             PlatformTaskType.UI_TEST_RUN.value,
             PlatformTaskType.PERFORMANCE_TEST_RUN.value,
             PlatformTaskType.AI_FUNCTIONAL_CASE.value,
+            PlatformTaskType.INTERFACE_RECORD_ASSOCIATE.value,
         ]
 
     async def start(self):
@@ -235,6 +236,24 @@ class PlatformTaskWorker:
                 docs=payload.get("docs") or [],
             )
             await PlatformTaskService.mark_success(task.id, result_status=PlatformResultStatus.TEST_SUCCESS.value)
+            return
+        if task_type == PlatformTaskType.INTERFACE_RECORD_ASSOCIATE.value:
+            from app.core.interface_sample import batch_upsert_endpoint_samples_by_record
+
+            requests_data = payload.get("requests") or []
+            user_id = int(payload.get("user_id") or task.user or 0)
+            async with async_session() as session:
+                result_payload = await batch_upsert_endpoint_samples_by_record(
+                    session,
+                    requests_data,
+                    user_id=user_id,
+                )
+                await session.commit()
+            await PlatformTaskService.mark_success(
+                task.id,
+                result_status=PlatformResultStatus.TEST_SUCCESS.value,
+                result_payload=result_payload,
+            )
             return
         await PlatformAuditService.record_task_event(
             "unsupported",
