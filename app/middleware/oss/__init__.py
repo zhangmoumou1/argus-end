@@ -89,7 +89,7 @@ class OssClient(object):
         if OssClient._client is None:
             oss_config = cls._get_env_oss_config() or cls._get_system_oss_config()
             if oss_config is None:
-                raise Exception("服务器未配置oss信息, 请在configuration.json或conf/*.env中添加")
+                raise Exception("服务器未配置oss信息, 请在 conf/*.env 中添加")
 
             access_key_id = oss_config.get("access_key_id")
             access_key_secret = oss_config.get("access_key_secret")

@@ -65,6 +65,13 @@ class BaseConfig(BaseSettings):
     OSS_FORCE_PATH_STYLE: bool = True
     OSS_PRESIGN_EXPIRE: int = 3600
 
+    # system config migrated from configuration_*.json
+    EMAIL_SENDER: str = ""
+    EMAIL_PASSWORD: str = ""
+    EMAIL_HOST: str = ""
+    EMAIL_TO: str = ""
+    YAPI_TOKEN: str = ""
+
     # RabbitMQ for unified platform task dispatch
     RABBITMQ_HOST: str = "114.132.241.138"
     RABBITMQ_PORT: int = 5672

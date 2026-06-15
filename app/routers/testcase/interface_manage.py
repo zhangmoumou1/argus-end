@@ -1596,7 +1596,7 @@ async def import_yapi(form: dict, user_info=Depends(Permission())):
     if not source_text and not source_url:
         return ArgusResponse.failed("请提供 source_url 或 source_text")
     if not source_text and not token:
-        return ArgusResponse.failed("系统设置未配置YAPI Token，请先到后台管理-系统设置配置")
+        return ArgusResponse.failed("系统设置未配置YAPI Token，请先到后台管理-系统设置或 conf/*.env 中配置")
 
     try:
         if source_text:
@@ -1751,5 +1751,4 @@ async def review_endpoint_case(form: dict, user_info=Depends(Permission())):
         )
         await session.commit()
     return ArgusResponse.success({"case_id": case_id, "review_status": review_status})
-
 
