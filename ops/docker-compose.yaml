@@ -54,21 +54,24 @@ services:
       - argus_backend
 
   argus-rustfs:
-    image: minio/minio:latest
+    image: rustfs/rustfs:latest
     container_name: argus_rustfs
-    restart: always
-    command: server /data --console-address ":9001"
+    user: "0:0"
     environment:
-      TZ: Asia/Shanghai
-      MINIO_ROOT_USER: ${OSS_ACCESS_KEY_ID:-rustfs}
-      MINIO_ROOT_PASSWORD: ${OSS_ACCESS_KEY_SECRET:-susan123}
+      - RUSTFS_ADDRESS=:9000
+      - RUSTFS_CONSOLE_ENABLE=true
+      - RUSTFS_CONSOLE_ADDRESS=0.0.0.0:9001
+      - RUSTFS_ACCESS_KEY=${OSS_ACCESS_KEY_ID:-rustfs}
+      - RUSTFS_SECRET_KEY=${OSS_ACCESS_KEY_SECRET:-susan123}
     ports:
       - "${OSS_PORT:-9000}:9000"
-      - "${OSS_CONSOLE_PORT:-9001}:9001"
+      - "${OSS_CONSOLE_PORT:-9091}:9001"
     volumes:
-      - rustfs_data:/data
+      - ./data:/data
+      - ./logs:/logs
     networks:
       - argus_backend
+    restart: unless-stopped
 
   argus-api:
     build:
@@ -118,7 +121,6 @@ volumes:
   mysql_data:
   redis_data:
   rabbitmq_data:
-  rustfs_data:
 
 networks:
   argus_backend:
