@@ -35,7 +35,6 @@ router = APIRouter(prefix="/functional-case")
 logger = Log("functional_case_skill")
 
 AI_CASE_CREATOR_ROOT = r"C:\Users\bytde\Desktop\ai_case_creator"
-SKILL_TASK_DIR = os.path.join("statics", "functional_case_skill_tasks")
 AI_TEXT_LIMIT = 12000
 AI_INSTRUCTION_LIMIT = 6000
 AI_IMAGE_LIMIT = 6
@@ -845,20 +844,6 @@ def write_text(path, content):
         file.write(content)
 
 
-def file_path_to_static_url(file_path):
-    if not file_path:
-        return ""
-    normalized = os.path.normpath(file_path)
-    statics_root = os.path.normpath("statics")
-    try:
-        relative_path = os.path.relpath(normalized, statics_root)
-    except ValueError:
-        return ""
-    if relative_path.startswith(".."):
-        return ""
-    return f"/statics/{relative_path.replace(os.sep, '/')}"
-
-
 def append_task_log(task, stage, stage_text):
     if not stage_text:
         return
@@ -1397,8 +1382,8 @@ def build_task_result(task):
         "error_message": task_error_message,
         "result_md_path": task_result_md_path,
         "result_xmind_path": task_result_xmind_path,
-        "result_md_url": file_path_to_static_url(task_result_md_path),
-        "result_xmind_url": file_path_to_static_url(task_result_xmind_path),
+        "result_md_url": "",
+        "result_xmind_url": "",
         "task_logs": logs,
     })
     return payload

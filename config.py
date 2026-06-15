@@ -52,23 +52,6 @@ class BaseConfig(BaseSettings):
     MANAGER: ClassVar[int] = 1
     ADMIN: ClassVar[int] = 2
 
-    # github access_token地址
-    GITHUB_ACCESS: ClassVar[str] = "https://github.com/login/oauth/access_token"
-
-    # github获取用户信息
-    GITHUB_USER: ClassVar[str] = "https://api.github.com/user"
-
-    # client_id
-    CLIENT_ID: str
-
-    # SECRET
-    SECRET_KEY: str
-
-    # Kimi / Moonshot
-    KIMI_API_KEY: str = "sk-e5OUafm3yFex3hWjsgS7rZw68hNtYJsJLji0u7ruEKqhQavU"
-    KIMI_BASE_URL: str = "https://api.moonshot.cn/v1"
-    KIMI_MODEL: str = "kimi-k2.6"
-
     # RustFS / S3 compatible OSS
     OSS_TYPE: str = ""
     OSS_ENDPOINT: str = ""
@@ -118,9 +101,6 @@ class BaseConfig(BaseSettings):
 
     # dao路径
     DAO_PATH: ClassVar[str] = os.path.join(APP_PATH, "crud")
-
-    # markdown地址
-    MARKDOWN_PATH: ClassVar[str] = os.path.join(ROOT, "templates", "markdown")
 
     SERVER_REPORT: ClassVar[str] = "http://localhost:8000"
 

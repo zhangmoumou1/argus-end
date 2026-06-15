@@ -1,0 +1,95 @@
+# Argus 后端部署说明
+
+后端项目路径：`argus-end`
+
+## 首次部署只需要改 2 个文件
+
+### 1. 改后端配置 `conf/pro.env`
+
+可直接按下面示例填写：
+
+```env
+MYSQL_HOST="114.132.241.138"
+MYSQL_PORT=3306
+MYSQL_USER="root"
+MYSQL_PWD="19950308zyc."
+DBNAME="argus"
+
+REDIS_ON=True
+REDIS_HOST="114.132.241.138"
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_PASSWORD=""
+
+OSS_TYPE="s3"
+OSS_ENDPOINT="http://114.132.241.138:9000"
+OSS_ACCESS_KEY_ID="rustfs"
+OSS_ACCESS_KEY_SECRET="susan123"
+OSS_BUCKET="argus-end"
+OSS_AVATAR_BUCKET="public"
+
+RABBITMQ_HOST="114.132.241.138"
+RABBITMQ_PORT=5672
+RABBITMQ_USER="admin"
+RABBITMQ_PASSWORD="admin"
+
+MOCK_ON=False
+PROXY_ON=False
+PROXY_PORT=7778
+GRAFANA_URL="http://192.168.8.25:3001/"
+
+SERVER_PORT=7777
+```
+
+### 2. 改 UI Runner 最小配置 `ui_runner/.env`
+
+```env
+UI_RUNNER_BROWSER=chromium
+UI_RUNNER_HEADLESS=true
+UI_RUNNER_POLL_INTERVAL_MS=5000
+```
+
+## 启动
+
+在后端项目根目录执行：
+
+```bash
+docker compose -f ops/docker-compose.yaml up -d --build
+```
+
+## 检查
+
+查看容器：
+
+```bash
+docker compose -f ops/docker-compose.yaml ps
+```
+
+查看后端日志：
+
+```bash
+docker compose -f ops/docker-compose.yaml logs -f argus-api
+```
+
+查看 UI Runner 日志：
+
+```bash
+docker compose -f ops/docker-compose.yaml logs -f argus-ui-runner
+```
+
+查看后端启动日志文件：
+
+```bash
+tail -f logs/startup/argus-api.log
+```
+
+查看 UI Runner 启动日志文件：
+
+```bash
+tail -f logs/startup/argus-ui-runner.log
+```
+
+## 说明
+
+- `ops/docker-compose.yaml` 已包含：MySQL、Redis、argus-api、argus-ui-runner
+- 前端请到 `argus-front` 仓库单独部署

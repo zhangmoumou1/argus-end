@@ -38,8 +38,6 @@ from config import Config
 router = APIRouter(prefix="/functional-case")
 logger = Log("functional_case_ai")
 
-CASE_FILE_DIR = os.path.join("statics", "functional_cases")
-CASE_IMAGE_DIR = os.path.join("statics", "functional_case_img")
 FUNCTIONAL_CASE_SCHEMA_READY = False
 AI_TEXT_LIMIT = 12000
 AI_INSTRUCTION_LIMIT = 6000
@@ -113,15 +111,6 @@ def summarize_ai_request(form: FunctionalCaseAIGenerateForm, content):
         "prompt_text_preview": preview_text(text_item.get("text") or "", 600),
         "images": summarize_ai_images(sent_images),
     }
-
-
-def build_static_url(path_value: str):
-    normalized = os.path.normpath(path_value)
-    statics_root = os.path.normpath("statics")
-    if not normalized.startswith(statics_root):
-        return ""
-    relative_path = os.path.relpath(normalized, statics_root)
-    return f"/statics/{relative_path.replace(os.sep, '/')}"
 
 
 def build_functional_case_asset_url(object_key: str, bucket_name: str = None):
@@ -684,7 +673,7 @@ def normalize_ai_case_data(payload, fallback_title: str):
 
 def call_kimi_generate(form: FunctionalCaseAIGenerateForm, ai_config=None):
     ai_config = ai_config or {}
-    api_key = ai_config.get("api_key") or Config.KIMI_API_KEY
+    api_key = ai_config.get("api_key")
     base_url = (ai_config.get("base_url") or Config.KIMI_BASE_URL).rstrip("/")
     model = ai_config.get("model") or Config.KIMI_MODEL
     provider = ai_config.get("provider") or "kimi"

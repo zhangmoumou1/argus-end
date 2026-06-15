@@ -1,16 +1,9 @@
 import asyncio
 import json
-from mimetypes import guess_type
-from pathlib import Path
-from os.path import isfile
 
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Request, WebSocket, WebSocketDisconnect, Depends
-from starlette.responses import Response
-from starlette.staticfiles import StaticFiles
-from starlette.templating import Jinja2Templates
-
 from app import argus, init_logging
 from app.core.platform_worker import platform_task_worker
 from app.core.platform_mq import rabbit_connection
@@ -51,8 +44,6 @@ logger.bind(name=None).success(BANNER)
 
 proxy_task = None
 platform_worker_task = None
-BASE_DIR = Path(__file__).resolve().parent
-STATICS_DIR = BASE_DIR / "statics"
 
 
 def _skip_request_logging(request: Request):
@@ -140,44 +131,6 @@ argus.include_router(performance_router, dependencies=[Depends(request_info)])
 argus.include_router(ui_test_router, dependencies=[Depends(request_info)])
 argus.include_router(share_router)
 argus.include_router(notification_admin_router, dependencies=[Depends(request_info)])
-
-STATICS_DIR.mkdir(parents=True, exist_ok=True)
-argus.mount("/statics", StaticFiles(directory=str(STATICS_DIR)), name="statics")
-
-templates = Jinja2Templates(directory=str(STATICS_DIR))
-
-
-@argus.get("/")
-async def serve_spa(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
-
-@argus.get("/{filename}")
-async def get_site(filename):
-    filename = str(STATICS_DIR / filename)
-
-    if not isfile(filename):
-        return Response(status_code=404)
-
-    with open(filename, mode='rb') as f:
-        content = f.read()
-
-    content_type, _ = guess_type(filename)
-    return Response(content, media_type=content_type)
-
-
-@argus.get("/static/{filename}")
-async def get_site_static(filename):
-    filename = str(STATICS_DIR / "static" / filename)
-
-    if not isfile(filename):
-        return Response(status_code=404)
-
-    with open(filename, mode='rb') as f:
-        content = f.read()
-
-    content_type, _ = guess_type(filename)
-    return Response(content, media_type=content_type)
 
 
 @argus.on_event('startup')

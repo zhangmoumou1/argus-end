@@ -157,10 +157,9 @@ docker-compose -f .\ops\docker-compose.yaml up
 
 ```bash
 # Docker 部署时请确保宿主机目录已挂载到容器内
-# statics/knowledge -> /argus/statics/knowledge
 ```
 
-5. 如需 Nginx 反向代理和静态资源直出，可参考 `ops/nginx.conf`
+5. 如需 Nginx 反向代理，请在部署环境自行配置站点反向代理到后端服务
 
 ### 🎉 二次开发
 

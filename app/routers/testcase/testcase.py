@@ -581,7 +581,7 @@ def build_fallback_flow_payload(context, reason=""):
 
 def call_kimi_for_flow_cases(context, ai_config=None):
     ai_config = ai_config or {}
-    api_key = ai_config.get("api_key") or Config.KIMI_API_KEY
+    api_key = ai_config.get("api_key")
     model = ai_config.get("model") or Config.KIMI_MODEL
     provider = ai_config.get("provider") or "kimi"
     request_model = normalize_request_model_name(model, provider)

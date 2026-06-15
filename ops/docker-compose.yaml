@@ -1,70 +1,84 @@
-version: "3"
-services:
+version: "3.9"
 
-  mysql:
+services:
+  argus-mysql:
     image: mysql:8.0
     container_name: argus_mysql
     restart: always
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
     environment:
-      MYSQL_ROOT_PASSWORD: Argustester666666
-      MYSQL_DATABASE: argus
+      TZ: Asia/Shanghai
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-19950308zyc.}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-argus}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
     networks:
-      argus_net:
-        aliases:
-          - argus_mysql
+      - argus_backend
 
-  redis:
-    image: redis
+  argus-redis:
+    image: redis:7-alpine
     container_name: argus_redis
-    command: redis-server --requirepass 123456
     restart: always
+    command: >
+      sh -c "redis-server --appendonly yes
+      --requirepass ${REDIS_PASSWORD:-}"
     environment:
-      - TZ=Asia/Shanghai
+      TZ: Asia/Shanghai
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
     networks:
-      argus_net:
-        aliases:
-          - argus_redis
+      - argus_backend
 
-  argus:
+  argus-api:
     build:
       context: ../
       dockerfile: ops/dockerfile
       args:
         buildno: 1
-    container_name: argus_server
-    ports:
-      - "7777:7777"
+    container_name: argus_api
     restart: always
+    ports:
+      - "${ARGUS_API_PORT:-7777}:7777"
+    env_file:
+      - ../conf/pro.env
     environment:
-      - TZ=Asia/Shanghai
-    networks:
-      argus_net:
-        aliases:
-        - argus_server
+      TZ: Asia/Shanghai
+      argus_env: pro
     volumes:
-      - ./dev.env.ops:/argus/conf/dev.env
-      - ../statics/knowledge:/argus/statics/knowledge
+      - ../logs:/argus/logs
       - ../ui_runner:/argus/ui_runner
+    networks:
+      - argus_backend
 
-  ui_runner:
+  argus-ui-runner:
     build:
       context: ../ui_runner
       dockerfile: Dockerfile
     container_name: argus_ui_runner
     restart: always
     depends_on:
-      - argus
+      - argus-api
+    env_file:
+      - ../ui_runner/.env
     environment:
-      - TZ=Asia/Shanghai
-      - UI_RUNNER_SERVER=http://argus_server:7777
-      - UI_RUNNER_BROWSER=chromium
-      - UI_RUNNER_HEADLESS=true
-    networks:
-      argus_net:
-        aliases:
-          - argus_ui_runner
+      TZ: Asia/Shanghai
     volumes:
       - ../ui_runner:/app
+      - ../logs:/app/logs
+    networks:
+      - argus_backend
+
+volumes:
+  mysql_data:
+  redis_data:
 
 networks:
-  argus_net:
+  argus_backend:
+    name: argus_backend

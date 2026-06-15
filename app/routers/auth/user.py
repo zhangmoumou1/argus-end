@@ -1,6 +1,4 @@
 import asyncio
-
-import requests
 from fastapi import APIRouter, Depends
 from starlette import status
 
@@ -54,28 +52,6 @@ async def list_users(_=Depends(Permission())):
         return ArgusResponse.success(user, exclude=("password",))
     except Exception as e:
         return ArgusResponse.failed(str(e))
-
-
-@router.get("/github/login")
-async def login_with_github(code: str):
-    try:
-        code = code.rstrip("#/")
-        with requests.Session() as session:
-            r = session.get(Config.GITHUB_ACCESS, params=dict(client_id=Config.CLIENT_ID,
-                                                              client_secret=Config.SECRET_KEY,
-                                                              code=code), timeout=8)
-            token = r.text.split("&")[0].split("=")[1]
-            res = session.get(Config.GITHUB_USER, headers={"Authorization": "token {}".format(token)}, timeout=8)
-            user_info = res.json()
-            user = await UserDao.register_for_github(user_info.get("login"), user_info.get("name"),
-                                                     user_info.get("email"),
-                                                     user_info.get("avatar_url"))
-            user = ArgusResponse.model_to_dict(user, "password")
-            expire, token = UserToken.get_token(user)
-            return ArgusResponse.success(dict(token=token, user=user, expire=expire), msg="登录成功")
-    except:
-        # 大部分原因是github出问题，忽略
-        return ArgusResponse.failed(code=110, msg="登录超时, 请稍后再试")
 
 
 @router.post("/update")

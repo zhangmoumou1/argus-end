@@ -6,9 +6,7 @@ RUN python -m venv /argus/venv  \
     && /argus/venv/bin/python -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ \
     && apt update -y \
     && apt upgrade -y \
-    && apt install -y tzdata \
-    && apt install -y wget \
-    && wget https://github.com/vishnubob/wait-for-it/raw/master/wait-for-it.sh
+    && apt install -y tzdata
 
 
 FROM python:3.8
@@ -17,10 +15,8 @@ WORKDIR /argus
 COPY . .
 COPY --from=builder /argus/venv/ /argus/venv/
 COPY --from=builder /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-COPY --from=builder /argus/wait-for-it.sh /argus/ops/wait-for-it.sh
-RUN ln -sf /argus/ops/dev.env.ops /argus/conf/dev.env \
-    && chmod +x /argus/ops/wait-for-it.sh
+RUN mkdir -p /argus/logs/startup
 
 EXPOSE 7777
 
-CMD ["/argus/venv/bin/supervisord", "-c", "/argus/ops/supervisor.conf"]
+CMD ["sh", "-c", "exec /argus/venv/bin/gunicorn main:argus -b 0.0.0.0:7777 -w 8 -k uvicorn.workers.UvicornWorker --log-level info --access-logfile - --error-logfile - 2>&1 | tee -a /argus/logs/startup/argus-api.log"]

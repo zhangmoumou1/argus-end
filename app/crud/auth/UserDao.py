@@ -118,39 +118,6 @@ class UserDao(Mapper):
 
     @staticmethod
     @RedisHelper.up_cache("user_list", "user_touch")
-    async def register_for_github(username, name, email, avatar):
-        try:
-            async with async_session() as session:
-                async with session.begin():
-                    # 异步session只需要 session.begin，下面的commit可以去掉 语法也有一些区别
-                    query = await session.execute(
-                        select(User).where(or_(User.username == username, User.email == email)))
-                    user = query.scalars().first()
-                    if user:
-                        old = deepcopy(user)
-                        # 如果存在，则给用户更新信息
-                        user.last_login_at = datetime.now()
-                        user.name = name
-                        user.avatar = avatar
-                        await session.flush()
-                        setattr(user, "__tag__", "用户管理")
-                        await UserDao.insert_log(session, user.id, OperationType.UPDATE, user, old, user.id, ["last_login_at", "name", "avatar"])
-                    else:
-                        random_pwd = random.randint(100000, 999999)
-                        user = User(username, name, UserToken.add_salt(str(random_pwd)), email, avatar)
-                        session.add(user)
-                        await session.flush()
-                        setattr(user, "__tag__", "用户管理")
-                        await UserDao.insert_log(session, user.id, OperationType.INSERT, user, key=user.id)
-                    await session.flush()
-                    session.expunge(user)
-                    return user
-        except Exception as e:
-            UserDao.log.error(f"Github用户登录失败: {str(e)}")
-            raise Exception("登录失败")
-
-    @staticmethod
-    @RedisHelper.up_cache("user_list", "user_touch")
     async def register_user(username: str, name: str, password: str, email: str):
         """
         :param username: 用户名
