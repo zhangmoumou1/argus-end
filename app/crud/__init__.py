@@ -3,6 +3,7 @@ import functools
 import importlib
 import json
 import os
+import pkgutil
 import sys
 import time
 from collections import defaultdict
@@ -11,7 +12,8 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Tuple, List, TypeVar, Any, Callable
 
-from sqlalchemy import select, update
+from sqlalchemy import inspect, select, text, update
+from sqlalchemy.dialects import mysql
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums.OperationEnum import OperationType
@@ -536,8 +538,81 @@ for path in get_dao_path():
 
 
 async def create_table():
+    models_pkg_path = os.path.join(os.path.dirname(__file__), "..", "models")
+    for module_info in pkgutil.iter_modules([os.path.abspath(models_pkg_path)]):
+        module_name = module_info.name
+        if module_name.startswith("_"):
+            continue
+        importlib.import_module(f"app.models.{module_name}")
+
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_sync_missing_model_columns)
+
+    await _run_runtime_schema_patches()
+
+
+def _render_mysql_default(column):
+    default = getattr(column, "default", None)
+    if default is None or getattr(default, "is_scalar", False) is False:
+        return ""
+    value = default.arg
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return f" DEFAULT {1 if value else 0}"
+    if isinstance(value, (int, float)):
+        return f" DEFAULT {value}"
+    escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
+    return f" DEFAULT '{escaped}'"
+
+
+def _render_mysql_column_sql(column):
+    dialect = mysql.dialect()
+    type_sql = column.type.compile(dialect=dialect)
+    nullable_sql = " NULL" if column.nullable else " NOT NULL"
+    default_sql = _render_mysql_default(column)
+    comment_sql = ""
+    if getattr(column, "comment", None):
+        escaped = str(column.comment).replace("\\", "\\\\").replace("'", "\\'")
+        comment_sql = f" COMMENT '{escaped}'"
+    return f"`{column.name}` {type_sql}{nullable_sql}{default_sql}{comment_sql}"
+
+
+def _sync_missing_model_columns(sync_conn):
+    inspector = inspect(sync_conn)
+    existing_tables = set(inspector.get_table_names())
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        existing_columns = {item["name"] for item in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in existing_columns:
+                continue
+            column_sql = _render_mysql_column_sql(column)
+            sync_conn.execute(text(f"ALTER TABLE `{table.name}` ADD COLUMN {column_sql}"))
+
+
+async def _run_runtime_schema_patches():
+    from app.core.interface_sample import ensure_interface_sample_schema
+    from app.core.mock_rule import ensure_mock_config_schema
+    from app.routers.config.mq_config import ensure_mq_schema
+    from app.routers.performance import ensure_performance_schema
+    from app.routers.testcase.functional_case import ensure_functional_case_schema
+    from app.routers.testcase.functional_case_skill import ensure_skill_task_schema
+    from app.routers.testcase.interface_manage import ensure_interface_schema
+    from app.routers.ui_test import ensure_ui_test_gateway_schema, ensure_ui_test_schema
+
+    async with async_session() as session:
+        await ensure_ui_test_schema(session)
+        await ensure_ui_test_gateway_schema(session)
+        await ensure_interface_schema(session)
+        await ensure_interface_sample_schema(session)
+        await ensure_functional_case_schema(session)
+        await ensure_skill_task_schema(session)
+        await ensure_performance_schema(session)
+        await ensure_mq_schema(session)
+        await ensure_mock_config_schema(session)
 
 
 init_relation(ProjectRole, PityRelationField(ProjectRole.user_id, (User.id, User.name)),
