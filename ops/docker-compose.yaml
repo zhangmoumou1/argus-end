@@ -1,4 +1,4 @@
-version: "3.9"
+version: "3.3"
 
 services:
   argus-mysql:
@@ -122,4 +122,3 @@ volumes:
 
 networks:
   argus_backend:
-    name: argus_backend
