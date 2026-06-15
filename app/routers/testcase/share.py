@@ -2,11 +2,11 @@ from fastapi import APIRouter, Query
 from sqlalchemy import select
 
 from app.crud.test_case.TestReport import TestReportDao
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.models import async_session
-from app.models.report import PityReport
+from app.models.report import ArgusReport
 from app.models.test_case import TestCase
-from app.models.test_plan import PityTestPlan
+from app.models.test_plan import ArgusTestPlan
 from app.models.project import Project
 from app.models.user import User
 from app.models.environment import Environment
@@ -50,7 +50,7 @@ async def query_shared_report(id: int, status: int = Query(default=None)):
                 executor_name = user_result[0] if user_result else None
             if report.plan_id:
                 plan_row = await session.execute(
-                    select(PityTestPlan.project_id).where(PityTestPlan.id == report.plan_id, PityTestPlan.deleted_at == 0)
+                    select(ArgusTestPlan.project_id).where(ArgusTestPlan.id == report.plan_id, ArgusTestPlan.deleted_at == 0)
                 )
                 plan_result = plan_row.first()
                 if plan_result:
@@ -62,7 +62,7 @@ async def query_shared_report(id: int, status: int = Query(default=None)):
 
     if status is not None:
         case_list = [item for item in case_list if getattr(item, "status", None) == status]
-    return PityResponse.success(dict(
+    return ArgusResponse.success(dict(
         report=report, plan_name=plan_name, case_list=case_list,
         env_name=env_name, executor_name=executor_name, project_name=project_name,
     ))

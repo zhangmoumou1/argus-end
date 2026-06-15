@@ -1,9 +1,9 @@
 from pydantic import BaseModel, field_validator
 
-from app.schema.base import PityModel
+from app.schema.base import ArgusModel
 
 
-class PityTestcaseDataForm(BaseModel):
+class ArgusTestcaseDataForm(BaseModel):
     id: int = None
     case_id: int = None
     name: str
@@ -13,5 +13,5 @@ class PityTestcaseDataForm(BaseModel):
     @field_validator("env", "name", "json_data")
     @classmethod
     def name_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 

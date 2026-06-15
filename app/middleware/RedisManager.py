@@ -18,7 +18,7 @@ from app.exception.error import RedisError
 from config import Config
 
 
-class PityRedisManager(object):
+class ArgusRedisManager(object):
     """非线程安全，可能存在问题
     """
     _cluster_pool = dict()
@@ -26,7 +26,7 @@ class PityRedisManager(object):
 
     @property
     def client(self):
-        return PityRedisManager.get_writable_client(
+        return ArgusRedisManager.get_writable_client(
             host=Config.REDIS_HOST,
             port=Config.REDIS_PORT,
             db=Config.REDIS_DB,
@@ -52,7 +52,7 @@ class PityRedisManager(object):
         1. 先连配置地址
         2. 如果是只读副本, 自动切到其 master_host/master_port
         """
-        client = PityRedisManager._build_client(host, port, db, password)
+        client = ArgusRedisManager._build_client(host, port, db, password)
         try:
             info = client.info("replication")
             role = info.get("role")
@@ -63,7 +63,7 @@ class PityRedisManager(object):
                     logger.bind(name=None).warning(
                         f"redis {host}:{port} is replica, switch to master {master_host}:{master_port}"
                     )
-                    master_client = PityRedisManager._build_client(master_host, int(master_port), db, password)
+                    master_client = ArgusRedisManager._build_client(master_host, int(master_port), db, password)
                     master_client.ping()
                     return master_client
         except Exception as e:
@@ -81,9 +81,9 @@ class PityRedisManager(object):
         :return:
         """
         if cluster:
-            PityRedisManager._cluster_pool.pop(redis_id)
+            ArgusRedisManager._cluster_pool.pop(redis_id)
         else:
-            PityRedisManager._pool.pop(redis_id)
+            ArgusRedisManager._pool.pop(redis_id)
 
     @staticmethod
     def get_cluster_client(redis_id: int, address: str):
@@ -93,11 +93,11 @@ class PityRedisManager(object):
         :param address:
         :return:
         """
-        cluster = PityRedisManager._cluster_pool.get(redis_id)
+        cluster = ArgusRedisManager._cluster_pool.get(redis_id)
         if cluster is not None:
             return cluster
-        client = PityRedisManager.get_cluster(address)
-        PityRedisManager._cluster_pool[redis_id] = client
+        client = ArgusRedisManager.get_cluster(address)
+        ArgusRedisManager._cluster_pool[redis_id] = client
         return client
 
     @staticmethod
@@ -110,7 +110,7 @@ class PityRedisManager(object):
         :param db:
         :return:
         """
-        node = PityRedisManager._pool.get(redis_id)
+        node = ArgusRedisManager._pool.get(redis_id)
         if node is not None:
             return node
         if ":" not in address:
@@ -119,7 +119,7 @@ class PityRedisManager(object):
         pool = ConnectionPool(host=host, port=port, db=db, max_connections=100, password=password,
                               decode_responses=True)
         client = StrictRedis(connection_pool=pool)
-        PityRedisManager._pool[redis_id] = client
+        ArgusRedisManager._pool[redis_id] = client
         return client
 
     @staticmethod
@@ -136,11 +136,11 @@ class PityRedisManager(object):
         pool = ConnectionPool(host=host, port=port, db=db, max_connections=100, password=password,
                               decode_responses=True)
         client = StrictRedis(connection_pool=pool, decode_responses=True)
-        PityRedisManager._pool[redis_id] = client
+        ArgusRedisManager._pool[redis_id] = client
 
     @staticmethod
     def refresh_redis_cluster(redis_id: int, addr: str):
-        PityRedisManager._cluster_pool[redis_id] = PityRedisManager.get_cluster(addr)
+        ArgusRedisManager._cluster_pool[redis_id] = ArgusRedisManager.get_cluster(addr)
 
     @staticmethod
     def get_cluster(address: str):
@@ -162,8 +162,8 @@ class PityRedisManager(object):
 
 
 class RedisHelper(object):
-    pity_prefix = "pity"
-    pity_redis_client = PityRedisManager().client
+    argus_prefix = "argus"
+    argus_redis_client = ArgusRedisManager().client
 
     @staticmethod
     def _readonly_error(error: Exception):
@@ -171,7 +171,7 @@ class RedisHelper(object):
 
     @staticmethod
     def _refresh_client():
-        RedisHelper.pity_redis_client = PityRedisManager().client
+        RedisHelper.argus_redis_client = ArgusRedisManager().client
 
     @staticmethod
     @awaitable
@@ -185,7 +185,7 @@ class RedisHelper(object):
         test redis client
         :return:
         """
-        return RedisHelper.pity_redis_client.ping()
+        return RedisHelper.argus_redis_client.ping()
 
     @staticmethod
     @awaitable
@@ -196,7 +196,7 @@ class RedisHelper(object):
         :return:
         """
         key = RedisHelper.get_key(f"record:ip:{address}")
-        return RedisHelper.pity_redis_client.get(key)
+        return RedisHelper.argus_redis_client.get(key)
 
     @staticmethod
     @awaitable
@@ -207,10 +207,10 @@ class RedisHelper(object):
         :return:
         """
         key = RedisHelper.get_key(f"record:{address}:requests")
-        RedisHelper.pity_redis_client.rpush(key, request)
-        ttl = RedisHelper.pity_redis_client.ttl(key)
+        RedisHelper.argus_redis_client.rpush(key, request)
+        ttl = RedisHelper.argus_redis_client.ttl(key)
         if ttl < 0:
-            RedisHelper.pity_redis_client.expire(key, 3600)
+            RedisHelper.argus_redis_client.expire(key, 3600)
 
     @staticmethod
     @awaitable
@@ -224,9 +224,9 @@ class RedisHelper(object):
         """
         # 默认录制1小时
         value = json.dumps({"user_id": user_id, "regex": regex}, ensure_ascii=False)
-        RedisHelper.pity_redis_client.set(RedisHelper.get_key(f"record:ip:{address}"), value, ex=7200)
+        RedisHelper.argus_redis_client.set(RedisHelper.get_key(f"record:ip:{address}"), value, ex=7200)
         # 清除上次录制数据
-        RedisHelper.pity_redis_client.delete(RedisHelper.get_key(f"record:{address}:requests"))
+        RedisHelper.argus_redis_client.delete(RedisHelper.get_key(f"record:{address}:requests"))
 
     @staticmethod
     @awaitable
@@ -236,7 +236,7 @@ class RedisHelper(object):
         :param address:
         :return:
         """
-        return RedisHelper.pity_redis_client.delete(RedisHelper.get_key(f"record:ip:{address}"))
+        return RedisHelper.argus_redis_client.delete(RedisHelper.get_key(f"record:ip:{address}"))
 
     @staticmethod
     @awaitable
@@ -247,7 +247,7 @@ class RedisHelper(object):
         :return:
         """
         key = RedisHelper.get_key(f"record:{address}:requests")
-        data = RedisHelper.pity_redis_client.lrange(key, 0, -1)
+        data = RedisHelper.argus_redis_client.lrange(key, 0, -1)
         return [json.loads(x) for x in data]
 
     @staticmethod
@@ -260,8 +260,8 @@ class RedisHelper(object):
         :return:
         """
         key = RedisHelper.get_key(f"record:{address}:requests")
-        RedisHelper.pity_redis_client.lset(key, index, "DELETED")
-        RedisHelper.pity_redis_client.lrem(key, 1, "DELETED")
+        RedisHelper.argus_redis_client.lset(key, index, "DELETED")
+        RedisHelper.argus_redis_client.lrem(key, 1, "DELETED")
 
     @staticmethod
     @awaitable
@@ -271,8 +271,8 @@ class RedisHelper(object):
         :param key:
         :return:
         """
-        for k in RedisHelper.pity_redis_client.scan_iter(f"{key}*"):
-            RedisHelper.pity_redis_client.delete(k)
+        for k in RedisHelper.argus_redis_client.scan_iter(f"{key}*"):
+            RedisHelper.argus_redis_client.delete(k)
             logger.bind(name=None).debug(f"delete redis key: {k}")
 
     @staticmethod
@@ -282,26 +282,26 @@ class RedisHelper(object):
         :param key:
         :return:
         """
-        for k in RedisHelper.pity_redis_client.scan_iter(f"{key}*"):
-            RedisHelper.pity_redis_client.delete(k)
+        for k in RedisHelper.argus_redis_client.scan_iter(f"{key}*"):
+            RedisHelper.argus_redis_client.delete(k)
             logger.bind(name=None).debug(f"delete redis key: {k}")
 
     @staticmethod
     def get_key(_redis_key: str, args_key: bool = True, *args, **kwargs):
         if not args_key:
-            return f"{RedisHelper.pity_prefix}:{_redis_key}"
+            return f"{RedisHelper.argus_prefix}:{_redis_key}"
         filter_args = [a for a in args if not str(a).startswith(('<class', '<sqlalchemy', '(<sqlalchemy'))]
         for v in kwargs.values():
             if v and not str(v).startswith(('<class', '<sqlalchemy', '(<sqlalchemy')):
                 filter_args.append(str(v))
-        return f"{RedisHelper.pity_prefix}:{_redis_key}" \
+        return f"{RedisHelper.argus_prefix}:{_redis_key}" \
                f"{':' + ':'.join(str(a) for a in filter_args) if len(filter_args) > 0 else ''}"
 
     @staticmethod
     def get_key_with_suffix(cls_name: str, key: str, args: tuple, key_suffix):
         filter_args = [a for a in args if not str(args[0]).startswith('<class')]
         suffix = key_suffix(filter_args)
-        return f"{RedisHelper.pity_prefix}:{cls_name}:{key}:{suffix}"
+        return f"{RedisHelper.argus_prefix}:{cls_name}:{key}:{suffix}"
 
     @staticmethod
     def cache(key: str, expired_time=30 * 60, args_key=True):
@@ -323,7 +323,7 @@ class RedisHelper(object):
                     cls_name = inspect.getframeinfo(inspect.currentframe().f_back)[3][0].split(".")[0].split(" ")[-1]
                     redis_key = RedisHelper.get_key(f"{cls_name}:{key}", args_key, *args, **kwargs)
                     try:
-                        data = RedisHelper.pity_redis_client.get(redis_key)
+                        data = RedisHelper.argus_redis_client.get(redis_key)
                         # 缓存已存在
                         if data is not None:
                             return pickle.loads(bytes.fromhex(data))
@@ -335,12 +335,12 @@ class RedisHelper(object):
                     info = pickle.dumps(new_data)
                     # logger.bind(name=None).debug(f"set redis key: {redis_key}")
                     try:
-                        RedisHelper.pity_redis_client.set(redis_key, info.hex(), ex=expired_time)
+                        RedisHelper.argus_redis_client.set(redis_key, info.hex(), ex=expired_time)
                     except Exception as e:
                         if RedisHelper._readonly_error(e):
                             RedisHelper._refresh_client()
                             try:
-                                RedisHelper.pity_redis_client.set(redis_key, info.hex(), ex=expired_time)
+                                RedisHelper.argus_redis_client.set(redis_key, info.hex(), ex=expired_time)
                                 return new_data
                             except Exception as re:
                                 logger.bind(name=None).warning(
@@ -358,7 +358,7 @@ class RedisHelper(object):
                     cls_name = inspect.getframeinfo(inspect.currentframe().f_back)[3][0].split(".")[0].split(" ")[-1]
                     redis_key = RedisHelper.get_key(f"{cls_name}:{key}", args_key, *args, **kwargs)
                     try:
-                        data = RedisHelper.pity_redis_client.get(redis_key)
+                        data = RedisHelper.argus_redis_client.get(redis_key)
                         # 缓存已存在
                         if data is not None:
                             return pickle.loads(bytes.fromhex(data))
@@ -371,12 +371,12 @@ class RedisHelper(object):
                     # logger.bind(name=None).debug(f"set redis key: {redis_key}")
                     # 添加随机数防止缓存雪崩
                     try:
-                        RedisHelper.pity_redis_client.set(redis_key, info.hex(), ex=expired_time + Random().randint(10, 59))
+                        RedisHelper.argus_redis_client.set(redis_key, info.hex(), ex=expired_time + Random().randint(10, 59))
                     except Exception as e:
                         if RedisHelper._readonly_error(e):
                             RedisHelper._refresh_client()
                             try:
-                                RedisHelper.pity_redis_client.set(
+                                RedisHelper.argus_redis_client.set(
                                     redis_key,
                                     info.hex(),
                                     ex=expired_time + Random().randint(10, 59)
@@ -412,12 +412,12 @@ class RedisHelper(object):
                     cls_name = inspect.getframeinfo(inspect.currentframe().f_back)[3][0].split(".")[0].split(" ")[-1]
                     try:
                         for k in key:
-                            redis_key = f"{RedisHelper.pity_prefix}:{cls_name}:{k}"
+                            redis_key = f"{RedisHelper.argus_prefix}:{cls_name}:{k}"
                             await RedisHelper.async_delete_prefix(redis_key)
                         if key_and_suffix is not None:
                             current_key = RedisHelper.get_key_with_suffix(cls_name, key_and_suffix[0], args,
                                                                           key_and_suffix[1])
-                            RedisHelper.pity_redis_client.delete(current_key)
+                            RedisHelper.argus_redis_client.delete(current_key)
                     except Exception as e:
                         logger.bind(name=None).warning(f"redis delete cache failed, skip. error={e}")
                     # 更新数据，删除缓存
@@ -433,12 +433,12 @@ class RedisHelper(object):
                     cls_name = inspect.getframeinfo(inspect.currentframe().f_back)[3][0].split(".")[0].split(" ")[-1]
                     try:
                         for k in key:
-                            redis_key = f"{RedisHelper.pity_prefix}:{cls_name}:{k}"
+                            redis_key = f"{RedisHelper.argus_prefix}:{cls_name}:{k}"
                             RedisHelper.delete_prefix(redis_key)
                         if key_and_suffix is not None:
                             current_key = RedisHelper.get_key_with_suffix(cls_name, key_and_suffix[0], args,
                                                                           key_and_suffix[1])
-                            RedisHelper.pity_redis_client.delete(current_key)
+                            RedisHelper.argus_redis_client.delete(current_key)
                     except Exception as e:
                         logger.bind(name=None).warning(f"redis delete cache failed, skip. error={e}")
                     return new_data

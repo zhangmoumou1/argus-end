@@ -12,7 +12,7 @@ class BaseConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     LOG_DIR: ClassVar[str] = os.path.join(ROOT, "logs")
-    LOG_NAME: ClassVar[str] = os.path.join(LOG_DIR, "pity.log")
+    LOG_NAME: ClassVar[str] = os.path.join(LOG_DIR, "argus.log")
 
     SERVER_HOST: str = "0.0.0.0"
     SERVER_PORT: int
@@ -124,12 +124,12 @@ class BaseConfig(BaseSettings):
 
     SERVER_REPORT: ClassVar[str] = "http://localhost:8000"
 
-    OSS_URL: ClassVar[str] = "http://oss.pity.fun"
+    OSS_URL: ClassVar[str] = "http://oss.argus.fun"
 
     # 七牛云链接地址，如果采用七牛oss，需要自行替换
-    QINIU_URL: ClassVar[str] = "https://static.pity.fun"
+    QINIU_URL: ClassVar[str] = "https://static.argus.fun"
 
-    RELATION: ClassVar[str] = "pity_relation"
+    RELATION: ClassVar[str] = "argus_relation"
     ALIAS: ClassVar[str] = "__alias__"
     TABLE_TAG: ClassVar[str] = "__tag__"
     # 数据库表展示的变更字段
@@ -147,8 +147,8 @@ class BaseConfig(BaseSettings):
     RETRY_TIMES: ClassVar[int] = 1
 
     # 日志名
-    PITY_ERROR: ClassVar[str] = "pity_error"
-    PITY_INFO: ClassVar[str] = "pity_info"
+    ARGUS_ERROR: ClassVar[str] = "argus_error"
+    ARGUS_INFO: ClassVar[str] = "argus_info"
 
 
 class DevConfig(BaseConfig):
@@ -166,14 +166,14 @@ class ProConfig(BaseConfig):
         extra="ignore",
     )
 
-    SERVER_REPORT: ClassVar[str] = "https://pity.fun"
+    SERVER_REPORT: ClassVar[str] = "https://argus.fun"
     SERVER_HOST: str = "127.0.0.1"
 
 
-# 获取pity环境变量
-PITY_ENV = os.environ.get("pity_env", "dev")
-# 如果pity_env存在且为prod
-Config = ProConfig() if PITY_ENV and PITY_ENV.lower() == "pro" else DevConfig()
+# 获取argus环境变量
+ARGUS_ENV = os.environ.get("argus_env", "dev")
+# 如果argus_env存在且为prod
+Config = ProConfig() if ARGUS_ENV and ARGUS_ENV.lower() == "pro" else DevConfig()
 
 # init redis
 Config.REDIS_NODES = [

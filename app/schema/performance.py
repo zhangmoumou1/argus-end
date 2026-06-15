@@ -2,10 +2,10 @@ from typing import Any
 
 from pydantic.v1 import BaseModel, validator
 
-from app.schema.base import PityModel
+from app.schema.base import ArgusModel
 
 
-class PityPerformancePlanForm(BaseModel):
+class ArgusPerformancePlanForm(BaseModel):
     id: int = None
     project_id: int
     env: int
@@ -51,10 +51,10 @@ class PityPerformancePlanForm(BaseModel):
         "request_timeout_ms",
     )
     def fields_not_empty(cls, value):
-        return PityModel.not_empty(value)
+        return ArgusModel.not_empty(value)
 
 
-class PityPerformanceParameterValidateForm(BaseModel):
+class ArgusPerformanceParameterValidateForm(BaseModel):
     source_type: str = "api_asset"
     request_url: str = ""
     request_headers: str = "{}"

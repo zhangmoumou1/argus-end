@@ -4,11 +4,11 @@ from sqlalchemy import func, select
 
 from app.crud import Mapper, ModelWrapper
 from app.models import async_session
-from app.models.operation_log import PityOperationLog
+from app.models.operation_log import ArgusOperationLog
 
 
-@ModelWrapper(PityOperationLog)
-class PityOperationDao(Mapper):
+@ModelWrapper(ArgusOperationLog)
+class ArgusOperationDao(Mapper):
 
     @classmethod
     async def count_user_activities(cls, user_id, start_time: datetime, end_time: datetime):
@@ -21,9 +21,9 @@ class PityOperationDao(Mapper):
         """
         async with async_session() as session:
             async with session.begin():
-                sql = select(PityOperationLog.operate_time, func.count(PityOperationLog.id)).where(
-                    PityOperationLog.operate_time.between(start_time, end_time),
-                    PityOperationLog.user_id == user_id) \
-                    .group_by(PityOperationLog.operate_time).order_by(PityOperationLog.operate_time)
+                sql = select(ArgusOperationLog.operate_time, func.count(ArgusOperationLog.id)).where(
+                    ArgusOperationLog.operate_time.between(start_time, end_time),
+                    ArgusOperationLog.user_id == user_id) \
+                    .group_by(ArgusOperationLog.operate_time).order_by(ArgusOperationLog.operate_time)
                 data = await session.execute(sql)
                 return data.all()

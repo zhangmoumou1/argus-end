@@ -14,36 +14,36 @@ from app.core.request import get_convertor
 from app.core.request.generator import CaseGenerator
 from app.core.platform_task import PlatformTaskService
 from app.crud.config.GConfigDao import GConfigDao
-from app.crud.operation.PityOperationDao import PityOperationDao
+from app.crud.operation.ArgusOperationDao import ArgusOperationDao
 from app.crud.project.ProjectRoleDao import ProjectRoleDao
 from app.crud.test_case.ConstructorDao import ConstructorDao
 from app.crud.test_case.TestCaseAssertsDao import TestCaseAssertsDao
 from app.crud.test_case.TestCaseDao import TestCaseDao
-from app.crud.test_case.TestCaseDirectory import PityTestcaseDirectoryDao
-from app.crud.test_case.TestCaseOutParametersDao import PityTestCaseOutParametersDao
+from app.crud.test_case.TestCaseDirectory import ArgusTestcaseDirectoryDao
+from app.crud.test_case.TestCaseOutParametersDao import ArgusTestCaseOutParametersDao
 from app.crud.test_case.TestReport import TestReportDao
-from app.crud.test_case.TestcaseDataDao import PityTestcaseDataDao
+from app.crud.test_case.TestcaseDataDao import ArgusTestcaseDataDao
 from app.enums.OperationEnum import OperationType
 from app.enums.ConvertorEnum import CaseConvertorType
 from app.enums.platform_task import PlatformTaskType
 from app.exception.error import AuthError
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.middleware.RedisManager import RedisHelper
 from app.models import async_session
-from app.models.operation_log import PityOperationLog
-from app.models.interface_manage import PityApiEndpoint, PityApiEndpointVersion, PityApiEndpointSample, PityApiService
-from app.models.out_parameters import PityTestCaseOutParameters
+from app.models.operation_log import ArgusOperationLog
+from app.models.interface_manage import ArgusApiEndpoint, ArgusApiEndpointVersion, ArgusApiEndpointSample, ArgusApiService
+from app.models.out_parameters import ArgusTestCaseOutParameters
 from app.models.test_case import TestCase
-from app.models.test_plan import PityTestPlan
+from app.models.test_plan import ArgusTestPlan
 from app.models.project import Project
-from app.models.testcase_directory import PityTestcaseDirectory
+from app.models.testcase_directory import ArgusTestcaseDirectory
 from app.routers import Permission, get_session
 from app.schema.constructor import ConstructorForm, ConstructorIndex
-from app.schema.testcase_data import PityTestcaseDataForm
-from app.schema.testcase_directory import PityTestcaseDirectoryForm, PityMoveTestCaseDto, \
-    PityTestcaseDirectoryUpdateForm
-from app.schema.testcase_out_parameters import PityTestCaseOutParametersForm, PityTestCaseParametersDto, \
-    PityTestCaseVariablesDto
+from app.schema.testcase_data import ArgusTestcaseDataForm
+from app.schema.testcase_directory import ArgusTestcaseDirectoryForm, ArgusMoveTestCaseDto, \
+    ArgusTestcaseDirectoryUpdateForm
+from app.schema.testcase_out_parameters import ArgusTestCaseOutParametersForm, ArgusTestCaseParametersDto, \
+    ArgusTestCaseVariablesDto
 from app.schema.testcase_schema import TestCaseAssertsForm, TestCaseForm, TestCaseInfo, TestCaseGeneratorForm
 from app.utils.logger import Log
 from config import Config
@@ -815,16 +815,16 @@ def ensure_flow_dependencies(payload, context):
 
 async def ensure_ai_interface_columns(session):
     for sql in [
-        "ALTER TABLE pity_api_service ADD COLUMN developer VARCHAR(128) NULL COMMENT '开发人员'",
-        "ALTER TABLE pity_api_service ADD COLUMN tester VARCHAR(128) NULL COMMENT '测试人员'",
-        "ALTER TABLE pity_api_endpoint ADD COLUMN module_name VARCHAR(128) NOT NULL DEFAULT '默认模块' COMMENT '功能模块'",
-        "ALTER TABLE pity_api_endpoint ADD COLUMN endpoint_status VARCHAR(16) NOT NULL DEFAULT 'available' COMMENT '接口状态'",
-        "ALTER TABLE pity_api_endpoint ADD COLUMN request_headers LONGTEXT NULL COMMENT '请求头'",
-        "ALTER TABLE pity_api_endpoint ADD COLUMN current_version_id INT NOT NULL DEFAULT 0 COMMENT '当前版本ID'",
-        "ALTER TABLE pity_api_endpoint ADD COLUMN current_version_no VARCHAR(32) NOT NULL DEFAULT 'v1' COMMENT '当前版本号'",
-        "ALTER TABLE pity_api_endpoint_version ADD COLUMN module_name VARCHAR(128) NOT NULL DEFAULT '默认模块' COMMENT '功能模块'",
-        "ALTER TABLE pity_api_endpoint_version ADD COLUMN endpoint_status VARCHAR(16) NOT NULL DEFAULT 'available' COMMENT '接口状态'",
-        "ALTER TABLE pity_api_endpoint_version ADD COLUMN request_headers LONGTEXT NULL COMMENT '请求头'",
+        "ALTER TABLE argus_api_service ADD COLUMN developer VARCHAR(128) NULL COMMENT '开发人员'",
+        "ALTER TABLE argus_api_service ADD COLUMN tester VARCHAR(128) NULL COMMENT '测试人员'",
+        "ALTER TABLE argus_api_endpoint ADD COLUMN module_name VARCHAR(128) NOT NULL DEFAULT '默认模块' COMMENT '功能模块'",
+        "ALTER TABLE argus_api_endpoint ADD COLUMN endpoint_status VARCHAR(16) NOT NULL DEFAULT 'available' COMMENT '接口状态'",
+        "ALTER TABLE argus_api_endpoint ADD COLUMN request_headers LONGTEXT NULL COMMENT '请求头'",
+        "ALTER TABLE argus_api_endpoint ADD COLUMN current_version_id INT NOT NULL DEFAULT 0 COMMENT '当前版本ID'",
+        "ALTER TABLE argus_api_endpoint ADD COLUMN current_version_no VARCHAR(32) NOT NULL DEFAULT 'v1' COMMENT '当前版本号'",
+        "ALTER TABLE argus_api_endpoint_version ADD COLUMN module_name VARCHAR(128) NOT NULL DEFAULT '默认模块' COMMENT '功能模块'",
+        "ALTER TABLE argus_api_endpoint_version ADD COLUMN endpoint_status VARCHAR(16) NOT NULL DEFAULT 'available' COMMENT '接口状态'",
+        "ALTER TABLE argus_api_endpoint_version ADD COLUMN request_headers LONGTEXT NULL COMMENT '请求头'",
     ]:
         try:
             await session.execute(text(sql))
@@ -840,28 +840,28 @@ async def build_endpoint_context(session, form):
     endpoint_ids = form.get("endpoint_ids") or []
     service = None
     if service_id:
-        service = (await session.execute(select(PityApiService).where(PityApiService.id == service_id))).scalars().first()
+        service = (await session.execute(select(ArgusApiService).where(ArgusApiService.id == service_id))).scalars().first()
     versions = []
     if version_ids:
-        result = await session.execute(select(PityApiEndpointVersion).where(PityApiEndpointVersion.id.in_(version_ids)))
+        result = await session.execute(select(ArgusApiEndpointVersion).where(ArgusApiEndpointVersion.id.in_(version_ids)))
         version_map = {item.id: item for item in result.scalars().all()}
         versions = [version_map[item] for item in version_ids if item in version_map]
     elif endpoint_ids:
-        result = await session.execute(select(PityApiEndpoint).where(PityApiEndpoint.id.in_(endpoint_ids)))
+        result = await session.execute(select(ArgusApiEndpoint).where(ArgusApiEndpoint.id.in_(endpoint_ids)))
         endpoint_map = {item.id: item for item in result.scalars().all()}
         endpoints = [endpoint_map[item] for item in endpoint_ids if item in endpoint_map]
         version_id_list = [item.current_version_id for item in endpoints if item.current_version_id]
         if version_id_list:
-            result = await session.execute(select(PityApiEndpointVersion).where(PityApiEndpointVersion.id.in_(version_id_list)))
+            result = await session.execute(select(ArgusApiEndpointVersion).where(ArgusApiEndpointVersion.id.in_(version_id_list)))
             version_map = {item.id: item for item in result.scalars().all()}
             versions = [version_map[item] for item in version_id_list if item in version_map]
     endpoint_id_list = [item.endpoint_id for item in versions if item.endpoint_id]
     sample_map = {}
     if endpoint_id_list:
         sample_result = await session.execute(
-            select(PityApiEndpointSample).where(
-                PityApiEndpointSample.endpoint_id.in_(endpoint_id_list),
-                PityApiEndpointSample.deleted_at == 0,
+            select(ArgusApiEndpointSample).where(
+                ArgusApiEndpointSample.endpoint_id.in_(endpoint_id_list),
+                ArgusApiEndpointSample.deleted_at == 0,
             )
         )
         sample_map = {item.endpoint_id: item for item in sample_result.scalars().all()}
@@ -942,7 +942,7 @@ def to_assert_form(raw):
 
 
 def to_out_parameter_form(raw):
-    return PityTestCaseOutParametersForm(
+    return ArgusTestCaseOutParametersForm(
         name=str(raw.get("name") or "ai_var")[:64],
         expression=str(raw.get("expression") or raw.get("actually") or ""),
         match_index=str(raw.get("match_index") or "0"),
@@ -990,10 +990,10 @@ def to_testcase_info(raw_case, directory_id):
 async def ai_generate_flow_preview(form: dict, user_info=Depends(Permission()), session=Depends(get_session)):
     try:
         if not form.get("directory_id"):
-            return PityResponse.failed("请先选择用例目录")
+            return ArgusResponse.failed("请先选择用例目录")
         context = await build_endpoint_context(session, form)
         if not context.get("endpoints"):
-            return PityResponse.failed("请至少选择一个接口版本")
+            return ArgusResponse.failed("请至少选择一个接口版本")
         ai_config = await GConfigDao.get_active_ai_model_config()
         try:
             payload = call_kimi_for_flow_cases(context, ai_config)
@@ -1032,7 +1032,7 @@ async def ai_generate_flow_preview(form: dict, user_info=Depends(Permission()), 
                     item["body"] = matched.get("sample_request_body_raw")
                     item["body_type"] = 1 if str(item.get("request_method") or "").upper() in ("POST", "PUT", "PATCH") else 0
         log_payload = build_ai_flow_preview_operation_log(form, context, normalized)
-        session.add(PityOperationLog(
+        session.add(ArgusOperationLog(
             user_info["id"],
             OperationType.EXECUTE,
             log_payload["title"],
@@ -1041,9 +1041,9 @@ async def ai_generate_flow_preview(form: dict, user_info=Depends(Permission()), 
             int(form.get("directory_id") or 0),
         ))
         await session.commit()
-        return PityResponse.success(normalized)
+        return ArgusResponse.success(normalized)
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.post("/ai-generate/flow-save", summary="保存AI生成流程接口场景")
@@ -1052,24 +1052,24 @@ async def ai_generate_flow_save(form: dict, user_info=Depends(Permission()), ses
         directory_id = int(form.get("directory_id") or 0)
         cases = form.get("cases") or []
         if not directory_id:
-            return PityResponse.failed("请先选择用例目录")
+            return ArgusResponse.failed("请先选择用例目录")
         if not cases:
-            return PityResponse.failed("请选择需要保存的用例")
+            return ArgusResponse.failed("请选择需要保存的用例")
         saved_ids = []
         async with session.begin():
             for raw_case in cases:
                 info = to_testcase_info(raw_case, directory_id)
                 case_id = await TestCaseDao.insert_test_case(session, info, user_info['id'])
                 saved_ids.append(case_id)
-        return PityResponse.success({"saved_ids": saved_ids, "count": len(saved_ids)})
+        return ArgusResponse.success({"saved_ids": saved_ids, "count": len(saved_ids)})
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.get("/list")
 async def list_testcase(directory_id: int = None, name: str = "", url: str = "", create_user: str = ''):
     data = await TestCaseDao.list_test_case(directory_id, name, url, create_user)
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.post("/insert")
@@ -1077,29 +1077,29 @@ async def insert_testcase(data: TestCaseForm, user_info=Depends(Permission())):
     try:
         record = await TestCaseDao.query_record(name=data.name, directory_id=data.directory_id)
         if record is not None:
-            return PityResponse.failed("用例已存在")
+            return ArgusResponse.failed("用例已存在")
         model = TestCase(**data.dict(), create_user=user_info['id'])
         model = await TestCaseDao.insert(model=model, log=True)
-        return PityResponse.success(model.id)
+        return ArgusResponse.success(model.id)
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.post("/create", summary="创建接口测试用例")
 async def create_testcase(data: TestCaseInfo, user_info=Depends(Permission()), session=Depends(get_session)):
     async with session.begin():
         await TestCaseDao.insert_test_case(session, data, user_info['id'])
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/update")
 async def update_testcase(form: TestCaseForm, user_info=Depends(Permission())):
     try:
         data = await TestCaseDao.update_test_case(form, user_info['id'])
-        result = await PityTestCaseOutParametersDao.update_many(form.id, form.out_parameters, user_info['id'])
-        return PityResponse.success(dict(case_info=data, out_parameters=result))
+        result = await ArgusTestCaseOutParametersDao.update_many(form.id, form.out_parameters, user_info['id'])
+        return ArgusResponse.success(dict(case_info=data, out_parameters=result))
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.delete("/delete", description="删除测试用例")
@@ -1108,85 +1108,85 @@ async def delete_testcase(id_list: List[int], user_info=Depends(Permission()), s
         async with session.begin():
             await TestCaseDao.delete_records(session, user_info['id'], id_list, log=True)
             await TestCaseAssertsDao.delete_records(session, user_info['id'], id_list, column="case_id", log=True)
-            await PityTestcaseDataDao.delete_records(session, user_info['id'], id_list, column="case_id", log=True)
-            return PityResponse.success()
+            await ArgusTestcaseDataDao.delete_records(session, user_info['id'], id_list, column="case_id", log=True)
+            return ArgusResponse.success()
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.get("/query")
 async def query_testcase(caseId: int, _=Depends(Permission())):
     try:
         data = await TestCaseDao.query_test_case(caseId)
-        return PityResponse.success(PityResponse.dict_model_to_dict(data))
+        return ArgusResponse.success(ArgusResponse.dict_model_to_dict(data))
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.post("/asserts/insert")
 async def insert_testcase_asserts(data: TestCaseAssertsForm, user_info=Depends(Permission())):
     try:
         new_assert = await TestCaseAssertsDao.insert_test_case_asserts(data, user_id=user_info["id"])
-        return PityResponse.success(new_assert)
+        return ArgusResponse.success(new_assert)
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.post("/asserts/update")
 async def update_testcase_asserts(data: TestCaseAssertsForm, user_info=Depends(Permission())):
     try:
         updated = await TestCaseAssertsDao.update_test_case_asserts(data, user_id=user_info["id"])
-        return PityResponse.success(updated)
+        return ArgusResponse.success(updated)
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.get("/asserts/delete")
 async def delete_testcase_asserts(id: int, user_info=Depends(Permission())):
     await TestCaseAssertsDao.delete_test_case_asserts(id, user_id=user_info["id"])
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/constructor/insert")
 async def insert_constructor(data: ConstructorForm, user_info=Depends(Permission())):
     await ConstructorDao.insert_constructor(data, user_id=user_info["id"])
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/constructor/update")
 async def update_constructor(data: ConstructorForm, user_info=Depends(Permission())):
     await ConstructorDao.update_constructor(data, user_id=user_info["id"])
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.get("/constructor/delete")
 async def delete_constructor(id: int, user_info=Depends(Permission())):
     await ConstructorDao.delete_constructor(id, user_id=user_info["id"])
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/constructor/order")
 async def update_constructor_index(data: List[ConstructorIndex], user_info=Depends(Permission())):
     await ConstructorDao.update_constructor_index(data)
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.get("/constructor/tree")
 async def get_constructor_tree(suffix: bool, name: str = "", user_info=Depends(Permission())):
     result = await ConstructorDao.get_constructor_tree(name, suffix)
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)
 
 
 @router.get("/constructor")
 async def get_constructor(id: int, user_info=Depends(Permission())):
     result = await ConstructorDao.get_constructor_data(id)
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)
 
 
 @router.get("/constructor/list")
 async def list_case_and_constructor(constructor_type: int, suffix: bool):
     ans = await ConstructorDao.get_case_and_constructor(constructor_type, suffix)
-    return PityResponse.success(ans)
+    return ArgusResponse.success(ans)
 
 
 def _apply_report_list_style_status(report):
@@ -1270,7 +1270,7 @@ async def query_report(id: int, status: int = Query(default=None), user_info=Dep
         if report.plan_id:
             async with async_session() as session:
                 plan_row = await session.execute(
-                    select(PityTestPlan.project_id).where(PityTestPlan.id == report.plan_id, PityTestPlan.deleted_at == 0)
+                    select(ArgusTestPlan.project_id).where(ArgusTestPlan.id == report.plan_id, ArgusTestPlan.deleted_at == 0)
                 )
                 plan_result = plan_row.first()
                 if plan_result:
@@ -1281,7 +1281,7 @@ async def query_report(id: int, status: int = Query(default=None), user_info=Dep
                     project_name = proj_result[0] if proj_result else None
     if status is not None:
         case_list = [item for item in case_list if getattr(item, "status", None) == status]
-    return PityResponse.success(dict(report=report, plan_name=plan_name, case_list=case_list, project_name=project_name))
+    return ArgusResponse.success(dict(report=report, plan_name=plan_name, case_list=case_list, project_name=project_name))
 
 
 @router.get("/report/list")
@@ -1296,8 +1296,8 @@ async def list_report(page: int, size: int, start_time: str, end_time: str, exec
         async with async_session() as session:
             result = await session.execute(text(
                 "SELECT DISTINCT r.report_id "
-                "FROM pity_test_result r "
-                "JOIN pity_testcase c ON c.id = r.case_id "
+                "FROM argus_test_result r "
+                "JOIN argus_testcase c ON c.id = r.case_id "
                 "WHERE r.deleted_at = 0 AND c.deleted_at = 0 AND c.api_pending_update = 1 "
                 f"AND r.report_id IN ({','.join([str(x) for x in report_ids])})"
             ))
@@ -1305,18 +1305,18 @@ async def list_report(page: int, size: int, start_time: str, end_time: str, exec
     for item in report_list:
         _apply_report_list_style_status(item)
         item.pending_review = 1 if int(getattr(item, "id", 0) or 0) in pending_report_ids else 0
-    return PityResponse.success_with_size(data=report_list, total=total)
+    return ArgusResponse.success_with_size(data=report_list, total=total)
 
 
 @router.post("/report/stop")
 async def stop_report(payload: dict, _=Depends(Permission())):
     report_id = int((payload or {}).get("id") or (payload or {}).get("report_id") or 0)
     if report_id <= 0:
-        return PityResponse.failed("report_id不能为空")
+        return ArgusResponse.failed("report_id不能为空")
     stopped = await TestReportDao.stop(report_id)
     if not stopped:
-        return PityResponse.failed("当前报告不是运行中状态，无法停止")
-    return PityResponse.success({"id": report_id, "status": 2, "stopped": True})
+        return ArgusResponse.failed("当前报告不是运行中状态，无法停止")
+    return ArgusResponse.success({"id": report_id, "status": 2, "stopped": True})
 
 
 @router.get("/pending-review/list")
@@ -1327,11 +1327,11 @@ async def list_pending_review_cases(project_id: int = None, url: str = "", creat
             filters = [
                 TestCase.deleted_at == 0,
                 TestCase.api_pending_update == 1,
-                PityTestcaseDirectory.id == TestCase.directory_id,
-                PityTestcaseDirectory.deleted_at == 0,
+                ArgusTestcaseDirectory.id == TestCase.directory_id,
+                ArgusTestcaseDirectory.deleted_at == 0,
             ]
             if project_id is not None:
-                filters.append(PityTestcaseDirectory.project_id == project_id)
+                filters.append(ArgusTestcaseDirectory.project_id == project_id)
             if url:
                 filters.append(TestCase.url.like(f"%{url}%"))
             if create_user is not None:
@@ -1344,19 +1344,19 @@ async def list_pending_review_cases(project_id: int = None, url: str = "", creat
                         TestCase.url,
                         TestCase.create_user,
                         TestCase.directory_id,
-                        PityTestcaseDirectory.project_id,
-                        PityApiService.name.label("service_name"),
-                        PityApiEndpoint.name.label("endpoint_name"),
+                        ArgusTestcaseDirectory.project_id,
+                        ArgusApiService.name.label("service_name"),
+                        ArgusApiEndpoint.name.label("endpoint_name"),
                     )
                     .select_from(TestCase)
-                    .join(PityTestcaseDirectory, PityTestcaseDirectory.id == TestCase.directory_id)
-                    .outerjoin(PityApiService, PityApiService.id == TestCase.api_service_id)
-                    .outerjoin(PityApiEndpoint, PityApiEndpoint.id == TestCase.api_endpoint_id)
+                    .join(ArgusTestcaseDirectory, ArgusTestcaseDirectory.id == TestCase.directory_id)
+                    .outerjoin(ArgusApiService, ArgusApiService.id == TestCase.api_service_id)
+                    .outerjoin(ArgusApiEndpoint, ArgusApiEndpoint.id == TestCase.api_endpoint_id)
                     .where(*filters)
                     .order_by(TestCase.updated_at.desc(), TestCase.id.desc())
                 )
             ).all()
-            return PityResponse.success([
+            return ArgusResponse.success([
                 {
                     "id": item.id,
                     "name": item.name,
@@ -1370,25 +1370,25 @@ async def list_pending_review_cases(project_id: int = None, url: str = "", creat
                 for item in rows
             ])
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.get("/xmind")
 async def get_xmind_data(case_id: int, user_info=Depends(Permission())):
     tree_data = await TestCaseDao.get_xmind_data(case_id)
-    return PityResponse.success(tree_data)
+    return ArgusResponse.success(tree_data)
 
 
 @router.get("/directory")
 async def get_testcase_directory(project_id: int, move: bool = False, user_info=Depends(Permission())):
-    tree_data, _ = await PityTestcaseDirectoryDao.get_directory_tree(project_id, move=move)
-    return PityResponse.success(tree_data)
+    tree_data, _ = await ArgusTestcaseDirectoryDao.get_directory_tree(project_id, move=move)
+    return ArgusResponse.success(tree_data)
 
 
 @router.get("/tree")
 async def get_directory_and_case(project_id: int, user_info=Depends(Permission())):
     try:
-        tree_data, cs_map = await PityTestcaseDirectoryDao.get_directory_tree(project_id,
+        tree_data, cs_map = await ArgusTestcaseDirectoryDao.get_directory_tree(project_id,
                                                                               TestCaseDao.get_test_case_by_directory_id)
         pending_map = {}
         case_ids = [int(case_id) for case_id in cs_map.keys()]
@@ -1402,79 +1402,79 @@ async def get_directory_and_case(project_id: int, user_info=Depends(Permission()
                     )
                 )
                 pending_map = {int(case_id): 1 for case_id, in rows.all()}
-        return PityResponse.success(dict(tree=tree_data, case_map=cs_map, pending_map=pending_map))
+        return ArgusResponse.success(dict(tree=tree_data, case_map=cs_map, pending_map=pending_map))
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.get("/directory/query")
 async def query_testcase_directory(directory_id: int, user_info=Depends(Permission())):
     try:
-        data = await PityTestcaseDirectoryDao.query_directory(directory_id)
+        data = await ArgusTestcaseDirectoryDao.query_directory(directory_id)
         await ProjectRoleDao.read_permission(data.project_id, user_info["id"], user_info['role'])
-        return PityResponse.success(data)
+        return ArgusResponse.success(data)
     except AuthError:
-        return PityResponse.forbidden()
+        return ArgusResponse.forbidden()
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.post("/directory/insert")
-async def insert_testcase_directory(form: PityTestcaseDirectoryForm, user_info=Depends(Permission())):
+async def insert_testcase_directory(form: ArgusTestcaseDirectoryForm, user_info=Depends(Permission())):
     try:
-        await PityTestcaseDirectoryDao.insert_directory(form, user_info['id'])
-        return PityResponse.success()
+        await ArgusTestcaseDirectoryDao.insert_directory(form, user_info['id'])
+        return ArgusResponse.success()
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.post("/directory/update")
-async def update_testcase_directory(form: PityTestcaseDirectoryUpdateForm, user_info=Depends(Permission())):
+async def update_testcase_directory(form: ArgusTestcaseDirectoryUpdateForm, user_info=Depends(Permission())):
     try:
-        await PityTestcaseDirectoryDao.update_directory(form, user_info['id'])
-        return PityResponse.success()
+        await ArgusTestcaseDirectoryDao.update_directory(form, user_info['id'])
+        return ArgusResponse.success()
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.get("/directory/delete")
 async def delete_testcase_directory(id: int, user_info=Depends(Permission())):
     try:
-        await PityTestcaseDirectoryDao.delete_directory(id, user_info['id'])
-        return PityResponse.success()
+        await ArgusTestcaseDirectoryDao.delete_directory(id, user_info['id'])
+        return ArgusResponse.success()
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.post("/data/insert")
-async def insert_testcase_data(form: PityTestcaseDataForm, user_info=Depends(Permission())):
+async def insert_testcase_data(form: ArgusTestcaseDataForm, user_info=Depends(Permission())):
     try:
-        data = await PityTestcaseDataDao.insert_testcase_data(form, user_info['id'])
-        return PityResponse.success(data)
+        data = await ArgusTestcaseDataDao.insert_testcase_data(form, user_info['id'])
+        return ArgusResponse.success(data)
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.post("/data/update")
-async def update_testcase_data(form: PityTestcaseDataForm, user_info=Depends(Permission())):
+async def update_testcase_data(form: ArgusTestcaseDataForm, user_info=Depends(Permission())):
     try:
-        data = await PityTestcaseDataDao.update_testcase_data(form, user_info['id'])
-        return PityResponse.success(data)
+        data = await ArgusTestcaseDataDao.update_testcase_data(form, user_info['id'])
+        return ArgusResponse.success(data)
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.get("/data/delete")
 async def delete_testcase_data(id: int, user_info=Depends(Permission())):
     try:
-        await PityTestcaseDataDao.delete_testcase_data(id, user_info['id'])
-        return PityResponse.success()
+        await ArgusTestcaseDataDao.delete_testcase_data(id, user_info['id'])
+        return ArgusResponse.success()
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.post("/move", description="移动case到其他目录")
-async def move_testcase(form: PityMoveTestCaseDto, user_info=Depends(Permission())):
+async def move_testcase(form: ArgusMoveTestCaseDto, user_info=Depends(Permission())):
     try:
         await ProjectRoleDao.read_permission(form.project_id, user_info["id"], user_info['role'])
         await TestCaseDao.update_by_map(
@@ -1497,7 +1497,7 @@ async def move_testcase(form: PityMoveTestCaseDto, user_info=Depends(Permission(
                     },
                     __show__=2,
                 )
-                await PityOperationDao.insert_log(
+                await ArgusOperationDao.insert_log(
                     session,
                     user_info["id"],
                     OperationType.UPDATE,
@@ -1505,11 +1505,11 @@ async def move_testcase(form: PityMoveTestCaseDto, user_info=Depends(Permission(
                     key=form.directory_id,
                     changed=["target_directory", "move_count"],
                 )
-        return PityResponse.success()
+        return ArgusResponse.success()
     except AuthError:
-        return PityResponse.forbidden()
+        return ArgusResponse.forbidden()
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.post("/copy", description="复制case到其他项目目录")
@@ -1519,9 +1519,9 @@ async def copy_testcase(form: dict, user_info=Depends(Permission())):
         project_id = int(form.get("project_id") or 0)
         directory_id = int(form.get("directory_id") or 0)
         if not id_list:
-            return PityResponse.failed("请选择需要复制的用例")
+            return ArgusResponse.failed("请选择需要复制的用例")
         if not project_id or not directory_id:
-            return PityResponse.failed("请选择目标项目和目标目录")
+            return ArgusResponse.failed("请选择目标项目和目标目录")
         await ProjectRoleDao.read_permission(project_id, user_info["id"], user_info['role'])
         new_ids = await TestCaseDao.copy_test_cases(id_list, directory_id, user_info['id'])
         async with async_session() as session:
@@ -1538,7 +1538,7 @@ async def copy_testcase(form: dict, user_info=Depends(Permission())):
                     },
                     __show__=2,
                 )
-                await PityOperationDao.insert_log(
+                await ArgusOperationDao.insert_log(
                     session,
                     user_info["id"],
                     OperationType.INSERT,
@@ -1546,46 +1546,46 @@ async def copy_testcase(form: dict, user_info=Depends(Permission())):
                     key=directory_id,
                     changed=["target_directory", "copy_count"],
                 )
-        return PityResponse.success({"id_list": new_ids, "count": len(new_ids)})
+        return ArgusResponse.success({"id_list": new_ids, "count": len(new_ids)})
     except AuthError:
-        return PityResponse.forbidden()
+        return ArgusResponse.forbidden()
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.post("/parameters/insert")
-async def insert_testcase_out_parameters(form: PityTestCaseParametersDto, user_info=Depends(Permission())):
-    query = await PityTestCaseOutParametersDao.query_record(name=form.name, case_id=form.case_id)
+async def insert_testcase_out_parameters(form: ArgusTestCaseParametersDto, user_info=Depends(Permission())):
+    query = await ArgusTestCaseOutParametersDao.query_record(name=form.name, case_id=form.case_id)
     if query is not None:
-        return PityResponse.failed("参数名称已存在")
-    data = PityTestCaseOutParameters(**form.dict(), user_id=user_info['id'])
-    data = await PityTestCaseOutParametersDao.insert(model=data, log=True)
-    return PityResponse.success(data)
+        return ArgusResponse.failed("参数名称已存在")
+    data = ArgusTestCaseOutParameters(**form.dict(), user_id=user_info['id'])
+    data = await ArgusTestCaseOutParametersDao.insert(model=data, log=True)
+    return ArgusResponse.success(data)
 
 
 @router.post("/parameters/update/batch", summary="批量更新出参数据")
-async def update_batch_testcase_out_parameters(case_id: int, form: List[PityTestCaseOutParametersForm],
+async def update_batch_testcase_out_parameters(case_id: int, form: List[ArgusTestCaseOutParametersForm],
                                                user_info=Depends(Permission())):
-    result = await PityTestCaseOutParametersDao.update_many(case_id, form, user_info['id'])
-    return PityResponse.success(result)
+    result = await ArgusTestCaseOutParametersDao.update_many(case_id, form, user_info['id'])
+    return ArgusResponse.success(result)
 
 
 @router.post("/parameters/update")
-async def update_testcase_out_parameters(form: PityTestCaseOutParametersForm, user_info=Depends(Permission())):
-    data = await PityTestCaseOutParametersDao.update_record_by_id(user_info['id'], form, log=True)
-    return PityResponse.success(data)
+async def update_testcase_out_parameters(form: ArgusTestCaseOutParametersForm, user_info=Depends(Permission())):
+    data = await ArgusTestCaseOutParametersDao.update_record_by_id(user_info['id'], form, log=True)
+    return ArgusResponse.success(data)
 
 
 @router.get("/parameters/delete")
 async def delete_testcase_out_parameters(id: int, user_info=Depends(Permission()), session=Depends(get_session)):
-    await PityTestCaseOutParametersDao.delete_record_by_id(session, user_info['id'], id, log=True)
-    return PityResponse.success()
+    await ArgusTestCaseOutParametersDao.delete_record_by_id(session, user_info['id'], id, log=True)
+    return ArgusResponse.success()
 
 
 @router.get("/record/start", summary="开始录制接口请求")
 async def record_requests(request: Request, regex: str, user_info=Depends(Permission())):
     await RedisHelper.set_address_record(user_info['id'], request.client.host, regex)
-    return PityResponse.success(msg="开始录制，可以在浏览器/app上操作啦！")
+    return ArgusResponse.success(msg="开始录制，可以在浏览器/app上操作啦！")
 
 
 @router.get("/record/stop", summary="停止录制接口请求")
@@ -1611,7 +1611,7 @@ async def record_requests(request: Request, user_info=Depends(Permission())):
             },
             max_retries=1,
         )
-    return PityResponse.success({
+    return ArgusResponse.success({
         "status": "stopped",
         "record_count": len(valid_requests),
         "auto_associate_enqueued": bool(platform_task),
@@ -1629,13 +1629,13 @@ async def record_requests(request: Request, _=Depends(Permission())):
         regex = record_data.get('regex', '')
         status = True
     data = await RedisHelper.list_record_data(request.client.host)
-    return PityResponse.success(dict(data=data, regex=regex, status=status))
+    return ArgusResponse.success(dict(data=data, regex=regex, status=status))
 
 
 @router.get("/record/remove", summary="删除录制接口")
 async def remove_record(index: int, request: Request, _=Depends(Permission())):
     await RedisHelper.remove_record_data(request.client.host, index)
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/record/remove/batch", summary="批量删除录制接口")
@@ -1644,13 +1644,13 @@ async def remove_record_batch(payload: dict, request: Request, _=Depends(Permiss
     valid_indexes = sorted({int(index) for index in index_list}, reverse=True)
     for index in valid_indexes:
         await RedisHelper.remove_record_data(request.client.host, index)
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/generate", summary="生成用例")
 async def generate_case(form: TestCaseGeneratorForm, user=Depends(Permission()), session=Depends(get_session)):
     if len(form.requests) == 0:
-        return PityResponse.failed("无http请求，请检查参数")
+        return ArgusResponse.failed("无http请求，请检查参数")
     if len(form.requests) > 1:
         created_cases = []
         async with session.begin():
@@ -1658,7 +1658,7 @@ async def generate_case(form: TestCaseGeneratorForm, user=Depends(Permission()),
                 case_info = TestCaseInfo(case=case_form)
                 ans = await TestCaseDao.insert_test_case(session, case_info, user['id'])
                 created_cases.append(ans)
-        return PityResponse.success({
+        return ArgusResponse.success({
             "directory_id": form.directory_id,
             "id": created_cases[0].id if created_cases else None,
             "ids": [item.id for item in created_cases],
@@ -1670,22 +1670,22 @@ async def generate_case(form: TestCaseGeneratorForm, user=Depends(Permission()),
     info = TestCaseInfo(constructor=constructors, case=cs)
     async with session.begin():
         ans = await TestCaseDao.insert_test_case(session, info, user['id'])
-        return PityResponse.success(ans)
+        return ArgusResponse.success(ans)
 
 
 @router.post("/import", summary="导入har或其他用例数据文件")
 async def convert_case(import_type: CaseConvertorType, file: UploadFile = File(...), _=Depends(Permission())):
     convert, file_ext = get_convertor(import_type)
     if convert is None:
-        return PityResponse.failed(f"不支持的导入数据")
+        return ArgusResponse.failed(f"不支持的导入数据")
     if not file.filename.endswith(f".{file_ext}"):
-        return PityResponse.failed(f"请传入{file_ext}后缀文件")
+        return ArgusResponse.failed(f"请传入{file_ext}后缀文件")
     requests = convert(file.file)
-    return PityResponse.success(requests)
+    return ArgusResponse.success(requests)
 
 
 @router.post("/variables", summary="根据前后置步骤查询变量名", tags=["测试用例"])
-async def query_variables(steps: List[PityTestCaseVariablesDto], session=Depends(get_session)):
+async def query_variables(steps: List[ArgusTestCaseVariablesDto], session=Depends(get_session)):
     var_list = list()
     await TestCaseDao.query_test_case_out_parameters(session, steps, var_list=var_list)
-    return PityResponse.success(var_list)
+    return ArgusResponse.success(var_list)

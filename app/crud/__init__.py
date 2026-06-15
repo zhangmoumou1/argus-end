@@ -21,18 +21,18 @@ from app.enums.ProjectEnum import ProjectRoleEnum
 from app.exception.database import DBError
 from app.middleware.RedisManager import RedisHelper
 from app.models import Base, async_session, async_engine
-from app.models.address import PityGateway
-from app.models.basic import PityRelationField, init_relation, PityBase
+from app.models.address import ArgusGateway
+from app.models.basic import ArgusRelationField, init_relation, ArgusBase
 from app.models.environment import Environment
 from app.models.gconfig import GConfig
-from app.models.operation_log import PityOperationLog
-from app.models.platform_task import PityPlatformAuditLog, PityPlatformTask
+from app.models.operation_log import ArgusOperationLog
+from app.models.platform_task import ArgusPlatformAuditLog, ArgusPlatformTask
 from app.models.project import Project
 from app.models.project_role import ProjectRole
-from app.models.redis_config import PityRedis
-from app.models.runtime_variable import PityRuntimeVariable
+from app.models.redis_config import ArgusRedis
+from app.models.runtime_variable import ArgusRuntimeVariable
 from app.models.test_case import TestCase
-from app.models.test_plan import PityTestPlan
+from app.models.test_plan import ArgusTestPlan
 from app.models.testcase_asserts import TestCaseAsserts
 from app.models.user import User
 from app.utils.logger import Log
@@ -107,8 +107,8 @@ def connect(transaction: Transaction = False):
 
 # Mapper单表类，类似mybatis-plus
 class Mapper(object):
-    __log__ = Log("PityBase")
-    __model__ = PityBase
+    __log__ = Log("ArgusBase")
+    __model__ = ArgusBase
     __log_description_max_len__ = 3500
 
     @classmethod
@@ -286,7 +286,7 @@ class Mapper(object):
     @classmethod
     @RedisHelper.up_cache("dao")
     @connect(True)
-    async def insert(cls, *, model: PityBase, session: AsyncSession = None, log=False, not_begin=False):
+    async def insert(cls, *, model: ArgusBase, session: AsyncSession = None, log=False, not_begin=False):
         session.add(model)
         await session.flush()
         session.expunge(model)
@@ -402,7 +402,7 @@ class Mapper(object):
             diff_data = cls._compact_log_diff(diff)
             if len(diff_data) > cls.__log_description_max_len__:
                 diff_data = f"{diff_data[:cls.__log_description_max_len__]}...(日志已截断)"
-        model = PityOperationLog(user, mode, "&".join(title), tag, diff_data, key)
+        model = ArgusOperationLog(user, mode, "&".join(title), tag, diff_data, key)
         session.add(model)
 
     @classmethod
@@ -475,7 +475,7 @@ class Mapper(object):
         return field
 
     @classmethod
-    async def get_field_alias(cls, session, relation: Tuple[PityRelationField], name, now, old=None):
+    async def get_field_alias(cls, session, relation: Tuple[ArgusRelationField], name, now, old=None):
         alias = getattr(now, Config.ALIAS, {})
         current_value = getattr(now, name, None)
         current_value = cls.get_json_field(current_value)
@@ -615,21 +615,21 @@ async def _run_runtime_schema_patches():
         await ensure_mock_config_schema(session)
 
 
-init_relation(ProjectRole, PityRelationField(ProjectRole.user_id, (User.id, User.name)),
-              PityRelationField(ProjectRole.project_id, (Project.id, Project.name)),
-              PityRelationField(ProjectRole.project_role, ProjectRoleEnum.name))
+init_relation(ProjectRole, ArgusRelationField(ProjectRole.user_id, (User.id, User.name)),
+              ArgusRelationField(ProjectRole.project_id, (Project.id, Project.name)),
+              ArgusRelationField(ProjectRole.project_role, ProjectRoleEnum.name))
 
-init_relation(PityRedis, PityRelationField(PityRedis.env, (Environment.id, Environment.name)))
+init_relation(ArgusRedis, ArgusRelationField(ArgusRedis.env, (Environment.id, Environment.name)))
 
-init_relation(PityTestPlan, PityRelationField(PityTestPlan.env, (Environment.id, Environment.name)),
-              PityRelationField(PityTestPlan.project_id, (Project.id, Project.name)),
-              PityRelationField(PityTestPlan.msg_type, PityTestPlan.get_msg_type),
-              PityRelationField(PityTestPlan.receiver, (User.id, User.name)))
+init_relation(ArgusTestPlan, ArgusRelationField(ArgusTestPlan.env, (Environment.id, Environment.name)),
+              ArgusRelationField(ArgusTestPlan.project_id, (Project.id, Project.name)),
+              ArgusRelationField(ArgusTestPlan.msg_type, ArgusTestPlan.get_msg_type),
+              ArgusRelationField(ArgusTestPlan.receiver, (User.id, User.name)))
 
 init_relation(TestCase)
 
-init_relation(TestCaseAsserts, PityRelationField(TestCaseAsserts.case_id, (TestCase.id, TestCase.name)))
+init_relation(TestCaseAsserts, ArgusRelationField(TestCaseAsserts.case_id, (TestCase.id, TestCase.name)))
 
-init_relation(PityGateway, PityRelationField(PityGateway.env, (Environment.id, Environment.name)))
+init_relation(ArgusGateway, ArgusRelationField(ArgusGateway.env, (Environment.id, Environment.name)))
 
-init_relation(GConfig, PityRelationField(GConfig.env, (Environment.id, Environment.name)))
+init_relation(GConfig, ArgusRelationField(GConfig.env, (Environment.id, Environment.name)))

@@ -1,10 +1,10 @@
 from sqlalchemy import Column, INT, String, TEXT
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityRuntimeVariable(PityBase):
-    __tablename__ = "pity_runtime_variable"
+class ArgusRuntimeVariable(ArgusBase):
+    __tablename__ = "argus_runtime_variable"
 
     case_id = Column(INT, nullable=False, index=True, comment="产生变量的接口(case)ID")
     case_name = Column(String(128), nullable=True, comment="产生变量的接口(case)名称")

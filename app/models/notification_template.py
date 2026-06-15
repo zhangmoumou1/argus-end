@@ -1,10 +1,10 @@
 from sqlalchemy import SMALLINT, TEXT, VARCHAR, Column, BOOLEAN
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityNotificationTemplate(PityBase):
-    __tablename__ = "pity_notification_template"
+class ArgusNotificationTemplate(ArgusBase):
+    __tablename__ = "argus_notification_template"
     name = Column(VARCHAR(64), nullable=False, comment="模板名称")
     channel_type = Column(SMALLINT, nullable=False, comment="0=邮件 1=钉钉 2=企业微信 3=飞书")
     subject_template = Column(VARCHAR(256), nullable=True, comment="主题模板")

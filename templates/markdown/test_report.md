@@ -1,4 +1,4 @@
-#### 🔊亲爱的pity用户: {notification_user}
+#### 🔊亲爱的argus用户: {notification_user}
 
 🎉 测试计划 <font color=#1890ff>{plan_name}</font> 执行完毕
 

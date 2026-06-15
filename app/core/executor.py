@@ -19,26 +19,26 @@ from app.core.paramters import parameters_parser
 from app.core.render import Render
 from app.core.ws_connection_manager import ws_manage
 from app.crud.auth.UserDao import UserDao
-from app.crud.config.AddressDao import PityGatewayDao
+from app.crud.config.AddressDao import ArgusGatewayDao
 from app.crud.config.EnvironmentDao import EnvironmentDao
 from app.crud.config.GConfigDao import GConfigDao
 from app.crud.project.ProjectDao import ProjectDao
 from app.crud.test_case.TestCaseAssertsDao import TestCaseAssertsDao
 from app.crud.test_case.TestCaseDao import TestCaseDao
-from app.crud.test_case.TestCaseOutParametersDao import PityTestCaseOutParametersDao
-from app.crud.test_case.TestPlan import PityTestPlanDao
+from app.crud.test_case.TestCaseOutParametersDao import ArgusTestCaseOutParametersDao
+from app.crud.test_case.TestPlan import ArgusTestPlanDao
 from app.crud.test_case.TestReport import TestReportDao
 from app.crud.test_case.TestResult import TestResultDao
-from app.crud.test_case.TestcaseDataDao import PityTestcaseDataDao
+from app.crud.test_case.TestcaseDataDao import ArgusTestcaseDataDao
 from app.enums.ConstructorEnum import ConstructorType
 from app.enums.GconfigEnum import GConfigParserEnum, GconfigType
 from app.enums.NoticeEnum import NoticeType
 from app.enums.RequestBodyEnum import BodyType
 from app.middleware.AsyncHttpClient import AsyncRequest
 from app.models.constructor import Constructor
-from app.models.out_parameters import PityTestCaseOutParameters
+from app.models.out_parameters import ArgusTestCaseOutParameters
 from app.models.project import Project
-from app.models.test_plan import PityTestPlan
+from app.models.test_plan import ArgusTestPlan
 from app.utils.case_logger import CaseLog
 from app.utils.decorator import case_log, lock
 from app.utils.gconfig_parser import StringGConfigParser, JSONGConfigParser, YamlGConfigParser
@@ -445,7 +445,7 @@ class Executor(object):
                 headers['Content-Type'] = "application/json; charset=UTF-8"
 
     @case_log
-    def extract_out_parameters(self, response_info, data: List[PityTestCaseOutParameters]):
+    def extract_out_parameters(self, response_info, data: List[ArgusTestCaseOutParameters]):
         """提取出参数据"""
         result = dict()
         for d in data:
@@ -505,7 +505,7 @@ class Executor(object):
             asserts = await TestCaseAssertsDao.async_list_test_case_asserts(case_id)
 
             # Step3: 获取出参信息
-            out_parameters = await PityTestCaseOutParametersDao.select_list(case_id=case_id)
+            out_parameters = await ArgusTestCaseOutParametersDao.select_list(case_id=case_id)
 
             # Step4: 执行前置条件
             await self.execute_constructors(env, path, case_params, constructors, case_info=case_info)
@@ -540,7 +540,7 @@ class Executor(object):
 
             # Step6: 替换base_path
             if case_info.base_path:
-                base_path = await PityGatewayDao.query_gateway(env, case_info.base_path)
+                base_path = await ArgusGatewayDao.query_gateway(env, case_info.base_path)
                 case_info.url = f"{base_path}{case_info.url}"
 
             response_info["url"] = case_info.url
@@ -661,7 +661,7 @@ class Executor(object):
                          runtime_user_id: int = 0):
         if await TestReportDao.is_stopped(report_id):
             return
-        test_data = await PityTestcaseDataDao.list_testcase_data_by_env(env, case_id)
+        test_data = await ArgusTestcaseDataDao.list_testcase_data_by_env(env, case_id)
         if not test_data:
             await Executor.run_with_test_data(env, data, report_id, case_id, params_pool, dict(), path,
                                               "默认数据", retry_minutes=retry_minutes,
@@ -809,7 +809,7 @@ class Executor(object):
             return result
 
     @staticmethod
-    async def notice(env: list, plan: PityTestPlan, project: Project, report_dict: dict, users: list):
+    async def notice(env: list, plan: ArgusTestPlan, project: Project, report_dict: dict, users: list):
         """
         消息通知方法，支持新旧双模式
         新模式：plan.notification_config_id 非空 -> 从通知配置读取渠道+模板+接收人
@@ -973,7 +973,7 @@ class Executor(object):
             await fs.send_msg(subject, content)
 
     @staticmethod
-    async def _notice_legacy(env: list, plan: PityTestPlan, project: Project, report_dict: dict, users: list):
+    async def _notice_legacy(env: list, plan: ArgusTestPlan, project: Project, report_dict: dict, users: list):
         """旧版通知方式，保持向后兼容"""
         for e in env:
             report_dict[e] = Executor.normalize_report_pass_rate(report_dict.get(e, {}))
@@ -998,7 +998,7 @@ class Executor(object):
                             Executor.log.debug("项目未配置钉钉通知机器人")
                             continue
                         ding = DingTalk(project.dingtalk_url)
-                        await ding.send_msg("pity测试报告", render_markdown, None, ding_users,
+                        await ding.send_msg("argus测试报告", render_markdown, None, ding_users,
                                             link=report_dict[e]['report_url'])
 
     @staticmethod
@@ -1026,13 +1026,13 @@ class Executor(object):
         :param executor:
         :return:
         """
-        plan = await PityTestPlanDao.query_test_plan(plan_id)
+        plan = await ArgusTestPlanDao.query_test_plan(plan_id)
         if plan is None:
             Executor.log.debug(f"测试计划: [{plan_id}]不存在")
             return
         try:
             # 设置为running
-            await PityTestPlanDao.update_test_plan_state(plan.id, 1)
+            await ArgusTestPlanDao.update_test_plan_state(plan.id, 1)
             project, _ = await ProjectDao.query_project(plan.project_id)
             env = list(map(int, plan.env.split(",")))
             case_list = list(map(int, plan.case_list.split(",")))
@@ -1042,7 +1042,7 @@ class Executor(object):
             await asyncio.gather(
                 *(Executor.run_multiple(executor, int(e), case_list, mode=1, retry_minutes=plan.retry_minutes,
                                         plan_id=plan.id, ordered=plan.ordered, report_dict=report_dict) for e in env))
-            await PityTestPlanDao.update_test_plan_state(plan.id, 0)
+            await ArgusTestPlanDao.update_test_plan_state(plan.id, 0)
             users = await UserDao.list_user_touch(*receiver)
             await Executor.notice(env, plan, project, report_dict, users)
             if executor != 0:
@@ -1061,7 +1061,7 @@ class Executor(object):
                 user = await UserDao.query_user(executor)
                 name = user.name if user is not None else "未知"
             else:
-                name = "pity机器人"
+                name = "argus机器人"
             st = time.perf_counter()
             # step1: 新增测试报告数据
             report_id = await TestReportDao.start(executor, env, mode, plan_id=plan_id)

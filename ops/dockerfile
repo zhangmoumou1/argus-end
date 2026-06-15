@@ -1,9 +1,9 @@
 FROM python:3.8 as builder
-WORKDIR /pity
+WORKDIR /argus
 COPY ./requirements.txt ./requirements.txt
-RUN python -m venv /pity/venv  \
-    && /pity/venv/bin/python -m pip install --upgrade pip \
-    && /pity/venv/bin/python -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ \
+RUN python -m venv /argus/venv  \
+    && /argus/venv/bin/python -m pip install --upgrade pip \
+    && /argus/venv/bin/python -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ \
     && apt update -y \
     && apt upgrade -y \
     && apt install -y tzdata \
@@ -13,14 +13,14 @@ RUN python -m venv /pity/venv  \
 
 FROM python:3.8
 ENV PYTHONUNBUFFERED=1
-WORKDIR /pity
+WORKDIR /argus
 COPY . .
-COPY --from=builder /pity/venv/ /pity/venv/
+COPY --from=builder /argus/venv/ /argus/venv/
 COPY --from=builder /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-COPY --from=builder /pity/wait-for-it.sh /pity/ops/wait-for-it.sh
-RUN ln -sf /pity/ops/dev.env.ops /pity/conf/dev.env \
-    && chmod +x /pity/ops/wait-for-it.sh
+COPY --from=builder /argus/wait-for-it.sh /argus/ops/wait-for-it.sh
+RUN ln -sf /argus/ops/dev.env.ops /argus/conf/dev.env \
+    && chmod +x /argus/ops/wait-for-it.sh
 
 EXPOSE 7777
 
-CMD ["/pity/venv/bin/supervisord", "-c", "/pity/ops/supervisor.conf"]
+CMD ["/argus/venv/bin/supervisord", "-c", "/argus/ops/supervisor.conf"]

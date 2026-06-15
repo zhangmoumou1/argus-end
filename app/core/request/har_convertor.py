@@ -76,5 +76,5 @@ class HarConvertor(Convertor):
 
 
 if __name__ == "__main__":
-    requests = HarConvertor.convert_from_file("./pity.fun.har")
+    requests = HarConvertor.convert_from_file("./argus.fun.har")
     print(requests)

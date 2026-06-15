@@ -2,15 +2,15 @@ from datetime import datetime
 
 from sqlalchemy import Column, INT, String, UniqueConstraint
 
-from app.models.basic import PityBase
-from app.schema.testcase_directory import PityTestcaseDirectoryForm
+from app.models.basic import ArgusBase
+from app.schema.testcase_directory import ArgusTestcaseDirectoryForm
 
 
-class PityTestcaseDirectory(PityBase):
+class ArgusTestcaseDirectory(ArgusBase):
     """
     用例目录表
     """
-    __tablename__ = 'pity_testcase_directory'
+    __tablename__ = 'argus_testcase_directory'
     __table_args__ = (
         UniqueConstraint('project_id', 'name', 'parent', 'deleted_at'),
     )
@@ -25,7 +25,7 @@ class PityTestcaseDirectory(PityBase):
     __alias__ = dict(name="目录名称", parent="上级目录", sort_index="排序", project_id="项目")
     __show__ = 1
 
-    def __init__(self, form: PityTestcaseDirectoryForm, user):
+    def __init__(self, form: ArgusTestcaseDirectoryForm, user):
         super().__init__(user)
         self.project_id = form.project_id
         self.name = form.name

@@ -1,6 +1,6 @@
 from sqlalchemy import Column, String, TEXT, UniqueConstraint, BOOLEAN, SMALLINT, INT
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 _notice_type = {
     '0': '邮件',
@@ -10,7 +10,7 @@ _notice_type = {
 }
 
 
-class PityTestPlan(PityBase):
+class ArgusTestPlan(ArgusBase):
     project_id = Column(INT, nullable=False)
     # 测试计划执行环境, 可以多选
     env = Column(String(64), nullable=False)
@@ -36,13 +36,13 @@ class PityTestPlan(PityBase):
     state = Column(SMALLINT, default=0, comment="0: 未开始 1: 运行中")
     # 测试计划是否开启
     enabled = Column(BOOLEAN, default=True, nullable=False, comment="是否开启计划调度")
-    notification_config_id = Column(INT, nullable=True, comment="通知配置ID，关联pity_notification_config")
+    notification_config_id = Column(INT, nullable=True, comment="通知配置ID，关联argus_notification_config")
 
     __table_args__ = (
         UniqueConstraint('project_id', 'name', 'deleted_at'),
     )
 
-    __tablename__ = "pity_test_plan"
+    __tablename__ = "argus_test_plan"
 
     __fields__ = (name, project_id, env, priority)
     __tag__ = "测试计划"

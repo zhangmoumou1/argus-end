@@ -2,10 +2,10 @@ from typing import List, Optional
 
 from pydantic import BaseModel, validator
 
-from app.schema.base import PityModel
+from app.schema.base import ArgusModel
 
 
-class PityTestcaseDirectoryForm(BaseModel):
+class ArgusTestcaseDirectoryForm(BaseModel):
     id: Optional[int] = None
     name: str
     project_id: int
@@ -14,20 +14,20 @@ class PityTestcaseDirectoryForm(BaseModel):
 
     @validator("name", "project_id")
     def name_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
-class PityMoveTestCaseDto(BaseModel):
+class ArgusMoveTestCaseDto(BaseModel):
     project_id: int
     id_list: List[int]
     directory_id: int
 
     @validator("id_list", "project_id", "directory_id")
     def name_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
-class PityTestcaseDirectoryUpdateForm(BaseModel):
+class ArgusTestcaseDirectoryUpdateForm(BaseModel):
     id: int
     project_id: int
     name: Optional[str] = None
@@ -36,4 +36,4 @@ class PityTestcaseDirectoryUpdateForm(BaseModel):
 
     @validator("id", "project_id")
     def required_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)

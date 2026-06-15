@@ -9,10 +9,10 @@ from math import ceil
 from fastapi import Depends
 from sqlalchemy import select, text
 
-from app.crud.operation.PityOperationDao import PityOperationDao
+from app.crud.operation.ArgusOperationDao import ArgusOperationDao
 from app.enums.OperationEnum import OperationType
-from app.handler.fatcory import PityResponse
-from app.models.mq_config import PityMQConfig
+from app.handler.fatcory import ArgusResponse
+from app.models.mq_config import ArgusMQConfig
 from app.routers import Permission, get_session
 from app.routers.config.environment import router
 from app.schema.mq_config import (
@@ -37,7 +37,7 @@ def _safe_json_loads(raw, default=None):
 
 async def ensure_mq_schema(session):
     await session.execute(text(
-        "CREATE TABLE IF NOT EXISTS pity_mq_config ("
+        "CREATE TABLE IF NOT EXISTS argus_mq_config ("
         "id INT PRIMARY KEY AUTO_INCREMENT,"
         "env INT NOT NULL,"
         "name VARCHAR(64) NOT NULL,"
@@ -60,11 +60,11 @@ async def ensure_mq_schema(session):
     await session.commit()
 
 
-def _build_kafka_server(record: PityMQConfig):
+def _build_kafka_server(record: ArgusMQConfig):
     return f"{record.host}:{record.port}"
 
 
-def _connect_kafka(record: PityMQConfig):
+def _connect_kafka(record: ArgusMQConfig):
     try:
         from kafka import KafkaProducer
     except Exception:
@@ -74,7 +74,7 @@ def _connect_kafka(record: PityMQConfig):
     return producer
 
 
-def _build_kafka_kwargs(record: PityMQConfig):
+def _build_kafka_kwargs(record: ArgusMQConfig):
     kwargs = {
         "bootstrap_servers": [_build_kafka_server(record)],
         "request_timeout_ms": 30000,
@@ -95,7 +95,7 @@ def _build_kafka_kwargs(record: PityMQConfig):
     return kwargs
 
 
-def _build_kafka_consumer_kwargs(record: PityMQConfig):
+def _build_kafka_consumer_kwargs(record: ArgusMQConfig):
     return _build_kafka_kwargs(record)
 
 
@@ -105,7 +105,7 @@ def _with_kafka_consumer_timeout(kwargs: dict):
     return data
 
 
-def _connect_rabbit(record: PityMQConfig):
+def _connect_rabbit(record: ArgusMQConfig):
     try:
         import pika
     except Exception:
@@ -126,7 +126,7 @@ def _connect_rabbit(record: PityMQConfig):
 
 
 def _build_temp_record(form: MQConfigForm):
-    return PityMQConfig(
+    return ArgusMQConfig(
         env=form.env,
         name=form.name,
         mq_type=form.mq_type,
@@ -141,7 +141,7 @@ def _build_temp_record(form: MQConfigForm):
     )
 
 
-def _test_mq_connection(record: PityMQConfig):
+def _test_mq_connection(record: ArgusMQConfig):
     mq_type = (record.mq_type or "").lower()
     if mq_type == "kafka":
         producer = _connect_kafka(record)
@@ -181,7 +181,7 @@ async def _run_blocking(func, *args, timeout=12):
     return await asyncio.wait_for(loop.run_in_executor(None, task), timeout=timeout)
 
 
-def _detect_kafka_api_version(record: PityMQConfig):
+def _detect_kafka_api_version(record: ArgusMQConfig):
     try:
         from kafka import KafkaConsumer
     except Exception:
@@ -208,13 +208,13 @@ def _detect_kafka_api_version(record: PityMQConfig):
         consumer.close()
 
 
-def _build_kafka_admin_kwargs(record: PityMQConfig):
+def _build_kafka_admin_kwargs(record: ArgusMQConfig):
     kwargs = _build_kafka_kwargs(record)
     kwargs["api_version"] = _detect_kafka_api_version(record)
     return kwargs
 
 
-def _list_kafka_topics_sync(record: PityMQConfig):
+def _list_kafka_topics_sync(record: ArgusMQConfig):
     try:
         from kafka import KafkaConsumer
     except Exception:
@@ -233,7 +233,7 @@ def _list_kafka_topics_sync(record: PityMQConfig):
         consumer.close()
 
 
-def _list_kafka_consumer_groups_sync(record: PityMQConfig):
+def _list_kafka_consumer_groups_sync(record: ArgusMQConfig):
     try:
         from kafka.admin import KafkaAdminClient
     except Exception:
@@ -282,7 +282,7 @@ def _list_kafka_consumer_groups_sync(record: PityMQConfig):
         admin.close()
 
 
-def _kafka_consumer_group_detail_sync(record: PityMQConfig, group_id: str):
+def _kafka_consumer_group_detail_sync(record: ArgusMQConfig, group_id: str):
     try:
         from kafka import KafkaConsumer
         from kafka import TopicPartition
@@ -380,7 +380,7 @@ def _kafka_consumer_group_detail_sync(record: PityMQConfig, group_id: str):
         admin.close()
 
 
-def _kafka_topic_messages_sync(record: PityMQConfig, topic: str, limit: int, partition: int = None,
+def _kafka_topic_messages_sync(record: ArgusMQConfig, topic: str, limit: int, partition: int = None,
                                before_offset: int = None):
     try:
         from kafka import KafkaConsumer
@@ -450,7 +450,7 @@ def _kafka_topic_messages_sync(record: PityMQConfig, topic: str, limit: int, par
         consumer.close()
 
 
-def _kafka_topic_partitions_sync(record: PityMQConfig, topic: str):
+def _kafka_topic_partitions_sync(record: ArgusMQConfig, topic: str):
     try:
         from kafka import KafkaConsumer
         from kafka import TopicPartition
@@ -483,21 +483,21 @@ async def list_mq_config(name: str = "", env: int = None, mq_type: str = "", hos
                          _=Depends(Permission(Config.MEMBER)), session=Depends(get_session)):
     try:
         await ensure_mq_schema(session)
-        filters = [PityMQConfig.deleted_at == 0]
+        filters = [ArgusMQConfig.deleted_at == 0]
         if name:
-            filters.append(PityMQConfig.name.like(f"%{name}%"))
+            filters.append(ArgusMQConfig.name.like(f"%{name}%"))
         if host:
-            filters.append(PityMQConfig.host.like(f"%{host}%"))
+            filters.append(ArgusMQConfig.host.like(f"%{host}%"))
         if env is not None:
-            filters.append(PityMQConfig.env == env)
+            filters.append(ArgusMQConfig.env == env)
         if mq_type:
-            filters.append(PityMQConfig.mq_type == mq_type)
+            filters.append(ArgusMQConfig.mq_type == mq_type)
         result = await session.execute(
-            select(PityMQConfig).where(*filters).order_by(PityMQConfig.updated_at.desc(), PityMQConfig.id.desc())
+            select(ArgusMQConfig).where(*filters).order_by(ArgusMQConfig.updated_at.desc(), ArgusMQConfig.id.desc())
         )
-        return PityResponse.success([item for item in result.scalars().all()])
+        return ArgusResponse.success([item for item in result.scalars().all()])
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/insert")
@@ -505,24 +505,24 @@ async def insert_mq_config(form: MQConfigForm, user_info=Depends(Permission(Conf
     try:
         await ensure_mq_schema(session)
         query = await session.execute(
-            select(PityMQConfig).where(
-                PityMQConfig.deleted_at == 0,
-                PityMQConfig.env == form.env,
-                PityMQConfig.name == form.name,
-                PityMQConfig.mq_type == form.mq_type,
+            select(ArgusMQConfig).where(
+                ArgusMQConfig.deleted_at == 0,
+                ArgusMQConfig.env == form.env,
+                ArgusMQConfig.name == form.name,
+                ArgusMQConfig.mq_type == form.mq_type,
             )
         )
         if query.scalars().first() is not None:
-            return PityResponse.failed("数据已存在, 请勿重复添加")
-        model = PityMQConfig(**form.dict(), user=user_info["id"])
+            return ArgusResponse.failed("数据已存在, 请勿重复添加")
+        model = ArgusMQConfig(**form.dict(), user=user_info["id"])
         session.add(model)
         await session.flush()
-        await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
+        await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
         await session.commit()
         await session.refresh(model)
-        return PityResponse.success(model)
+        return ArgusResponse.success(model)
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/update")
@@ -530,10 +530,10 @@ async def update_mq_config(form: MQConfigForm, user_info=Depends(Permission(Conf
     try:
         await ensure_mq_schema(session)
         model = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if model is None:
-            return PityResponse.failed("记录不存在")
+            return ArgusResponse.failed("记录不存在")
         old = deepcopy(model)
         for key, value in form.dict().items():
             if key != "id":
@@ -541,7 +541,7 @@ async def update_mq_config(form: MQConfigForm, user_info=Depends(Permission(Conf
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
         await session.flush()
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE,
@@ -552,9 +552,9 @@ async def update_mq_config(form: MQConfigForm, user_info=Depends(Permission(Conf
         )
         await session.commit()
         await session.refresh(model)
-        return PityResponse.success(model)
+        return ArgusResponse.success(model)
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.get("/mq/delete")
@@ -562,19 +562,19 @@ async def delete_mq_config(id: int, user_info=Depends(Permission(Config.ADMIN)),
     try:
         await ensure_mq_schema(session)
         model = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if model is None:
-            return PityResponse.failed("记录不存在")
+            return ArgusResponse.failed("记录不存在")
         model.deleted_at = int(datetime.now().timestamp())
         model.updated_at = datetime.now()
         model.update_user = user_info["id"]
         await session.flush()
-        await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, model, key=model.id)
+        await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, model, key=model.id)
         await session.commit()
-        return PityResponse.success()
+        return ArgusResponse.success()
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.get("/mq/connect")
@@ -582,14 +582,14 @@ async def test_mq_connect(id: int, _=Depends(Permission(Config.MEMBER)), session
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         _test_mq_connection(record)
-        return PityResponse.success(msg="连接成功")
+        return ArgusResponse.success(msg="连接成功")
     except Exception as err:
-        return PityResponse.failed(f"连接失败: {err}")
+        return ArgusResponse.failed(f"连接失败: {err}")
 
 
 @router.post("/mq/connect/test")
@@ -597,9 +597,9 @@ async def test_mq_connect_by_form(form: MQConfigForm, _=Depends(Permission(Confi
     try:
         record = _build_temp_record(form)
         _test_mq_connection(record)
-        return PityResponse.success(msg="连接成功")
+        return ArgusResponse.success(msg="连接成功")
     except Exception as err:
-        return PityResponse.failed(f"连接失败: {err}")
+        return ArgusResponse.failed(f"连接失败: {err}")
 
 
 @router.post("/mq/publish")
@@ -607,10 +607,10 @@ async def publish_mq_message(form: MQPublishForm, _=Depends(Permission(Config.ME
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         headers = _safe_json_loads(form.headers, {})
         body_text = str(form.body or "")
         mq_type = (record.mq_type or "").lower()
@@ -626,7 +626,7 @@ async def publish_mq_message(form: MQPublishForm, _=Depends(Permission(Config.ME
             meta = future.get(timeout=5)
             producer.flush()
             producer.close()
-            return PityResponse.success({
+            return ArgusResponse.success({
                 "topic": meta.topic,
                 "partition": meta.partition,
                 "offset": meta.offset,
@@ -642,10 +642,10 @@ async def publish_mq_message(form: MQPublishForm, _=Depends(Permission(Config.ME
                 properties=None,
             )
             conn.close()
-            return PityResponse.success({"queue": form.destination, "status": "published"})
-        return PityResponse.failed("仅支持 kafka / rabbitmq")
+            return ArgusResponse.success({"queue": form.destination, "status": "published"})
+        return ArgusResponse.failed("仅支持 kafka / rabbitmq")
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/consume")
@@ -653,10 +653,10 @@ async def consume_mq_message(form: MQConsumeForm, _=Depends(Permission(Config.ME
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         limit = max(1, min(int(form.limit or 5), 50))
         mq_type = (record.mq_type or "").lower()
         if mq_type == "kafka":
@@ -684,7 +684,7 @@ async def consume_mq_message(form: MQConsumeForm, _=Depends(Permission(Config.ME
                 if len(messages) >= limit:
                     break
             consumer.close()
-            return PityResponse.success(messages)
+            return ArgusResponse.success(messages)
         if mq_type == "rabbitmq":
             conn = _connect_rabbit(record)
             ch = conn.channel()
@@ -701,10 +701,10 @@ async def consume_mq_message(form: MQConsumeForm, _=Depends(Permission(Config.ME
                     "value": body.decode("utf-8", errors="ignore") if body else "",
                 })
             conn.close()
-            return PityResponse.success(messages)
-        return PityResponse.failed("仅支持 kafka / rabbitmq")
+            return ArgusResponse.success(messages)
+        return ArgusResponse.failed("仅支持 kafka / rabbitmq")
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/consumers")
@@ -712,12 +712,12 @@ async def kafka_consumer_stats(form: MQConsumerStatsForm, _=Depends(Permission(C
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         if (record.mq_type or "").lower() != "kafka":
-            return PityResponse.failed("Consumers指标仅支持Kafka")
+            return ArgusResponse.failed("Consumers指标仅支持Kafka")
         try:
             from kafka import KafkaConsumer
             from kafka import TopicPartition
@@ -732,7 +732,7 @@ async def kafka_consumer_stats(form: MQConsumerStatsForm, _=Depends(Permission(C
         partitions = consumer.partitions_for_topic(topic) or set()
         if not partitions:
             consumer.close()
-            return PityResponse.success([])
+            return ArgusResponse.success([])
         tps = [TopicPartition(topic, p) for p in sorted(partitions)]
         beginning = consumer.beginning_offsets(tps)
         end_offsets = consumer.end_offsets(tps)
@@ -788,13 +788,13 @@ async def kafka_consumer_stats(form: MQConsumerStatsForm, _=Depends(Permission(C
                 "last_commit_time": now_text if offset >= 0 else "-",
             })
         consumer.close()
-        return PityResponse.success({
+        return ArgusResponse.success({
             "brokers": brokers,
             "brokers_count": len(brokers),
             "rows": result,
         })
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/kafka/topics")
@@ -802,18 +802,18 @@ async def kafka_list_topics(form: KafkaTopicListForm, _=Depends(Permission(Confi
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         if (record.mq_type or "").lower() != "kafka":
-            return PityResponse.failed("仅支持Kafka")
+            return ArgusResponse.failed("仅支持Kafka")
         rows = await _run_blocking(_list_kafka_topics_sync, record, timeout=12)
-        return PityResponse.success(rows)
+        return ArgusResponse.success(rows)
     except asyncio.TimeoutError:
-        return PityResponse.failed("查询Kafka topics超时，请检查Broker连通性、鉴权配置或Topic数量")
+        return ArgusResponse.failed("查询Kafka topics超时，请检查Broker连通性、鉴权配置或Topic数量")
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/kafka/topic/messages")
@@ -822,12 +822,12 @@ async def kafka_topic_messages(form: KafkaTopicMessagesForm, _=Depends(Permissio
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         if (record.mq_type or "").lower() != "kafka":
-            return PityResponse.failed("仅支持Kafka")
+            return ArgusResponse.failed("仅支持Kafka")
         limit = max(1, min(int(form.limit or 100), 300))
         messages = await _run_blocking(
             _kafka_topic_messages_sync,
@@ -838,11 +838,11 @@ async def kafka_topic_messages(form: KafkaTopicMessagesForm, _=Depends(Permissio
             form.before_offset,
             timeout=18
         )
-        return PityResponse.success(messages)
+        return ArgusResponse.success(messages)
     except asyncio.TimeoutError:
-        return PityResponse.failed("查询Kafka消息超时，请检查Broker连通性、Topic积压情况或缩小查询范围")
+        return ArgusResponse.failed("查询Kafka消息超时，请检查Broker连通性、Topic积压情况或缩小查询范围")
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/kafka/topic/partitions")
@@ -851,18 +851,18 @@ async def kafka_topic_partitions(form: KafkaTopicMessagesForm, _=Depends(Permiss
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         if (record.mq_type or "").lower() != "kafka":
-            return PityResponse.failed("仅支持Kafka")
+            return ArgusResponse.failed("仅支持Kafka")
         data = await _run_blocking(_kafka_topic_partitions_sync, record, form.topic, timeout=12)
-        return PityResponse.success(data)
+        return ArgusResponse.success(data)
     except asyncio.TimeoutError:
-        return PityResponse.failed("查询Kafka分区超时，请检查Broker连通性")
+        return ArgusResponse.failed("查询Kafka分区超时，请检查Broker连通性")
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/kafka/consumer-groups")
@@ -871,18 +871,18 @@ async def kafka_list_consumer_groups(form: KafkaConsumerGroupListForm, _=Depends
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         if (record.mq_type or "").lower() != "kafka":
-            return PityResponse.failed("仅支持Kafka")
+            return ArgusResponse.failed("仅支持Kafka")
         result = await _run_blocking(_list_kafka_consumer_groups_sync, record, timeout=12)
-        return PityResponse.success(result)
+        return ArgusResponse.success(result)
     except asyncio.TimeoutError:
-        return PityResponse.failed("查询Kafka消费组超时，请检查Broker连通性或鉴权配置")
+        return ArgusResponse.failed("查询Kafka消费组超时，请检查Broker连通性或鉴权配置")
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/kafka/consumer-group/detail")
@@ -891,18 +891,18 @@ async def kafka_consumer_group_detail(form: KafkaConsumerGroupDetailForm, _=Depe
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         if (record.mq_type or "").lower() != "kafka":
-            return PityResponse.failed("仅支持Kafka")
+            return ArgusResponse.failed("仅支持Kafka")
         result = await _run_blocking(_kafka_consumer_group_detail_sync, record, form.group_id, timeout=18)
-        return PityResponse.success(result)
+        return ArgusResponse.success(result)
     except asyncio.TimeoutError:
-        return PityResponse.failed("查询Kafka消费组详情超时，请检查Broker连通性或消费组状态")
+        return ArgusResponse.failed("查询Kafka消费组详情超时，请检查Broker连通性或消费组状态")
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/rabbit/queues")
@@ -910,12 +910,12 @@ async def rabbit_list_queues(form: RabbitQueueListForm, _=Depends(Permission(Con
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         if (record.mq_type or "").lower() != "rabbitmq":
-            return PityResponse.failed("仅支持RabbitMQ")
+            return ArgusResponse.failed("仅支持RabbitMQ")
         import requests
         port = 15671 if record.use_ssl else 15672
         base = f"{'https' if record.use_ssl else 'http'}://{record.host}:{port}"
@@ -928,7 +928,7 @@ async def rabbit_list_queues(form: RabbitQueueListForm, _=Depends(Permission(Con
             verify=False,
         )
         if resp.status_code >= 400:
-            return PityResponse.failed(
+            return ArgusResponse.failed(
                 f"RabbitMQ Management API不可用({resp.status_code})，请确认已启用插件 rabbitmq_management 且端口{port}可访问"
             )
         rows = resp.json() if resp.content else []
@@ -942,9 +942,9 @@ async def rabbit_list_queues(form: RabbitQueueListForm, _=Depends(Permission(Con
             "messages_unacknowledged": item.get("messages_unacknowledged"),
             "consumers": item.get("consumers"),
         } for item in (rows or [])]
-        return PityResponse.success(data)
+        return ArgusResponse.success(data)
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/rabbit/get-messages")
@@ -952,12 +952,12 @@ async def rabbit_get_messages(form: RabbitGetMessagesForm, _=Depends(Permission(
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         if (record.mq_type or "").lower() != "rabbitmq":
-            return PityResponse.failed("仅支持RabbitMQ")
+            return ArgusResponse.failed("仅支持RabbitMQ")
         conn = _connect_rabbit(record)
         ch = conn.channel()
         ch.queue_declare(queue=form.queue, durable=True)
@@ -993,13 +993,13 @@ async def rabbit_get_messages(form: RabbitGetMessagesForm, _=Depends(Permission(
                 else:
                     ch.basic_ack(delivery_tag=method_frame.delivery_tag, multiple=False)
         conn.close()
-        return PityResponse.success({
+        return ArgusResponse.success({
             "queue": form.queue,
             "count": len(messages),
             "messages": messages,
         })
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/rabbit/purge")
@@ -1007,22 +1007,22 @@ async def rabbit_purge_queue(form: RabbitQueueOperateForm, _=Depends(Permission(
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         if (record.mq_type or "").lower() != "rabbitmq":
-            return PityResponse.failed("仅支持RabbitMQ")
+            return ArgusResponse.failed("仅支持RabbitMQ")
         conn = _connect_rabbit(record)
         ch = conn.channel()
         result = ch.queue_purge(queue=form.queue)
         conn.close()
-        return PityResponse.success({
+        return ArgusResponse.success({
             "queue": form.queue,
             "message_count": getattr(result, "method", result).message_count if result else 0
         })
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)
 
 
 @router.post("/mq/rabbit/delete-queue")
@@ -1030,16 +1030,16 @@ async def rabbit_delete_queue(form: RabbitQueueOperateForm, _=Depends(Permission
     try:
         await ensure_mq_schema(session)
         record = (await session.execute(
-            select(PityMQConfig).where(PityMQConfig.id == form.id, PityMQConfig.deleted_at == 0)
+            select(ArgusMQConfig).where(ArgusMQConfig.id == form.id, ArgusMQConfig.deleted_at == 0)
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("配置不存在")
+            return ArgusResponse.failed("配置不存在")
         if (record.mq_type or "").lower() != "rabbitmq":
-            return PityResponse.failed("仅支持RabbitMQ")
+            return ArgusResponse.failed("仅支持RabbitMQ")
         conn = _connect_rabbit(record)
         ch = conn.channel()
         ch.queue_delete(queue=form.queue)
         conn.close()
-        return PityResponse.success({"queue": form.queue, "status": "deleted"})
+        return ArgusResponse.success({"queue": form.queue, "status": "deleted"})
     except Exception as err:
-        return PityResponse.failed(err)
+        return ArgusResponse.failed(err)

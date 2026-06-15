@@ -7,14 +7,14 @@ from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud.auth.UserDao import UserDao
-from app.crud.oss.PityOssDao import PityOssDao
+from app.crud.oss.ArgusOssDao import ArgusOssDao
 from app.enums.OperationEnum import OperationType
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.middleware.oss import OssClient, get_avatar_bucket_name, get_public_bucket_name, normalize_oss_upload_result
 from app.middleware.Jwt import UserToken
 from app.models import async_session
-from app.models.oss_file import PityOssFile
-from app.models.operation_log import PityOperationLog
+from app.models.oss_file import ArgusOssFile
+from app.models.operation_log import ArgusOperationLog
 from app.models.user import User
 from app.routers import Permission, get_session
 from config import Config
@@ -35,7 +35,7 @@ def _oss_log_payload(action: str, filepath: str, bucket_name: str = "", object_k
 async def _insert_oss_action_log(user_id: int, action: str, filepath: str, bucket_name: str = "",
                                  object_key: str = "", file_size: str = "", session=None):
     payload = _oss_log_payload(action, filepath, bucket_name, object_key, file_size)
-    log_model = PityOperationLog(
+    log_model = ArgusOperationLog(
         user_id,
         OperationType.EXECUTE,
         f"OSS对象{action}",
@@ -54,10 +54,10 @@ async def _insert_oss_action_log(user_id: int, action: str, filepath: str, bucke
 
 
 async def _upsert_oss_record(user_id: int, filepath: str, upload_meta: dict, file_size: int, session: AsyncSession = None):
-    record = await PityOssDao.query_record(file_path=filepath, deleted_at=0, session=session)
-    human_size = PityOssFile.get_size(file_size)
+    record = await ArgusOssDao.query_record(file_path=filepath, deleted_at=0, session=session)
+    human_size = ArgusOssFile.get_size(file_size)
     if record is not None:
-        old = PityOssFile(
+        old = ArgusOssFile(
             record.create_user,
             record.file_path,
             record.bucket_name,
@@ -72,7 +72,7 @@ async def _upsert_oss_record(user_id: int, filepath: str, upload_meta: dict, fil
         record.update_user = user_id
         if session is not None:
             await session.flush()
-            await PityOssDao.insert_log(
+            await ArgusOssDao.insert_log(
                 session,
                 user_id,
                 OperationType.UPDATE,
@@ -82,9 +82,9 @@ async def _upsert_oss_record(user_id: int, filepath: str, upload_meta: dict, fil
                 changed=["file_path", "bucket_name", "object_key", "file_size"],
             )
         else:
-            await PityOssDao.update_record_by_id(user_id, record, log=True)
+            await ArgusOssDao.update_record_by_id(user_id, record, log=True)
     else:
-        model = PityOssFile(
+        model = ArgusOssFile(
             user_id,
             filepath,
             upload_meta["bucket_name"],
@@ -94,9 +94,9 @@ async def _upsert_oss_record(user_id: int, filepath: str, upload_meta: dict, fil
         if session is not None:
             session.add(model)
             await session.flush()
-            await PityOssDao.insert_log(session, user_id, OperationType.INSERT, model, key=model.id)
+            await ArgusOssDao.insert_log(session, user_id, OperationType.INSERT, model, key=model.id)
         else:
-            await PityOssDao.insert(model=model, log=True)
+            await ArgusOssDao.insert(model=model, log=True)
     await _insert_oss_action_log(
         user_id,
         "上传",
@@ -129,12 +129,12 @@ async def _query_oss_update_info_map(session, file_paths: List[str]):
         return {}
     query = await session.execute(
         select(
-            PityOssFile.file_path,
-            PityOssFile.updated_at,
-            PityOssFile.update_user,
+            ArgusOssFile.file_path,
+            ArgusOssFile.updated_at,
+            ArgusOssFile.update_user,
             User.name.label("update_user_name"),
-        ).outerjoin(User, User.id == PityOssFile.update_user)
-        .where(PityOssFile.deleted_at == 0, PityOssFile.file_path.in_(file_paths))
+        ).outerjoin(User, User.id == ArgusOssFile.update_user)
+        .where(ArgusOssFile.deleted_at == 0, ArgusOssFile.file_path.in_(file_paths))
     )
     result = {}
     for row in query.mappings().all():
@@ -170,9 +170,9 @@ async def create_oss_file(filepath: str, file: UploadFile = File(...),
         bucket_name = get_public_bucket_name() or None
         async with session.begin():
             await _upload_single_object(user_info['id'], filepath, file, bucket_name=bucket_name, session=session)
-        return PityResponse.success()
+        return ArgusResponse.success()
     except Exception as e:
-        return PityResponse.failed(f"上传失败: {e}")
+        return ArgusResponse.failed(f"上传失败: {e}")
 
 
 @router.post("/create-folder")
@@ -195,9 +195,9 @@ async def create_oss_folder(filepath: str,
             )
             upload_meta = normalize_oss_upload_result(client, upload_result, target_path, bucket_name=bucket_name)
             await _upsert_oss_record(user_info['id'], target_path, upload_meta, file_size, session=session)
-        return PityResponse.success()
+        return ArgusResponse.success()
     except Exception as e:
-        return PityResponse.failed(f"创建目录失败: {e}")
+        return ArgusResponse.failed(f"创建目录失败: {e}")
 
 
 @router.post("/upload/batch")
@@ -224,11 +224,11 @@ async def create_oss_files(paths: str = Form(...), files: List[UploadFile] = Fil
                 "file_path": filepath,
                 "bucket_name": upload_meta["bucket_name"],
                 "object_key": upload_meta["object_key"],
-                "file_size": PityOssFile.get_size(file_size),
+                "file_size": ArgusOssFile.get_size(file_size),
             })
-        return PityResponse.success({"count": len(result), "items": result})
+        return ArgusResponse.success({"count": len(result), "items": result})
     except Exception as e:
-        return PityResponse.failed(f"批量上传失败: {e}")
+        return ArgusResponse.failed(f"批量上传失败: {e}")
 
 
 @router.post("/avatar", summary="上传用户头像")
@@ -248,9 +248,9 @@ async def upload_avatar(file: UploadFile = File(...), user_info=Depends(Permissi
         upload_meta = normalize_oss_upload_result(client, upload_result, filepath, bucket_name=bucket_name, base_path="avatar")
         file_url = upload_meta["file_url"]
         await UserDao.update_avatar(user_info['id'], file_url)
-        return PityResponse.success(file_url)
+        return ArgusResponse.success(file_url)
     except Exception as e:
-        return PityResponse.failed(f"上传头像失败: {e}")
+        return ArgusResponse.failed(f"上传头像失败: {e}")
 
 
 @router.get("/list")
@@ -269,9 +269,9 @@ async def list_oss_file(filepath: str = '', recursive: bool = True, suffix: str 
                 [item.get("file_path") for item in records if item.get("file_path")],
             )
         merged = [_merge_oss_update_info(item, update_info_map.get(item.get("file_path"))) for item in records]
-        return PityResponse.success(merged)
+        return ArgusResponse.success(merged)
     except Exception as e:
-        return PityResponse.failed(f"获取失败: {e}")
+        return ArgusResponse.failed(f"获取失败: {e}")
 
 
 @router.get("/detail")
@@ -283,9 +283,9 @@ async def detail_oss_file(filepath: str, _=Depends(Permission(Config.MEMBER)), s
             bucket_name=get_public_bucket_name() or None,
         )
         update_info_map = await _query_oss_update_info_map(session, [filepath])
-        return PityResponse.success(_merge_oss_update_info(detail, update_info_map.get(filepath)))
+        return ArgusResponse.success(_merge_oss_update_info(detail, update_info_map.get(filepath)))
     except Exception as e:
-        return PityResponse.failed(f"获取详情失败: {e}")
+        return ArgusResponse.failed(f"获取详情失败: {e}")
 
 
 @router.get("/delete")
@@ -297,18 +297,18 @@ async def delete_oss_file(filepath: str, is_dir: bool = False,
         if is_dir:
             async with session.begin():
                 query = await session.execute(
-                    select(PityOssFile).where(
-                        PityOssFile.deleted_at == 0,
+                    select(ArgusOssFile).where(
+                        ArgusOssFile.deleted_at == 0,
                         or_(
-                            PityOssFile.file_path == filepath,
-                            PityOssFile.file_path.like(f"{filepath}/%"),
+                            ArgusOssFile.file_path == filepath,
+                            ArgusOssFile.file_path.like(f"{filepath}/%"),
                         ),
                     )
                 )
                 records = query.scalars().all()
                 await client.delete_prefix(filepath, bucket_name=bucket_name)
                 for item in records:
-                    PityOssDao.delete_model(item, user_info["id"])
+                    ArgusOssDao.delete_model(item, user_info["id"])
                 await session.flush()
                 await _insert_oss_action_log(
                     user_info["id"],
@@ -319,22 +319,22 @@ async def delete_oss_file(filepath: str, is_dir: bool = False,
                     f"{len(records)}个对象",
                     session=session,
                 )
-            return PityResponse.success()
+            return ArgusResponse.success()
 
         log_bucket_name = ""
         object_key = filepath
         file_size = ""
         async with session.begin():
-            record = await PityOssDao.query_record(file_path=filepath, deleted_at=0, session=session)
+            record = await ArgusOssDao.query_record(file_path=filepath, deleted_at=0, session=session)
             if record is not None:
                 log_bucket_name = getattr(record, "bucket_name", "") or ""
                 object_key = getattr(record, "object_key", "") or filepath
                 file_size = getattr(record, "file_size", "") or ""
             await client.delete_file(filepath, bucket_name=bucket_name)
             if record is not None:
-                PityOssDao.delete_model(record, user_info["id"])
+                ArgusOssDao.delete_model(record, user_info["id"])
                 await session.flush()
-                await PityOssDao.insert_log(session, user_info["id"], OperationType.DELETE, record, key=record.id)
+                await ArgusOssDao.insert_log(session, user_info["id"], OperationType.DELETE, record, key=record.id)
             await _insert_oss_action_log(
                 user_info["id"],
                 "删除",
@@ -344,9 +344,9 @@ async def delete_oss_file(filepath: str, is_dir: bool = False,
                 file_size,
                 session=session,
             )
-        return PityResponse.success()
+        return ArgusResponse.success()
     except Exception as e:
-        return PityResponse.failed(f"删除失败: {e}")
+        return ArgusResponse.failed(f"删除失败: {e}")
 
 
 # @router.post("/update")
@@ -362,9 +362,9 @@ async def delete_oss_file(filepath: str, is_dir: bool = False,
 #         client = OssClient.get_oss_client()
 #         file_content = await file.read()
 #         await client.update_file(filepath, file_content)
-#         return PityResponse.success()
+#         return ArgusResponse.success()
 #     except Exception as e:
-#         return PityResponse.failed(f"修改失败: {e}")
+#         return ArgusResponse.failed(f"修改失败: {e}")
 
 
 @router.get("/download")
@@ -380,7 +380,7 @@ async def download_oss_file(filepath: str, token: str = Header(None), session=De
         # 切割获取文件名
         path, filename = await client.download_file(filepath, bucket_name=get_public_bucket_name() or None)
         if parsed_user is not None:
-            record = await PityOssDao.query_record(file_path=filepath, deleted_at=0, session=session)
+            record = await ArgusOssDao.query_record(file_path=filepath, deleted_at=0, session=session)
             await _insert_oss_action_log(
                 int(parsed_user.get("id") or 0),
                 "下载",
@@ -390,6 +390,6 @@ async def download_oss_file(filepath: str, token: str = Header(None), session=De
                 getattr(record, "file_size", "") if record is not None else "",
                 session=session,
             )
-        return PityResponse.file(path, filename)
+        return ArgusResponse.file(path, filename)
     except Exception as e:
-        return PityResponse.failed(f"下载失败: {e}")
+        return ArgusResponse.failed(f"下载失败: {e}")

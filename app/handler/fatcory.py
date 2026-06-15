@@ -9,7 +9,7 @@ from starlette.responses import FileResponse
 from app.handler.encoder import jsonable_encoder
 
 
-class PityResponse(object):
+class ArgusResponse(object):
 
     @staticmethod
     def model_to_dict(obj, *ignore: str):
@@ -31,11 +31,11 @@ class PityResponse(object):
     def dict_model_to_dict(obj):
         for k, v in obj.items():
             if isinstance(v, dict):
-                PityResponse.dict_model_to_dict(v)
+                ArgusResponse.dict_model_to_dict(v)
             elif isinstance(v, list):
-                obj[k] = PityResponse.model_to_list(v)
+                obj[k] = ArgusResponse.model_to_list(v)
             else:
-                obj[k] = PityResponse.model_to_dict(v)
+                obj[k] = ArgusResponse.model_to_dict(v)
         return obj
 
     @staticmethod
@@ -59,11 +59,11 @@ class PityResponse(object):
         columns = []
         if len(data) > 0:
             columns = list(data[0].keys())
-        return columns, [PityResponse.json_serialize(obj) for obj in data]
+        return columns, [ArgusResponse.json_serialize(obj) for obj in data]
 
     @staticmethod
     def model_to_list(data: list, *ignore: str):
-        return [PityResponse.model_to_dict(x, *ignore) for x in data]
+        return [ArgusResponse.model_to_dict(x, *ignore) for x in data]
 
     @staticmethod
     def encode_json(data: Any, *exclude: str):
@@ -73,11 +73,11 @@ class PityResponse(object):
 
     @staticmethod
     def success(data=None, code=0, msg="操作成功", exclude=()):
-        return PityResponse.encode_json(dict(code=code, msg=msg, data=data), *exclude)
+        return ArgusResponse.encode_json(dict(code=code, msg=msg, data=data), *exclude)
 
     @staticmethod
     def page(items=None, total=0, page=1, size=20, code=0, msg="操作成功"):
-        return PityResponse.success({
+        return ArgusResponse.success({
             "list": items or [],
             "total": int(total or 0),
             "page": int(page or 1),
@@ -87,7 +87,7 @@ class PityResponse(object):
     @staticmethod
     def task(data=None, code=0, msg="操作成功"):
         payload = data or {}
-        return PityResponse.success({
+        return ArgusResponse.success({
             "task": payload,
             "task_id": payload.get("id") or payload.get("task_id") or 0,
             "status": payload.get("status") or "",
@@ -95,13 +95,13 @@ class PityResponse(object):
 
     @staticmethod
     def records(data: list, code=0, msg="操作成功"):
-        return dict(code=code, msg=msg, data=PityResponse.model_to_list(data))
+        return dict(code=code, msg=msg, data=ArgusResponse.model_to_list(data))
 
     @staticmethod
     def success_with_size(data=None, code=0, msg="操作成功", total=0):
         if data is None:
-            return PityResponse.encode_json(dict(code=code, msg=msg, data=list(), total=0))
-        return PityResponse.encode_json(dict(code=code, msg=msg, data=data, total=total))
+            return ArgusResponse.encode_json(dict(code=code, msg=msg, data=list(), total=0))
+        return ArgusResponse.encode_json(dict(code=code, msg=msg, data=data, total=total))
 
     @staticmethod
     def failed(msg, code=110, data=None):

@@ -16,12 +16,12 @@ from app.models import async_session
 from app.schema.request import RequestInfo
 
 
-class PityRecorder(object):
+class ArgusRecorder(object):
     def request(self, flow):
         flow.request.headers["X-Forwarded-For"] = flow.client_conn.address[0]
 
     async def response(self, flow):
-        if "pity.fun" in flow.request.url or flow.request.method.lower() == "options" or \
+        if "argus.fun" in flow.request.url or flow.request.method.lower() == "options" or \
                 flow.request.url.endswith(("js", "css", "ttf", "jpg", "svg", "gif")):
             return
         addr = flow.client_conn.address[0]

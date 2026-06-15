@@ -1,12 +1,12 @@
 from sqlalchemy import Column, ForeignKey, INT, String, TEXT
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityApiService(PityBase):
-    __tablename__ = "pity_api_service"
+class ArgusApiService(ArgusBase):
+    __tablename__ = "argus_api_service"
 
-    project_id = Column(INT, ForeignKey("pity_project.id"), index=True, nullable=False, default=0, comment="所属项目")
+    project_id = Column(INT, ForeignKey("argus_project.id"), index=True, nullable=False, default=0, comment="所属项目")
     name = Column(String(128), nullable=False, comment="服务名称")
     base_url = Column(String(255), nullable=True, comment="基础地址")
     owner = Column(TEXT, nullable=True, comment="负责人")
@@ -47,10 +47,10 @@ class PityApiService(PityBase):
         self.source_config = source_config
 
 
-class PityApiEndpoint(PityBase):
-    __tablename__ = "pity_api_endpoint"
+class ArgusApiEndpoint(ArgusBase):
+    __tablename__ = "argus_api_endpoint"
 
-    service_id = Column(INT, ForeignKey("pity_api_service.id"), index=True, nullable=False, default=0, comment="服务ID")
+    service_id = Column(INT, ForeignKey("argus_api_service.id"), index=True, nullable=False, default=0, comment="服务ID")
     name = Column(String(255), nullable=False, comment="接口名称")
     method = Column(String(16), nullable=False, default="GET", comment="请求方法")
     module_name = Column(String(128), nullable=False, default="默认模块", comment="功能模块")
@@ -96,10 +96,10 @@ class PityApiEndpoint(PityBase):
         self.response_body = response_body
 
 
-class PityApiEndpointVersion(PityBase):
-    __tablename__ = "pity_api_endpoint_version"
+class ArgusApiEndpointVersion(ArgusBase):
+    __tablename__ = "argus_api_endpoint_version"
 
-    endpoint_id = Column(INT, ForeignKey("pity_api_endpoint.id"), index=True, nullable=False, default=0, comment="接口ID")
+    endpoint_id = Column(INT, ForeignKey("argus_api_endpoint.id"), index=True, nullable=False, default=0, comment="接口ID")
     version_no = Column(String(32), nullable=False, default="v1", comment="版本号")
     name = Column(String(255), nullable=False, comment="接口名称")
     method = Column(String(16), nullable=False, default="GET", comment="请求方法")
@@ -126,12 +126,12 @@ class PityApiEndpointVersion(PityBase):
         self.response_body = response_body
 
 
-class PityApiEndpointSample(PityBase):
-    __tablename__ = "pity_api_endpoint_sample"
+class ArgusApiEndpointSample(ArgusBase):
+    __tablename__ = "argus_api_endpoint_sample"
 
     project_id = Column(INT, nullable=False, default=0, comment="所属项目")
-    service_id = Column(INT, ForeignKey("pity_api_service.id"), index=True, nullable=False, default=0, comment="服务ID")
-    endpoint_id = Column(INT, ForeignKey("pity_api_endpoint.id"), index=True, nullable=False, default=0, comment="接口ID")
+    service_id = Column(INT, ForeignKey("argus_api_service.id"), index=True, nullable=False, default=0, comment="服务ID")
+    endpoint_id = Column(INT, ForeignKey("argus_api_endpoint.id"), index=True, nullable=False, default=0, comment="接口ID")
     api_version_id = Column(INT, nullable=False, default=0, comment="接口版本ID")
     sample_source = Column(String(32), nullable=False, default="record", comment="样本来源")
     sample_name = Column(String(128), nullable=True, comment="样本名称")

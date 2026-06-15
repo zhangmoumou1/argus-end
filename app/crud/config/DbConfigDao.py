@@ -9,11 +9,11 @@ from app.crud import Mapper, ModelWrapper
 from app.crud.config.EnvironmentDao import EnvironmentDao
 from app.enums.OperationEnum import OperationType
 from app.handler.encoder import JsonEncoder
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.middleware.RedisManager import RedisHelper
 from app.models import async_session, db_helper
-from app.models.database import PityDatabase
-from app.models.sql_log import PitySQLHistory
+from app.models.database import ArgusDatabase
+from app.models.sql_log import ArgusSQLHistory
 from app.schema.database import DatabaseForm
 from app.utils.logger import Log
 
@@ -32,14 +32,14 @@ class DbConfigDao(Mapper):
         """
         try:
             async with async_session() as session:
-                query = [PityDatabase.deleted_at == 0]
+                query = [ArgusDatabase.deleted_at == 0]
                 if name:
-                    query.append(PityDatabase.name.like(f'%{name}%'))
+                    query.append(ArgusDatabase.name.like(f'%{name}%'))
                 if database:
-                    query.append(PityDatabase.database.like(f"%{database}%"))
+                    query.append(ArgusDatabase.database.like(f"%{database}%"))
                 if env is not None:
-                    query.append(PityDatabase.env == env)
-                result = await session.execute(select(PityDatabase).where(*query))
+                    query.append(ArgusDatabase.env == env)
+                result = await session.execute(select(ArgusDatabase).where(*query))
                 return result.scalars().all()
         except Exception as e:
             DbConfigDao.log.error(f"获取数据库配置失败, error: {e}")
@@ -52,12 +52,12 @@ class DbConfigDao(Mapper):
             async with async_session() as session:
                 async with session.begin():
                     result = await session.execute(
-                        select(PityDatabase).where(PityDatabase.name == data.name, PityDatabase.deleted_at == 0,
-                                                   PityDatabase.env == data.env))
+                        select(ArgusDatabase).where(ArgusDatabase.name == data.name, ArgusDatabase.deleted_at == 0,
+                                                   ArgusDatabase.env == data.env))
                     query = result.scalars().first()
                     if query is not None:
                         raise Exception("数据库配置已存在")
-                    model = PityDatabase(
+                    model = ArgusDatabase(
                         data.env,
                         data.name,
                         data.host,
@@ -82,7 +82,7 @@ class DbConfigDao(Mapper):
         try:
             async with async_session() as session:
                 async with session.begin():
-                    result = await session.execute(select(PityDatabase).where(data.id == PityDatabase.id))
+                    result = await session.execute(select(ArgusDatabase).where(data.id == ArgusDatabase.id))
                     query = result.scalars().first()
                     if query is None:
                         raise Exception("数据库配置不存在")
@@ -103,7 +103,7 @@ class DbConfigDao(Mapper):
             async with async_session() as session:
                 async with session.begin():
                     result = await session.execute(
-                        select(PityDatabase).where(id == PityDatabase.id, PityDatabase.deleted_at == 0))
+                        select(ArgusDatabase).where(id == ArgusDatabase.id, ArgusDatabase.deleted_at == 0))
                     query = result.scalars().first()
                     if query is None:
                         raise Exception("数据库配置不存在或已删除")
@@ -120,7 +120,7 @@ class DbConfigDao(Mapper):
         try:
             async with async_session() as session:
                 result = await session.execute(
-                    select(PityDatabase).where(PityDatabase.id == id, PityDatabase.deleted_at == 0))
+                    select(ArgusDatabase).where(ArgusDatabase.id == id, ArgusDatabase.deleted_at == 0))
                 return result.scalars().first()
         except Exception as e:
             DbConfigDao.log.error(f"获取数据库配置失败, error: {e}")
@@ -131,8 +131,8 @@ class DbConfigDao(Mapper):
         try:
             async with async_session() as session:
                 result = await session.execute(
-                    select(PityDatabase).where(PityDatabase.env == env, PityDatabase.name == name,
-                                               PityDatabase.deleted_at == 0))
+                    select(ArgusDatabase).where(ArgusDatabase.env == env, ArgusDatabase.name == name,
+                                               ArgusDatabase.deleted_at == 0))
                 return result.scalars().first()
         except Exception as e:
             DbConfigDao.log.error(f"获取数据库配置失败, error: {e}")
@@ -153,7 +153,7 @@ class DbConfigDao(Mapper):
             env_map = {env.id: env.name for env in env_data}
             # 获取数据库相关的信息
             async with async_session() as session:
-                query = await session.execute(select(PityDatabase).where(PityDatabase.deleted_at == 0))
+                query = await session.execute(select(ArgusDatabase).where(ArgusDatabase.deleted_at == 0))
                 data = query.scalars().all()
                 for d in data:
                     name = env_map[d.env]
@@ -252,7 +252,7 @@ class DbConfigDao(Mapper):
                                                   query.password,
                                                   query.database)
             result, _ = await DbConfigDao.execute(data, sql)
-            _, result = PityResponse.parse_sql_result(result)
+            _, result = ArgusResponse.parse_sql_result(result)
             return result
             # return json.dumps(result, cls=JsonEncoder, ensure_ascii=False)
         except Exception as e:
@@ -260,6 +260,6 @@ class DbConfigDao(Mapper):
             raise Exception(f"执行SQL失败: {e}")
 
 
-@ModelWrapper(PitySQLHistory)
-class PitySQLHistoryDao(Mapper):
+@ModelWrapper(ArgusSQLHistory)
+class ArgusSQLHistoryDao(Mapper):
     pass

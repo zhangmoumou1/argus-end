@@ -1,7 +1,7 @@
 import json
 
 from app.models import async_session
-from app.models.platform_task import PityPlatformAuditLog
+from app.models.platform_task import ArgusPlatformAuditLog
 from app.utils.logger import Log
 
 logger = Log("platform_audit")
@@ -33,7 +33,7 @@ class PlatformAuditService:
     ):
         try:
             async with async_session() as session:
-                model = PityPlatformAuditLog(
+                model = ArgusPlatformAuditLog(
                     user=int(user_id or 0),
                     event_type=event_type,
                     module=module,

@@ -6,7 +6,7 @@ from sqlalchemy.future import select
 
 from app.crud import Mapper
 from app.models import async_session
-from app.models.result import PityTestResult
+from app.models.result import ArgusTestResult
 from app.models.test_case import TestCase
 from app.utils.logger import Log
 
@@ -25,7 +25,7 @@ class TestResultDao(Mapper):
         try:
             async with async_session() as session:
                 async with session.begin():
-                    result = PityTestResult(report_id, case_id, case_name, status,
+                    result = ArgusTestResult(report_id, case_id, case_name, status,
                                             case_log, start_at, finished_at,
                                             url, body, request_method, request_headers, cost,
                                             asserts, response_headers, response, status_code,
@@ -37,14 +37,14 @@ class TestResultDao(Mapper):
             raise Exception("新增测试结果失败")
 
     @staticmethod
-    async def list(report_id: int) -> List[PityTestResult]:
+    async def list(report_id: int) -> List[ArgusTestResult]:
         try:
             async with async_session() as session:
-                sql = select(PityTestResult, TestCase.directory_id).join(TestCase,
-                                                                         TestCase.id == PityTestResult.case_id). \
-                    where(PityTestResult.report_id == report_id,
-                          PityTestResult.deleted_at == 0).order_by(
-                    asc(PityTestResult.case_id), asc(PityTestResult.start_at))
+                sql = select(ArgusTestResult, TestCase.directory_id).join(TestCase,
+                                                                         TestCase.id == ArgusTestResult.case_id). \
+                    where(ArgusTestResult.report_id == report_id,
+                          ArgusTestResult.deleted_at == 0).order_by(
+                    asc(ArgusTestResult.case_id), asc(ArgusTestResult.start_at))
                 data = await session.execute(sql)
                 ans = []
                 for res, directory_id in data.all():

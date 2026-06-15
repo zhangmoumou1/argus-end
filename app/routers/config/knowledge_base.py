@@ -8,10 +8,10 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select, func, text
 
 from app.crud.config.KnowledgeBaseDao import KnowledgeBaseDao
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.middleware.oss import OssClient, normalize_oss_upload_result
 from app.models import async_session
-from app.models.knowledge_base import PityKnowledgeBase
+from app.models.knowledge_base import ArgusKnowledgeBase
 from app.models.user import User
 from app.routers import Permission, get_session
 from app.routers.config.environment import router
@@ -74,14 +74,14 @@ async def _ensure_knowledge_charset(session):
     try:
         # 统一表字符集，避免中文/特殊字符写入报 1366
         await session.execute(text(
-            "ALTER TABLE pity_knowledge_base CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            "ALTER TABLE argus_knowledge_base CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
         ))
     except Exception:
         # 可能已是目标字符集或权限受限，继续做列级兜底
         pass
     try:
         await session.execute(text(
-            "ALTER TABLE pity_knowledge_base MODIFY COLUMN content LONGTEXT "
+            "ALTER TABLE argus_knowledge_base MODIFY COLUMN content LONGTEXT "
             "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '文档内容'"
         ))
     except Exception:
@@ -92,61 +92,61 @@ async def _ensure_knowledge_charset(session):
 @router.get("/knowledge/list")
 async def list_knowledge(page: int = 1, size: int = 12, title: str = "", category: str = "", _=Depends(Permission())):
     async with async_session() as session:
-        filters = [PityKnowledgeBase.deleted_at == 0]
+        filters = [ArgusKnowledgeBase.deleted_at == 0]
         if title:
-            filters.append(PityKnowledgeBase.title.like(f"%{title}%"))
+            filters.append(ArgusKnowledgeBase.title.like(f"%{title}%"))
         if category:
-            filters.append(PityKnowledgeBase.category == category)
+            filters.append(ArgusKnowledgeBase.category == category)
 
-        total_sql = select(func.count(PityKnowledgeBase.id)).where(*filters)
+        total_sql = select(func.count(ArgusKnowledgeBase.id)).where(*filters)
         total = (await session.execute(total_sql)).scalar() or 0
 
         sql = (
-            select(PityKnowledgeBase, User.name.label("create_user_name"))
-            .outerjoin(User, User.id == PityKnowledgeBase.create_user)
+            select(ArgusKnowledgeBase, User.name.label("create_user_name"))
+            .outerjoin(User, User.id == ArgusKnowledgeBase.create_user)
             .where(*filters)
-            .order_by(PityKnowledgeBase.id.asc())
+            .order_by(ArgusKnowledgeBase.id.asc())
             .offset((page - 1) * size)
             .limit(size)
         )
         result = await session.execute(sql)
         rows = []
         for kb, create_user_name in result.all():
-            item = PityResponse.model_to_dict(kb)
+            item = ArgusResponse.model_to_dict(kb)
             item["create_user_name"] = create_user_name
             rows.append(item)
 
-        return PityResponse.success_with_size(data=rows, total=total)
+        return ArgusResponse.success_with_size(data=rows, total=total)
 
 
 @router.get("/knowledge/public/list")
 async def list_public_knowledge(page: int = 1, size: int = 1000, title: str = "", category: str = ""):
     async with async_session() as session:
-        filters = [PityKnowledgeBase.deleted_at == 0]
+        filters = [ArgusKnowledgeBase.deleted_at == 0]
         if title:
-            filters.append(PityKnowledgeBase.title.like(f"%{title}%"))
+            filters.append(ArgusKnowledgeBase.title.like(f"%{title}%"))
         if category:
-            filters.append(PityKnowledgeBase.category == category)
+            filters.append(ArgusKnowledgeBase.category == category)
 
-        total_sql = select(func.count(PityKnowledgeBase.id)).where(*filters)
+        total_sql = select(func.count(ArgusKnowledgeBase.id)).where(*filters)
         total = (await session.execute(total_sql)).scalar() or 0
 
         sql = (
-            select(PityKnowledgeBase, User.name.label("create_user_name"))
-            .outerjoin(User, User.id == PityKnowledgeBase.create_user)
+            select(ArgusKnowledgeBase, User.name.label("create_user_name"))
+            .outerjoin(User, User.id == ArgusKnowledgeBase.create_user)
             .where(*filters)
-            .order_by(PityKnowledgeBase.id.asc())
+            .order_by(ArgusKnowledgeBase.id.asc())
             .offset((page - 1) * size)
             .limit(size)
         )
         result = await session.execute(sql)
         rows = []
         for kb, create_user_name in result.all():
-            item = PityResponse.model_to_dict(kb)
+            item = ArgusResponse.model_to_dict(kb)
             item["create_user_name"] = create_user_name
             rows.append(item)
 
-        return PityResponse.success_with_size(data=rows, total=total)
+        return ArgusResponse.success_with_size(data=rows, total=total)
 
 
 @router.post("/knowledge/insert")
@@ -154,7 +154,7 @@ async def insert_knowledge(data: KnowledgeBaseForm, user_info=Depends(Permission
     async with async_session() as session:
         await _ensure_knowledge_charset(session)
         await session.commit()
-    model = PityKnowledgeBase(
+    model = ArgusKnowledgeBase(
         title=data.title.strip(),
         summary=(data.summary or "").strip(),
         content=_sanitize_mysql_utf8_text(data.content),
@@ -162,13 +162,13 @@ async def insert_knowledge(data: KnowledgeBaseForm, user_info=Depends(Permission
         user=user_info['id']
     )
     await KnowledgeBaseDao.insert(model=model, log=True)
-    return PityResponse.success(model.id)
+    return ArgusResponse.success(model.id)
 
 
 @router.post("/knowledge/update")
 async def update_knowledge(data: KnowledgeBaseForm, user_info=Depends(Permission(Config.ADMIN))):
     if data.id is None:
-        return PityResponse.failed("id不能为空")
+        return ArgusResponse.failed("id不能为空")
     async with async_session() as session:
         await _ensure_knowledge_charset(session)
         await session.commit()
@@ -178,13 +178,13 @@ async def update_knowledge(data: KnowledgeBaseForm, user_info=Depends(Permission
     data.category = (data.category or "").strip()
     data.content = _sanitize_mysql_utf8_text(data.content)
     ans = await KnowledgeBaseDao.update_record_by_id(user_info['id'], data, True, True)
-    return PityResponse.success(PityResponse.model_to_dict(ans))
+    return ArgusResponse.success(ArgusResponse.model_to_dict(ans))
 
 
 @router.get("/knowledge/delete")
 async def delete_knowledge(id: int, user_info=Depends(Permission(Config.ADMIN)), session=Depends(get_session)):
     await KnowledgeBaseDao.delete_record_by_id(session, user_info['id'], id, log=True)
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.get("/knowledge/asset/view")
@@ -192,7 +192,7 @@ async def view_knowledge_asset(object_key: str, bucket_name: str = KNOWLEDGE_BUC
     try:
         normalized_key = str(object_key or "").replace("\\", "/").strip().strip("/")
         if not normalized_key:
-            return PityResponse.failed("object_key不能为空")
+            return ArgusResponse.failed("object_key不能为空")
         client = OssClient.get_oss_client()
         detail = await client.get_object_detail(
             normalized_key,
@@ -200,10 +200,10 @@ async def view_knowledge_asset(object_key: str, bucket_name: str = KNOWLEDGE_BUC
         )
         view_url = str(detail.get("view_url") or "").strip()
         if not view_url:
-            return PityResponse.failed("资源访问地址不存在")
+            return ArgusResponse.failed("资源访问地址不存在")
         return RedirectResponse(url=view_url, status_code=307)
     except Exception as exc:
-        return PityResponse.failed(f"资源访问失败: {exc}")
+        return ArgusResponse.failed(f"资源访问失败: {exc}")
 
 
 @router.post("/knowledge/upload")
@@ -215,9 +215,9 @@ async def upload_knowledge_file(
     try:
         content = await file.read()
         if not content:
-            return PityResponse.failed("文件不能为空")
+            return ArgusResponse.failed("文件不能为空")
         if len(content) > KNOWLEDGE_MAX_UPLOAD_SIZE:
-            return PityResponse.failed("文件不能超过20MB")
+            return ArgusResponse.failed("文件不能超过20MB")
         object_key = _build_knowledge_object_key(file.filename)
         client = OssClient.get_oss_client()
         upload_result, file_size = await client.create_file(
@@ -236,7 +236,7 @@ async def upload_knowledge_file(
             upload_meta.get("object_key") or object_key,
             upload_meta.get("bucket_name") or KNOWLEDGE_BUCKET_NAME,
         )
-        return PityResponse.success({
+        return ArgusResponse.success({
             "file_name": file.filename,
             "stored_name": Path(object_key).name,
             "kind": kind or "file",
@@ -246,4 +246,4 @@ async def upload_knowledge_file(
             "object_key": upload_meta.get("object_key") or object_key,
         })
     except Exception as exc:
-        return PityResponse.failed(f"上传失败: {exc}")
+        return ArgusResponse.failed(f"上传失败: {exc}")

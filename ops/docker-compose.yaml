@@ -3,68 +3,68 @@ services:
 
   mysql:
     image: mysql:8.0
-    container_name: pity_mysql
+    container_name: argus_mysql
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: Pitytester666666
-      MYSQL_DATABASE: pity
+      MYSQL_ROOT_PASSWORD: Argustester666666
+      MYSQL_DATABASE: argus
     networks:
-      pity_net:
+      argus_net:
         aliases:
-          - pity_mysql
+          - argus_mysql
 
   redis:
     image: redis
-    container_name: pity_redis
+    container_name: argus_redis
     command: redis-server --requirepass 123456
     restart: always
     environment:
       - TZ=Asia/Shanghai
     networks:
-      pity_net:
+      argus_net:
         aliases:
-          - pity_redis
+          - argus_redis
 
-  pity:
+  argus:
     build:
       context: ../
       dockerfile: ops/dockerfile
       args:
         buildno: 1
-    container_name: pity_server
+    container_name: argus_server
     ports:
       - "7777:7777"
     restart: always
     environment:
       - TZ=Asia/Shanghai
     networks:
-      pity_net:
+      argus_net:
         aliases:
-        - pity_server
+        - argus_server
     volumes:
-      - ./dev.env.ops:/pity/conf/dev.env
-      - ../statics/knowledge:/pity/statics/knowledge
-      - ../ui_runner:/pity/ui_runner
+      - ./dev.env.ops:/argus/conf/dev.env
+      - ../statics/knowledge:/argus/statics/knowledge
+      - ../ui_runner:/argus/ui_runner
 
   ui_runner:
     build:
       context: ../ui_runner
       dockerfile: Dockerfile
-    container_name: pity_ui_runner
+    container_name: argus_ui_runner
     restart: always
     depends_on:
-      - pity
+      - argus
     environment:
       - TZ=Asia/Shanghai
-      - UI_RUNNER_SERVER=http://pity_server:7777
+      - UI_RUNNER_SERVER=http://argus_server:7777
       - UI_RUNNER_BROWSER=chromium
       - UI_RUNNER_HEADLESS=true
     networks:
-      pity_net:
+      argus_net:
         aliases:
-          - pity_ui_runner
+          - argus_ui_runner
     volumes:
       - ../ui_runner:/app
 
 networks:
-  pity_net:
+  argus_net:

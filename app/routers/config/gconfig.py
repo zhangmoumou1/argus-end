@@ -3,7 +3,7 @@ import json
 from fastapi import Depends
 
 from app.crud.config.GConfigDao import GConfigDao
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.routers import Permission, get_session
 from app.routers.config.environment import router
 from app.schema.gconfig import GConfigForm
@@ -35,22 +35,22 @@ async def list_gconfig(page: int = 1, size: int = 8, env=None, key: str = "", va
         page, size, env=env, key=key, var_type=var_type, project_id=project_id, case_name=case_name,
         create_user=create_user
     )
-    return PityResponse.success_with_size(data=data, total=total)
+    return ArgusResponse.success_with_size(data=data, total=total)
 
 
 @router.post("/gconfig/insert")
 async def insert_gconfig(data: GConfigForm, user_info=Depends(Permission(Config.ADMIN))):
     await GConfigDao.insert_gconfig(data, user_info['id'])
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/gconfig/update")
 async def update_gconfig(data: GConfigForm, user_info=Depends(Permission(Config.ADMIN))):
     await GConfigDao.update_record_by_id(user_info['id'], data, True, True)
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.get("/gconfig/delete")
 async def delete_gconfig(id: int, user_info=Depends(Permission(Config.ADMIN)), session=Depends(get_session)):
     await GConfigDao.delete_record_by_id(session, user_info['id'], id, log=True)
-    return PityResponse.success()
+    return ArgusResponse.success()

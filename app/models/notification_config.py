@@ -1,10 +1,10 @@
 from sqlalchemy import TEXT, INT, VARCHAR, Column
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityNotificationConfig(PityBase):
-    __tablename__ = "pity_notification_config"
+class ArgusNotificationConfig(ArgusBase):
+    __tablename__ = "argus_notification_config"
     name = Column(VARCHAR(64), nullable=False, comment="配置名称")
     channel_ids = Column(TEXT, nullable=False, comment="渠道ID列表，逗号分隔")
     template_id = Column(INT, nullable=True, comment="模板ID")

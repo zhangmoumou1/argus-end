@@ -42,7 +42,7 @@ class UiNotice:
             if plan_id == 0 and run_id > 0:
                 async with async_session() as s:
                     r = await s.execute(
-                        text("SELECT plan_id FROM pity_ui_test_run WHERE id=:id"),
+                        text("SELECT plan_id FROM argus_ui_test_run WHERE id=:id"),
                         {"id": run_id}
                     )
                     row = r.mappings().first()
@@ -92,7 +92,7 @@ class UiNotice:
                 if not plan.get("receiver") or not plan.get("msg_type"):
                     return
                 # 模拟旧版渠道
-                from app.models.notification_channel import PityNotificationChannel
+                from app.models.notification_channel import ArgusNotificationChannel
                 msg_types = plan["msg_type"].split(",")
                 channels = []
                 for mt in msg_types:
@@ -100,7 +100,7 @@ class UiNotice:
                     if not mt.isdigit():
                         continue
                     # 为每个msg_type创建临时channel对象（仅用于发送）
-                    ch = PityNotificationChannel("legacy", int(mt), "{}", 0)
+                    ch = ArgusNotificationChannel("legacy", int(mt), "{}", 0)
                     ch.enabled = True
                     channels.append(ch)
                 template = None
@@ -150,7 +150,7 @@ class UiNotice:
         """从数据库查询UI测试计划"""
         async with async_session() as session:
             result = await session.execute(
-                text("SELECT * FROM pity_ui_test_plan WHERE id = :id AND deleted_at = 0"),
+                text("SELECT * FROM argus_ui_test_plan WHERE id = :id AND deleted_at = 0"),
                 {"id": plan_id}
             )
             row = result.mappings().first()
@@ -165,7 +165,7 @@ class UiNotice:
             return {}
         async with async_session() as session:
             result = await session.execute(
-                text("SELECT * FROM pity_ui_test_run WHERE id = :id"),
+                text("SELECT * FROM argus_ui_test_run WHERE id = :id"),
                 {"id": run_id}
             )
             row = result.mappings().first()
@@ -222,7 +222,7 @@ class UiNotice:
                 if create_user and not row_dict.get("executor_name"):
                     try:
                         u_row = await session.execute(
-                            text("SELECT name FROM pity_user WHERE id=:id AND deleted_at=0"),
+                            text("SELECT name FROM argus_user WHERE id=:id AND deleted_at=0"),
                             {"id": int(create_user)}
                         )
                         u = u_row.mappings().first()
@@ -241,7 +241,7 @@ class UiNotice:
                      "SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count, "
                      "SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count, "
                      "SUM(CASE WHEN status NOT IN ('success','failed','skipped') THEN 1 ELSE 0 END) AS error_count "
-                     "FROM pity_ui_test_run_detail WHERE run_id = :id"),
+                     "FROM argus_ui_test_run_detail WHERE run_id = :id"),
                 {"id": run_id}
             )
             d = detail.mappings().first()
@@ -300,7 +300,7 @@ class UiNotice:
                     pass
 
         # 执行人
-        executor = run_result.get("executor_name", "") or "pity机器人"
+        executor = run_result.get("executor_name", "") or "argus机器人"
 
         pass_rate = plan.get("pass_rate")
         if total > 0:

@@ -1,10 +1,10 @@
 from sqlalchemy import Boolean, Column, INT, String, UniqueConstraint
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityMQConfig(PityBase):
-    __tablename__ = "pity_mq_config"
+class ArgusMQConfig(ArgusBase):
+    __tablename__ = "argus_mq_config"
     __table_args__ = (
         UniqueConstraint('env', 'name', 'mq_type', 'deleted_at'),
     )

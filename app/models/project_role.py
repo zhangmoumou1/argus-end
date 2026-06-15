@@ -1,10 +1,10 @@
 from sqlalchemy import INT, Column
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class ProjectRole(PityBase):
-    __tablename__ = 'pity_project_role'
+class ProjectRole(ArgusBase):
+    __tablename__ = 'argus_project_role'
     user_id = Column(INT, index=True)
     project_id = Column(INT, index=True)
     project_role = Column(INT, index=True)

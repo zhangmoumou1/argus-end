@@ -1,15 +1,15 @@
 from typing import List
 
 from app.crud import Mapper, ModelWrapper
-from app.models.notification_group import PityUserGroup, PityUserGroupMember
+from app.models.notification_group import ArgusUserGroup, ArgusUserGroupMember
 
 
-@ModelWrapper(PityUserGroup)
+@ModelWrapper(ArgusUserGroup)
 class NotificationGroupDao(Mapper):
 
     @classmethod
     async def list_groups(cls):
-        return await cls.select_list(condition=[PityUserGroup.deleted_at == 0])
+        return await cls.select_list(condition=[ArgusUserGroup.deleted_at == 0])
 
     @classmethod
     async def get_group(cls, group_id: int):
@@ -18,7 +18,7 @@ class NotificationGroupDao(Mapper):
     @classmethod
     async def add_members(cls, session, group_id: int, user_ids: List[int]):
         for uid in user_ids:
-            session.add(PityUserGroupMember(group_id, uid))
+            session.add(ArgusUserGroupMember(group_id, uid))
         await session.flush()
 
     @classmethod
@@ -27,8 +27,8 @@ class NotificationGroupDao(Mapper):
         from sqlalchemy import select
         async with async_session() as session:
             result = await session.execute(
-                select(PityUserGroupMember.user_id)
-                .where(PityUserGroupMember.group_id == group_id, PityUserGroupMember.deleted_at == 0)
+                select(ArgusUserGroupMember.user_id)
+                .where(ArgusUserGroupMember.group_id == group_id, ArgusUserGroupMember.deleted_at == 0)
             )
             return [row[0] for row in result.fetchall()]
 
@@ -40,8 +40,8 @@ class NotificationGroupDao(Mapper):
         from sqlalchemy import select
         async with async_session() as session:
             result = await session.execute(
-                select(PityUserGroupMember.user_id)
-                .where(PityUserGroupMember.group_id.in_(group_ids), PityUserGroupMember.deleted_at == 0)
+                select(ArgusUserGroupMember.user_id)
+                .where(ArgusUserGroupMember.group_id.in_(group_ids), ArgusUserGroupMember.deleted_at == 0)
             )
             return list(set(row[0] for row in result.fetchall()))
 
@@ -49,7 +49,7 @@ class NotificationGroupDao(Mapper):
     async def clear_members(cls, session, group_id: int):
         from sqlalchemy import update
         await session.execute(
-            update(PityUserGroupMember)
-            .where(PityUserGroupMember.group_id == group_id, PityUserGroupMember.deleted_at == 0)
+            update(ArgusUserGroupMember)
+            .where(ArgusUserGroupMember.group_id == group_id, ArgusUserGroupMember.deleted_at == 0)
             .values(deleted_at=0)
         )

@@ -9,7 +9,7 @@ from app.models import Base
 from config import Config
 
 
-class PityBase(Base):
+class ArgusBase(Base):
     id = Column(INT, primary_key=True)
     created_at = Column(TIMESTAMP, nullable=False)
     updated_at = Column(TIMESTAMP, nullable=False)
@@ -52,11 +52,11 @@ class PityBase(Base):
         return json.dumps(data, ensure_ascii=False)
 
 
-class PityRelationField(object):
+class ArgusRelationField(object):
     def __init__(self, field, foreign=None):
         self.field = field
         self.foreign = foreign
 
 
-def init_relation(model, *data: PityRelationField):
+def init_relation(model, *data: ArgusRelationField):
     setattr(model, Config.RELATION, data)

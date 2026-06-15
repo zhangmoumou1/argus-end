@@ -4,7 +4,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.executor import Executor
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 
 
 class Scheduler(object):
@@ -98,7 +98,7 @@ class Scheduler(object):
     def list_test_plan(data: List):
         ans = []
         for d, follow in data:
-            temp = PityResponse.model_to_dict(d)
+            temp = ArgusResponse.model_to_dict(d)
             temp['follow'] = follow is not None
             job = Scheduler.scheduler.get_job(str(temp.get('id')))
             if job is None:

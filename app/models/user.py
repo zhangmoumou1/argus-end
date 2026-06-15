@@ -6,7 +6,7 @@ from app.models import Base
 
 
 class User(Base):
-    __tablename__ = "pity_user"
+    __tablename__ = "argus_user"
 
     id = Column(INT, primary_key=True)
     username = Column(String(16), unique=True, index=True)

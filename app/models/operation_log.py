@@ -6,11 +6,11 @@ from app.enums.OperationEnum import OperationType
 from app.models import Base
 
 
-class PityOperationLog(Base):
+class ArgusOperationLog(Base):
     """
     用户操作记录表
     """
-    __tablename__ = 'pity_operation_log'
+    __tablename__ = 'argus_operation_log'
 
     id = Column(INT, primary_key=True)
     # 操作人

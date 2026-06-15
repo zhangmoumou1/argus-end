@@ -1,10 +1,10 @@
 from pydantic.v1 import validator, BaseModel
 
 from app.exception.error import ParamsError
-from app.schema.base import PityModel
+from app.schema.base import ArgusModel
 
 
-class PityAddressForm(BaseModel):
+class ArgusAddressForm(BaseModel):
     id: int = None
     env: int = None
     name: str = ''
@@ -13,7 +13,7 @@ class PityAddressForm(BaseModel):
 
     @validator("env", 'name')
     def name_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
     @validator('gateway', whole=True)
     def prefix_match(cls, v):

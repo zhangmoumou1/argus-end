@@ -12,7 +12,7 @@ from app.core.platform_mq import declare_platform_task_topology, rabbit_connecti
 from app.core.platform_task import PlatformTaskService, decode_payload
 from app.enums.platform_task import PlatformResultStatus, PlatformTaskStatus, PlatformTaskType, TASK_TERMINAL_STATUSES
 from app.models import async_session
-from app.models.platform_task import PityPlatformTask
+from app.models.platform_task import ArgusPlatformTask
 from app.utils.logger import Log
 from config import Config
 
@@ -56,7 +56,7 @@ class PlatformTaskWorker:
         async with async_session() as session:
             exists = await session.execute(text(
                 "SELECT COUNT(1) AS total FROM information_schema.TABLES "
-                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='pity_platform_task'"
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='argus_platform_task'"
             ))
             if int((exists.mappings().first() or {}).get("total") or 0) <= 0:
                 logger.info("platform task table not found, skip worker polling until Alembic migration is applied")
@@ -173,7 +173,7 @@ class PlatformTaskWorker:
             )
             return True
 
-    async def _execute_task(self, task: PityPlatformTask):
+    async def _execute_task(self, task: ArgusPlatformTask):
         task_type = str(task.task_type or "")
         payload = decode_payload(task.payload)
         if task_type == PlatformTaskType.API_TEST_RUN.value:
@@ -187,7 +187,7 @@ class PlatformTaskWorker:
                 raise RuntimeError("UI测试任务缺少run_id")
             async with async_session() as session:
                 run_row = await session.execute(
-                    text("SELECT id, status, plan_id, project_id FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+                    text("SELECT id, status, plan_id, project_id FROM argus_ui_test_run WHERE deleted_at=0 AND id=:id"),
                     {"id": run_id},
                 )
                 run = run_row.mappings().first()

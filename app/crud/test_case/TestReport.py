@@ -5,8 +5,8 @@ from sqlalchemy import select, desc
 from app.crud import Mapper
 from app.crud.test_case.TestResult import TestResultDao
 from app.models import async_session
-from app.models.report import PityReport
-from app.models.test_plan import PityTestPlan
+from app.models.report import ArgusReport
+from app.models.test_plan import ArgusTestPlan
 from app.utils.logger import Log
 
 
@@ -22,7 +22,7 @@ class TestReportDao(Mapper):
         try:
             async with async_session() as session:
                 async with session.begin():
-                    report = PityReport(executor, env, mode=mode, plan_id=plan_id)
+                    report = ArgusReport(executor, env, mode=mode, plan_id=plan_id)
                     session.add(report)
                     await session.flush()
                     return report.id
@@ -35,7 +35,7 @@ class TestReportDao(Mapper):
         try:
             async with async_session() as session:
                 async with session.begin():
-                    sql = select(PityReport).where(PityReport.id == report_id)
+                    sql = select(ArgusReport).where(ArgusReport.id == report_id)
                     data = await session.execute(sql)
                     report = data.scalars().first()
                     if report is None:
@@ -51,7 +51,7 @@ class TestReportDao(Mapper):
         try:
             async with async_session() as session:
                 async with session.begin():
-                    sql = select(PityReport).where(PityReport.id == report_id)
+                    sql = select(ArgusReport).where(ArgusReport.id == report_id)
                     data = await session.execute(sql)
                     report = data.scalars().first()
                     if report is None:
@@ -70,7 +70,7 @@ class TestReportDao(Mapper):
     async def is_stopped(report_id: int) -> bool:
         try:
             async with async_session() as session:
-                sql = select(PityReport.status).where(PityReport.id == report_id)
+                sql = select(ArgusReport.status).where(ArgusReport.id == report_id)
                 data = await session.execute(sql)
                 status = data.scalar()
                 return int(status or 0) == 2
@@ -80,11 +80,11 @@ class TestReportDao(Mapper):
 
     @staticmethod
     async def end(report_id: int, success_count: int, failed_count: int,
-                  error_count: int, skipped_count: int, status: int, cost: str) -> PityReport:
+                  error_count: int, skipped_count: int, status: int, cost: str) -> ArgusReport:
         try:
             async with async_session() as session:
                 async with session.begin():
-                    sql = select(PityReport).where(PityReport.id == report_id)
+                    sql = select(ArgusReport).where(ArgusReport.id == report_id)
                     data = await session.execute(sql)
                     report = data.scalars().first()
                     if report is None:
@@ -112,9 +112,9 @@ class TestReportDao(Mapper):
         """
         try:
             async with async_session() as session:
-                sql = select(PityReport, PityTestPlan.name).outerjoin(PityTestPlan,
-                                                                      PityTestPlan.id == PityReport.plan_id
-                                                                      ).where(PityReport.id == report_id)
+                sql = select(ArgusReport, ArgusTestPlan.name).outerjoin(ArgusTestPlan,
+                                                                      ArgusTestPlan.id == ArgusReport.plan_id
+                                                                      ).where(ArgusReport.id == report_id)
                 data = await session.execute(sql)
                 if data is None:
                     raise Exception("报告不存在")
@@ -123,8 +123,8 @@ class TestReportDao(Mapper):
 
                 # 按测试计划case_list顺序重排报告详情中的case_list
                 if report is not None and getattr(report, "plan_id", None):
-                    plan = await session.execute(select(PityTestPlan).where(PityTestPlan.id == report.plan_id,
-                                                                            PityTestPlan.deleted_at == 0))
+                    plan = await session.execute(select(ArgusTestPlan).where(ArgusTestPlan.id == report.plan_id,
+                                                                            ArgusTestPlan.deleted_at == 0))
                     plan = plan.scalars().first()
                     if plan is not None and getattr(plan, "case_list", None):
                         try:
@@ -153,14 +153,14 @@ class TestReportDao(Mapper):
         """
         try:
             async with async_session() as session:
-                sql = select(PityReport, PityTestPlan.name.label("plan_name")).outerjoin(
-                    PityTestPlan,
-                    PityTestPlan.id == PityReport.plan_id
-                ).where(PityReport.start_at.between(start_time, end_time)).order_by(
-                    desc(PityReport.start_at))
+                sql = select(ArgusReport, ArgusTestPlan.name.label("plan_name")).outerjoin(
+                    ArgusTestPlan,
+                    ArgusTestPlan.id == ArgusReport.plan_id
+                ).where(ArgusReport.start_at.between(start_time, end_time)).order_by(
+                    desc(ArgusReport.start_at))
                 if executor is not None:
                     executor = executor if executor != "CPU" else 0
-                    sql = sql.where(PityReport.executor == executor)
+                    sql = sql.where(ArgusReport.executor == executor)
                 data = await session.execute(sql)
                 total = data.raw.rowcount
                 if total == 0:

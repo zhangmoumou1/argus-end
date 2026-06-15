@@ -1,15 +1,15 @@
 from typing import List
 
 from app.crud import Mapper, ModelWrapper
-from app.models.notification_config import PityNotificationConfig
+from app.models.notification_config import ArgusNotificationConfig
 
 
-@ModelWrapper(PityNotificationConfig)
+@ModelWrapper(ArgusNotificationConfig)
 class NotificationConfigDao(Mapper):
 
     @classmethod
     async def list_configs(cls):
-        return await cls.select_list(condition=[PityNotificationConfig.deleted_at == 0])
+        return await cls.select_list(condition=[ArgusNotificationConfig.deleted_at == 0])
 
     @classmethod
     async def get_config(cls, config_id: int):

@@ -5,14 +5,14 @@ from fastapi import Depends
 from sqlalchemy import text, select
 
 from app.core.platform_task import PlatformTaskService
-from app.crud.operation.PityOperationDao import PityOperationDao
-from app.crud.test_case.TestPlan import PityTestPlanDao
+from app.crud.operation.ArgusOperationDao import ArgusOperationDao
+from app.crud.test_case.TestPlan import ArgusTestPlanDao
 from app.enums.OperationEnum import OperationType
 from app.enums.platform_task import PlatformTaskType
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.models import async_session
 from app.models.test_case import TestCase
-from app.schema.test_plan import PityTestPlanForm
+from app.schema.test_plan import ArgusTestPlanForm
 from app.routers import Permission, get_session
 from app.routers.testcase.testcase import router
 from app.utils.scheduler import Scheduler
@@ -48,11 +48,11 @@ def parse_case_id_list(raw_value):
 
 async def ensure_plan_enabled_column():
     async with async_session() as session:
-        result = await session.execute(text("SHOW COLUMNS FROM pity_test_plan LIKE 'enabled'"))
+        result = await session.execute(text("SHOW COLUMNS FROM argus_test_plan LIKE 'enabled'"))
         row = result.first()
         if row is None:
             await session.execute(text(
-                "ALTER TABLE pity_test_plan "
+                "ALTER TABLE argus_test_plan "
                 "ADD COLUMN enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否开启计划调度'"
             ))
             await session.commit()
@@ -63,7 +63,7 @@ async def list_test_plan(page: int, size: int, project_id: int = None, name: str
                          create_user: int = None, follow: bool = None, user_info=Depends(Permission())):
     try:
         await ensure_plan_enabled_column()
-        data, total = await PityTestPlanDao.list_test_plan(page, size, project_id=project_id, name=name,
+        data, total = await ArgusTestPlanDao.list_test_plan(page, size, project_id=project_id, name=name,
                                                            follow=follow, priority=priority, role=user_info['role'],
                                                            create_user=create_user, user_id=user_info['id'])
 
@@ -92,62 +92,62 @@ async def list_test_plan(page: int, size: int, project_id: int = None, name: str
                 item["enabled"] = enabled_map.get(item.get("id"), True)
             current_case_ids = plan_case_map.get(int(item.get("id") or 0), [])
             item["pending_review"] = 1 if any(case_id in pending_case_ids for case_id in current_case_ids) else 0
-        return PityResponse.success_with_size(ans, total=total)
+        return ArgusResponse.success_with_size(ans, total=total)
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 @router.post("/plan/insert")
-async def insert_test_plan(form: PityTestPlanForm, user_info=Depends(Permission(Config.MANAGER))):
+async def insert_test_plan(form: ArgusTestPlanForm, user_info=Depends(Permission(Config.MANAGER))):
     try:
         await ensure_plan_enabled_column()
         form.cron = normalize_plan_cron(form.cron)
-        plan = await PityTestPlanDao.insert_test_plan(form, user_info['id'])
+        plan = await ArgusTestPlanDao.insert_test_plan(form, user_info['id'])
         # 添加定时任务
         Scheduler.add_test_plan(plan.id, plan.name, plan.cron)
         # 按计划开关控制启停
         if not bool(getattr(plan, "enabled", True)):
             Scheduler.pause_resume_test_plan(plan.id, False)
-        return PityResponse.success()
+        return ArgusResponse.success()
     except Exception as e:
-        return PityResponse.failed(str(e))
+        return ArgusResponse.failed(str(e))
 
 
 @router.post("/plan/update")
-async def update_test_plan(form: PityTestPlanForm, user_info=Depends(Permission(Config.MANAGER))):
+async def update_test_plan(form: ArgusTestPlanForm, user_info=Depends(Permission(Config.MANAGER))):
     try:
         await ensure_plan_enabled_column()
         form.cron = normalize_plan_cron(form.cron)
-        await PityTestPlanDao.update_test_plan(form, user_info['id'], True)
+        await ArgusTestPlanDao.update_test_plan(form, user_info['id'], True)
         Scheduler.edit_test_plan(form.id, form.name, form.cron)
         Scheduler.pause_resume_test_plan(form.id, bool(form.enabled))
-        return PityResponse.success()
+        return ArgusResponse.success()
     except Exception as e:
-        return PityResponse.failed(str(e))
+        return ArgusResponse.failed(str(e))
 
 
 @router.get("/plan/delete")
 async def delete_test_plan(id: int, user_info=Depends(Permission(Config.MANAGER)), session=Depends(get_session)):
     try:
-        await PityTestPlanDao.delete_record_by_id(session, user_info['id'], id, log=True)
+        await ArgusTestPlanDao.delete_record_by_id(session, user_info['id'], id, log=True)
         Scheduler.remove(id)
     except JobLookupError:
         # 说明没找到job
         pass
     except Exception as e:
-        return PityResponse.failed(str(e))
-    return PityResponse.success()
+        return ArgusResponse.failed(str(e))
+    return ArgusResponse.success()
 
 
 @router.get("/plan/switch")
 async def switch_test_plan(id: int, status: bool, user_info=Depends(Permission(Config.MANAGER))):
     try:
         await ensure_plan_enabled_column()
-        await PityTestPlanDao.update_test_plan_enabled(id, status, user_info['id'], log=True)
+        await ArgusTestPlanDao.update_test_plan_enabled(id, status, user_info['id'], log=True)
         Scheduler.pause_resume_test_plan(id, status)
-        return PityResponse.success()
+        return ArgusResponse.success()
     except Exception as e:
-        return PityResponse.failed(str(e))
+        return ArgusResponse.failed(str(e))
 
 
 @router.get("/plan/execute")
@@ -163,7 +163,7 @@ async def run_test_plan(id: int, user_info=Depends(Permission(Config.MEMBER))):
         )
         async with async_session() as session:
             async with session.begin():
-                await PityOperationDao.insert_log(
+                await ArgusOperationDao.insert_log(
                     session,
                     user_info["id"],
                     OperationType.EXECUTE,
@@ -180,24 +180,24 @@ async def run_test_plan(id: int, user_info=Depends(Permission(Config.MEMBER))):
             resource_key=f"api_plan_{id}",
             payload={"plan_id": id, "executor": user_info["id"]},
         )
-        return PityResponse.success({"message": "任务已入队，请耐心等待", "platform_task_id": platform_task.id})
+        return ArgusResponse.success({"message": "任务已入队，请耐心等待", "platform_task_id": platform_task.id})
     except Exception as e:
-        return PityResponse.failed(str(e))
+        return ArgusResponse.failed(str(e))
 
 
 @router.get("/plan/follow", description="关注测试计划")
 async def follow_test_plan(id: int, user_info=Depends(Permission(Config.MEMBER))):
     try:
-        await PityTestPlanDao.follow_test_plan(id, user_info['id'])
-        return PityResponse.success(msg="关注成功")
+        await ArgusTestPlanDao.follow_test_plan(id, user_info['id'])
+        return ArgusResponse.success(msg="关注成功")
     except Exception as e:
-        return PityResponse.failed(str(e))
+        return ArgusResponse.failed(str(e))
 
 
 @router.get("/plan/unfollow", description="取消关注测试计划")
 async def unfollow_test_plan(id: int, user_info=Depends(Permission(Config.MEMBER))):
     try:
-        await PityTestPlanDao.unfollow_test_plan(id, user_info['id'])
-        return PityResponse.success(msg="取关成功")
+        await ArgusTestPlanDao.unfollow_test_plan(id, user_info['id'])
+        return ArgusResponse.success(msg="取关成功")
     except Exception as e:
-        return PityResponse.failed(str(e))
+        return ArgusResponse.failed(str(e))

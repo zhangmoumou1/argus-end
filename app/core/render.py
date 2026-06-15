@@ -5,16 +5,16 @@ from functools import lru_cache
 
 from jinja2 import Environment
 
-from app.core.functions import PityFunction
+from app.core.functions import ArgusFunction
 
 
 def get_env():
     my_env = Environment()
-    for func in dir(PityFunction):
+    for func in dir(ArgusFunction):
         # 过滤掉内置方法
         if func.startswith("__"):
             continue
-        my_env.globals[func] = getattr(PityFunction, func)
+        my_env.globals[func] = getattr(ArgusFunction, func)
         my_env.variable_start_string = "${"
         my_env.variable_end_string = "}"
     return my_env

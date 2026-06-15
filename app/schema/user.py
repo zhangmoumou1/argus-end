@@ -2,7 +2,7 @@ from pydantic.v1 import BaseModel, validator
 
 # 都可以为空，为空则不进行更改
 from app.exception.error import ParamsError
-from app.schema.base import PityModel
+from app.schema.base import ArgusModel
 
 
 class UserUpdateForm(BaseModel):
@@ -15,7 +15,7 @@ class UserUpdateForm(BaseModel):
 
     @validator('id')
     def id_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
 class UserDto(BaseModel):
@@ -69,7 +69,7 @@ class ResetUserPwdByAdminForm(BaseModel):
 
     @validator('user_id')
     def user_id_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
     @validator('password')
     def admin_password_not_empty(cls, v):

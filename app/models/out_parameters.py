@@ -1,13 +1,13 @@
 from sqlalchemy import Column, String, INT, UniqueConstraint
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityTestCaseOutParameters(PityBase):
+class ArgusTestCaseOutParameters(ArgusBase):
     """
-    pity用例出参数据，与用例绑定
+    argus用例出参数据，与用例绑定
     """
-    __tablename__ = 'pity_out_parameters'
+    __tablename__ = 'argus_out_parameters'
     __table_args__ = (
         UniqueConstraint('case_id', 'name', 'deleted_at'),
     )

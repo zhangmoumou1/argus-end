@@ -1,13 +1,13 @@
 from sqlalchemy import INT, Column, UniqueConstraint
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityTestPlanFollowUserRel(PityBase):
+class ArgusTestPlanFollowUserRel(ArgusBase):
     """
     测试计划关注用户表
     """
-    __tablename__ = "pity_testplan_follow_user_rel"
+    __tablename__ = "argus_testplan_follow_user_rel"
     __table_args__ = (
         UniqueConstraint('user_id', 'plan_id', 'deleted_at'),
     )

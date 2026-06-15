@@ -1,7 +1,7 @@
 from app.exception.error import ParamsError
 
 
-class PityModel(object):
+class ArgusModel(object):
 
     @staticmethod
     def not_empty(v):

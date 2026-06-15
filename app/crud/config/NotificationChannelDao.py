@@ -1,17 +1,17 @@
 from typing import List
 
 from app.crud import Mapper, ModelWrapper
-from app.models.notification_channel import PityNotificationChannel
+from app.models.notification_channel import ArgusNotificationChannel
 
 
-@ModelWrapper(PityNotificationChannel)
+@ModelWrapper(ArgusNotificationChannel)
 class NotificationChannelDao(Mapper):
 
     @classmethod
     async def list_channels(cls, channel_type: int = None):
-        condition = [PityNotificationChannel.deleted_at == 0]
+        condition = [ArgusNotificationChannel.deleted_at == 0]
         if channel_type is not None:
-            condition.append(PityNotificationChannel.channel_type == channel_type)
+            condition.append(ArgusNotificationChannel.channel_type == channel_type)
         return await cls.select_list(condition=condition)
 
     @classmethod
@@ -19,19 +19,19 @@ class NotificationChannelDao(Mapper):
         if not ids:
             return []
         condition = [
-            PityNotificationChannel.deleted_at == 0,
-            PityNotificationChannel.id.in_(ids),
+            ArgusNotificationChannel.deleted_at == 0,
+            ArgusNotificationChannel.id.in_(ids),
         ]
         return await cls.select_list(condition=condition)
 
     @classmethod
     async def list_enabled(cls, channel_type: int = None):
         condition = [
-            PityNotificationChannel.deleted_at == 0,
-            PityNotificationChannel.enabled == True,
+            ArgusNotificationChannel.deleted_at == 0,
+            ArgusNotificationChannel.enabled == True,
         ]
         if channel_type is not None:
-            condition.append(PityNotificationChannel.channel_type == channel_type)
+            condition.append(ArgusNotificationChannel.channel_type == channel_type)
         return await cls.select_list(condition=condition)
 
     @classmethod

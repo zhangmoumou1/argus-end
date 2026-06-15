@@ -4,11 +4,11 @@ Python请求网关地址表
 
 from sqlalchemy import Column, INT, String, UniqueConstraint
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityGateway(PityBase):
-    __tablename__ = 'pity_gateway'
+class ArgusGateway(ArgusBase):
+    __tablename__ = 'argus_gateway'
     __table_args__ = (
         UniqueConstraint('env', 'name', 'deleted_at'),
     )

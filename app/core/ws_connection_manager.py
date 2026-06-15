@@ -4,8 +4,8 @@ from typing import TypeVar
 from fastapi import WebSocket
 
 from app.core.msg.wss_msg import WebSocketMessage
-from app.crud.notification.NotificationDao import PityNotificationDao
-from app.models.notification import PityNotification
+from app.crud.notification.NotificationDao import ArgusNotificationDao
+from app.models.notification import ArgusNotification
 from app.utils.logger import Log
 
 MsgType = TypeVar('MsgType', str, dict, bytes)
@@ -85,7 +85,7 @@ class ConnectionManager:
         msg = dict(type=msg_type, record_msg=record_msg)
         await self.send_personal_message(user_id, msg)
 
-    async def notify(self, user_id, title=None, content=None, notice: PityNotification = None):
+    async def notify(self, user_id, title=None, content=None, notice: ArgusNotification = None):
         """
         根据user_id推送对应的
         :param content:
@@ -110,7 +110,7 @@ class ConnectionManager:
                     await self.send_personal_message(user_id, WebSocketMessage.msg_count())
             # 判断是否要落入推送表
             if notice is not None:
-                await PityNotificationDao.insert(model=notice)
+                await ArgusNotificationDao.insert(model=notice)
         except Exception as e:
             ConnectionManager.logger.error(f"发送消息失败, {e}")
 

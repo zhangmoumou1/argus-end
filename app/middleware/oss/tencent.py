@@ -5,7 +5,7 @@ from app.middleware.oss import OssFile
 
 
 class TencentCos(OssFile):
-    _base_path = "pity"
+    _base_path = "argus"
 
     def __init__(self, access_key_id: str, access_key_secret: str, region: str, bucket: str):
         self.bucket = bucket

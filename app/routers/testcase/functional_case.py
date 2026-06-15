@@ -17,12 +17,12 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import OperationalError
 
 from app.crud.config.GConfigDao import GConfigDao
-from app.crud.operation.PityOperationDao import PityOperationDao
+from app.crud.operation.ArgusOperationDao import ArgusOperationDao
 from app.enums.OperationEnum import OperationType
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.middleware.oss import OssClient, get_default_bucket_name, normalize_oss_upload_result
 from app.models import async_session
-from app.models.functional_case import PityFunctionalCaseDirectory, PityFunctionalCaseFile, PityFunctionalCaseItem
+from app.models.functional_case import ArgusFunctionalCaseDirectory, ArgusFunctionalCaseFile, ArgusFunctionalCaseItem
 from app.models.user import User
 from app.routers import Permission
 from app.schema.functional_case import (
@@ -49,7 +49,7 @@ FUNCTIONAL_CASE_ASSET_BASE_PATH = "functionalcase"
 
 
 def serialize_model(model):
-    data = PityResponse.model_to_dict(model)
+    data = ArgusResponse.model_to_dict(model)
     return data
 
 
@@ -173,59 +173,59 @@ async def ensure_functional_case_schema(session):
         return
     try:
         file_column = await session.execute(
-            text("SHOW COLUMNS FROM pity_functional_case_file LIKE 'sort_index'")
+            text("SHOW COLUMNS FROM argus_functional_case_file LIKE 'sort_index'")
         )
         if file_column.first() is None:
             await session.execute(
                 text(
-                    "ALTER TABLE pity_functional_case_file "
+                    "ALTER TABLE argus_functional_case_file "
                     "ADD COLUMN sort_index INT NOT NULL DEFAULT 0 COMMENT '排序'"
                 )
             )
         directory_column = await session.execute(
-            text("SHOW COLUMNS FROM pity_functional_case_directory LIKE 'sort_index'")
+            text("SHOW COLUMNS FROM argus_functional_case_directory LIKE 'sort_index'")
         )
         if directory_column.first() is None:
             await session.execute(
                 text(
-                    "ALTER TABLE pity_functional_case_directory "
+                    "ALTER TABLE argus_functional_case_directory "
                     "ADD COLUMN sort_index INT NOT NULL DEFAULT 0 COMMENT '排序'"
                 )
             )
         file_project_column = await session.execute(
-            text("SHOW COLUMNS FROM pity_functional_case_file LIKE 'project_id'")
+            text("SHOW COLUMNS FROM argus_functional_case_file LIKE 'project_id'")
         )
         if file_project_column.first() is None:
             await session.execute(
                 text(
-                    "ALTER TABLE pity_functional_case_file "
+                    "ALTER TABLE argus_functional_case_file "
                     "ADD COLUMN project_id INT NOT NULL DEFAULT 0 COMMENT '项目ID'"
                 )
             )
         file_case_data_column = await session.execute(
-            text("SHOW COLUMNS FROM pity_functional_case_file LIKE 'case_data'")
+            text("SHOW COLUMNS FROM argus_functional_case_file LIKE 'case_data'")
         )
         if file_case_data_column.first() is None:
             await session.execute(
                 text(
-                    "ALTER TABLE pity_functional_case_file "
+                    "ALTER TABLE argus_functional_case_file "
                     "ADD COLUMN case_data LONGTEXT NULL COMMENT '功能用例JSON内容'"
                 )
             )
         directory_project_column = await session.execute(
-            text("SHOW COLUMNS FROM pity_functional_case_directory LIKE 'project_id'")
+            text("SHOW COLUMNS FROM argus_functional_case_directory LIKE 'project_id'")
         )
         if directory_project_column.first() is None:
             await session.execute(
                 text(
-                    "ALTER TABLE pity_functional_case_directory "
+                    "ALTER TABLE argus_functional_case_directory "
                     "ADD COLUMN project_id INT NOT NULL DEFAULT 0 COMMENT '项目ID'"
                 )
             )
 
         await session.execute(
             text(
-                "CREATE TABLE IF NOT EXISTS pity_functional_case_item ("
+                "CREATE TABLE IF NOT EXISTS argus_functional_case_item ("
                 "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
                 "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
                 "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
@@ -249,22 +249,22 @@ async def ensure_functional_case_schema(session):
             )
         )
         item_case_uid_column = await session.execute(
-            text("SHOW COLUMNS FROM pity_functional_case_item LIKE 'case_uid'")
+            text("SHOW COLUMNS FROM argus_functional_case_item LIKE 'case_uid'")
         )
         if item_case_uid_column.first() is None:
             await session.execute(
                 text(
-                    "ALTER TABLE pity_functional_case_item "
+                    "ALTER TABLE argus_functional_case_item "
                     "ADD COLUMN case_uid VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用例稳定标识'"
                 )
             )
         item_case_pass_column = await session.execute(
-            text("SHOW COLUMNS FROM pity_functional_case_item LIKE 'case_pass'")
+            text("SHOW COLUMNS FROM argus_functional_case_item LIKE 'case_pass'")
         )
         if item_case_pass_column.first() is None:
             await session.execute(
                 text(
-                    "ALTER TABLE pity_functional_case_item "
+                    "ALTER TABLE argus_functional_case_item "
                     "ADD COLUMN case_pass INT NOT NULL DEFAULT 0 COMMENT '是否通过(1通过,0不通过)'"
                 )
             )
@@ -383,7 +383,7 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int, c
     existing_result = await session.execute(
         text(
             "SELECT id, case_uid, case_name, case_path, case_priority, case_pass "
-            "FROM pity_functional_case_item WHERE file_id=:file_id AND deleted_at=0"
+            "FROM argus_functional_case_item WHERE file_id=:file_id AND deleted_at=0"
         ),
         {"file_id": model.id},
     )
@@ -408,7 +408,7 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int, c
                     })
             await session.execute(
                 text(
-                    "UPDATE pity_functional_case_item "
+                    "UPDATE argus_functional_case_item "
                     "SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
                     "WHERE id=:id AND deleted_at=0"
                 ),
@@ -458,7 +458,7 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int, c
     if insert_rows:
         await session.execute(
             text(
-                "INSERT INTO pity_functional_case_item "
+                "INSERT INTO argus_functional_case_item "
                 "(project_id, directory_id, file_id, case_uid, file_title, case_name, case_path, case_priority, case_pass, deleted_at, create_user, update_user, created_at, updated_at) "
                 "VALUES (:project_id, :directory_id, :file_id, :case_uid, :file_title, :case_name, :case_path, :case_priority, :case_pass, 0, :create_user, :update_user, :created_at, :updated_at)"
             ),
@@ -467,7 +467,7 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int, c
     if update_rows:
         await session.execute(
             text(
-                "UPDATE pity_functional_case_item SET "
+                "UPDATE argus_functional_case_item SET "
                 "project_id=:project_id, directory_id=:directory_id, file_title=:file_title, "
                 "case_name=:case_name, case_path=:case_path, case_priority=:case_priority, case_pass=:case_pass, "
                 "update_user=:update_user, updated_at=:updated_at "
@@ -480,7 +480,7 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int, c
 async def update_functional_case_item_meta(session, model, operator_user_id: int):
     await session.execute(
         text(
-            "UPDATE pity_functional_case_item "
+            "UPDATE argus_functional_case_item "
             "SET project_id=:project_id, directory_id=:directory_id, file_title=:file_title, "
             "update_user=:update_user, updated_at=:updated_at "
             "WHERE file_id=:file_id AND deleted_at=0"
@@ -500,7 +500,7 @@ async def fetch_case_stats_by_file_id(session, file_id: int):
     result = await session.execute(
         text(
             "SELECT COUNT(1) AS case_count, COALESCE(SUM(case_pass), 0) AS pass_count "
-            "FROM pity_functional_case_item WHERE file_id=:file_id AND deleted_at=0"
+            "FROM argus_functional_case_item WHERE file_id=:file_id AND deleted_at=0"
         ),
         {"file_id": file_id},
     )
@@ -518,9 +518,9 @@ async def sync_functional_case_items_async(file_id: int, operator_user_id: int, 
         async with async_session() as session:
             await ensure_functional_case_schema(session)
             result = await session.execute(
-                select(PityFunctionalCaseFile).where(
-                    PityFunctionalCaseFile.id == file_id,
-                    PityFunctionalCaseFile.deleted_at == 0,
+                select(ArgusFunctionalCaseFile).where(
+                    ArgusFunctionalCaseFile.id == file_id,
+                    ArgusFunctionalCaseFile.deleted_at == 0,
                 )
             )
             model = result.scalars().first()
@@ -833,9 +833,9 @@ def read_case_payload(model):
 async def collect_directory_ids(project_id: int, directory_id: int):
     async with async_session() as session:
         result = await session.execute(
-            select(PityFunctionalCaseDirectory).where(
-                PityFunctionalCaseDirectory.deleted_at == 0,
-                PityFunctionalCaseDirectory.project_id == project_id,
+            select(ArgusFunctionalCaseDirectory).where(
+                ArgusFunctionalCaseDirectory.deleted_at == 0,
+                ArgusFunctionalCaseDirectory.project_id == project_id,
             )
         )
         records = result.scalars().all()
@@ -856,17 +856,17 @@ async def list_directory(project_id: int, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_functional_case_schema(session)
         directory_result = await session.execute(
-            select(PityFunctionalCaseDirectory)
+            select(ArgusFunctionalCaseDirectory)
             .where(
-                PityFunctionalCaseDirectory.deleted_at == 0,
-                PityFunctionalCaseDirectory.project_id == project_id,
+                ArgusFunctionalCaseDirectory.deleted_at == 0,
+                ArgusFunctionalCaseDirectory.project_id == project_id,
             )
-            .order_by(PityFunctionalCaseDirectory.sort_index.asc(), PityFunctionalCaseDirectory.id.asc())
+            .order_by(ArgusFunctionalCaseDirectory.sort_index.asc(), ArgusFunctionalCaseDirectory.id.asc())
         )
         file_result = await session.execute(
-            select(PityFunctionalCaseFile).where(
-                PityFunctionalCaseFile.deleted_at == 0,
-                PityFunctionalCaseFile.project_id == project_id,
+            select(ArgusFunctionalCaseFile).where(
+                ArgusFunctionalCaseFile.deleted_at == 0,
+                ArgusFunctionalCaseFile.project_id == project_id,
             )
         )
         records = directory_result.scalars().all()
@@ -879,7 +879,7 @@ async def list_directory(project_id: int, _=Depends(Permission())):
             file_stats_map[directory_id] = {"case_count": 0, "pass_count": 0}
         file_stats_map[directory_id]["case_count"] += int(stats.get("case_count") or 0)
         file_stats_map[directory_id]["pass_count"] += int(stats.get("pass_count") or 0)
-    return PityResponse.success(build_tree(records, file_stats_map))
+    return ArgusResponse.success(build_tree(records, file_stats_map))
 
 
 @router.post("/directory/insert")
@@ -888,15 +888,15 @@ async def insert_directory(form: FunctionalCaseDirectoryForm, user_info=Depends(
         await ensure_functional_case_schema(session)
         if form.parent:
             parent_result = await session.execute(
-                select(PityFunctionalCaseDirectory).where(
-                    PityFunctionalCaseDirectory.id == form.parent,
-                    PityFunctionalCaseDirectory.deleted_at == 0,
-                    PityFunctionalCaseDirectory.project_id == form.project_id,
+                select(ArgusFunctionalCaseDirectory).where(
+                    ArgusFunctionalCaseDirectory.id == form.parent,
+                    ArgusFunctionalCaseDirectory.deleted_at == 0,
+                    ArgusFunctionalCaseDirectory.project_id == form.project_id,
                 )
             )
             if parent_result.scalars().first() is None:
-                return PityResponse.failed("父目录不存在")
-        model = PityFunctionalCaseDirectory(
+                return ArgusResponse.failed("父目录不存在")
+        model = ArgusFunctionalCaseDirectory(
             project_id=form.project_id,
             name=form.name,
             parent=form.parent,
@@ -905,46 +905,46 @@ async def insert_directory(form: FunctionalCaseDirectoryForm, user_info=Depends(
         )
         session.add(model)
         await session.flush()
-        await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
+        await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
         await session.commit()
         await session.refresh(model)
-    return PityResponse.success(serialize_model(model))
+    return ArgusResponse.success(serialize_model(model))
 
 
 @router.post("/directory/update")
 async def update_directory(form: FunctionalCaseDirectoryForm, user_info=Depends(Permission())):
     if not form.id:
-        return PityResponse.failed("id不能为空")
+        return ArgusResponse.failed("id不能为空")
     async with async_session() as session:
         await ensure_functional_case_schema(session)
         result = await session.execute(
-            select(PityFunctionalCaseDirectory).where(
-                PityFunctionalCaseDirectory.id == form.id,
-                PityFunctionalCaseDirectory.deleted_at == 0,
-                PityFunctionalCaseDirectory.project_id == form.project_id,
+            select(ArgusFunctionalCaseDirectory).where(
+                ArgusFunctionalCaseDirectory.id == form.id,
+                ArgusFunctionalCaseDirectory.deleted_at == 0,
+                ArgusFunctionalCaseDirectory.project_id == form.project_id,
             )
         )
         model = result.scalars().first()
         if model is None:
-            return PityResponse.failed("目录不存在")
+            return ArgusResponse.failed("目录不存在")
         old = deepcopy(model)
         if form.parent:
             parent_result = await session.execute(
-                select(PityFunctionalCaseDirectory).where(
-                    PityFunctionalCaseDirectory.id == form.parent,
-                    PityFunctionalCaseDirectory.deleted_at == 0,
-                    PityFunctionalCaseDirectory.project_id == form.project_id,
+                select(ArgusFunctionalCaseDirectory).where(
+                    ArgusFunctionalCaseDirectory.id == form.parent,
+                    ArgusFunctionalCaseDirectory.deleted_at == 0,
+                    ArgusFunctionalCaseDirectory.project_id == form.project_id,
                 )
             )
             if parent_result.scalars().first() is None:
-                return PityResponse.failed("父目录不存在")
+                return ArgusResponse.failed("父目录不存在")
         model.name = form.name
         model.parent = form.parent
         model.sort_index = form.sort_index
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
         await session.flush()
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE,
@@ -955,36 +955,36 @@ async def update_directory(form: FunctionalCaseDirectoryForm, user_info=Depends(
         )
         await session.commit()
         await session.refresh(model)
-    return PityResponse.success(serialize_model(model))
+    return ArgusResponse.success(serialize_model(model))
 
 
 @router.post("/directory/move")
 async def move_directory(form: FunctionalCaseDirectoryMoveForm, user_info=Depends(Permission())):
     if form.parent == form.id:
-        return PityResponse.failed("父目录不能选择自己")
+        return ArgusResponse.failed("父目录不能选择自己")
     if form.parent:
         children = await collect_directory_ids(form.project_id, form.id)
         if form.parent in children:
-            return PityResponse.failed("父目录不能选择自身或子目录")
+            return ArgusResponse.failed("父目录不能选择自身或子目录")
     async with async_session() as session:
         await ensure_functional_case_schema(session)
         result = await session.execute(
-            select(PityFunctionalCaseDirectory).where(
-                PityFunctionalCaseDirectory.id == form.id,
-                PityFunctionalCaseDirectory.deleted_at == 0,
-                PityFunctionalCaseDirectory.project_id == form.project_id,
+            select(ArgusFunctionalCaseDirectory).where(
+                ArgusFunctionalCaseDirectory.id == form.id,
+                ArgusFunctionalCaseDirectory.deleted_at == 0,
+                ArgusFunctionalCaseDirectory.project_id == form.project_id,
             )
         )
         model = result.scalars().first()
         if model is None:
-            return PityResponse.failed("目录不存在")
+            return ArgusResponse.failed("目录不存在")
         old = deepcopy(model)
         model.parent = form.parent
         model.sort_index = form.sort_index
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
         await session.flush()
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE,
@@ -995,7 +995,7 @@ async def move_directory(form: FunctionalCaseDirectoryMoveForm, user_info=Depend
         )
         await session.commit()
         await session.refresh(model)
-    return PityResponse.success(serialize_model(model))
+    return ArgusResponse.success(serialize_model(model))
 
 
 @router.get("/directory/delete")
@@ -1005,17 +1005,17 @@ async def delete_directory(id: int, project_id: int, user_info=Depends(Permissio
     async with async_session() as session:
         await ensure_functional_case_schema(session)
         directory_result = await session.execute(
-            select(PityFunctionalCaseDirectory).where(
-                PityFunctionalCaseDirectory.id.in_(ids),
-                PityFunctionalCaseDirectory.deleted_at == 0,
-                PityFunctionalCaseDirectory.project_id == project_id,
+            select(ArgusFunctionalCaseDirectory).where(
+                ArgusFunctionalCaseDirectory.id.in_(ids),
+                ArgusFunctionalCaseDirectory.deleted_at == 0,
+                ArgusFunctionalCaseDirectory.project_id == project_id,
             )
         )
         case_result = await session.execute(
-            select(PityFunctionalCaseFile).where(
-                PityFunctionalCaseFile.directory_id.in_(ids),
-                PityFunctionalCaseFile.deleted_at == 0,
-                PityFunctionalCaseFile.project_id == project_id,
+            select(ArgusFunctionalCaseFile).where(
+                ArgusFunctionalCaseFile.directory_id.in_(ids),
+                ArgusFunctionalCaseFile.deleted_at == 0,
+                ArgusFunctionalCaseFile.project_id == project_id,
             )
         )
         files = case_result.scalars().all()
@@ -1024,17 +1024,17 @@ async def delete_directory(id: int, project_id: int, user_info=Depends(Permissio
             item.deleted_at = now_deleted
             item.update_user = user_info["id"]
             item.updated_at = datetime.now()
-            await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, item, key=item.id)
+            await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, item, key=item.id)
         for item in files:
             item.deleted_at = now_deleted
             item.update_user = user_info["id"]
             item.updated_at = datetime.now()
-            await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, item, key=item.id)
+            await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, item, key=item.id)
 
         for item in files:
             await session.execute(
                 text(
-                    "UPDATE pity_functional_case_item "
+                    "UPDATE argus_functional_case_item "
                     "SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
                     "WHERE file_id=:file_id AND deleted_at=0"
                 ),
@@ -1047,7 +1047,7 @@ async def delete_directory(id: int, project_id: int, user_info=Depends(Permissio
             )
 
         await session.commit()
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.get("/file/list")
@@ -1056,19 +1056,19 @@ async def list_files(project_id: int, directory_id: int = None, title: str = "",
     async with async_session() as session:
         await ensure_functional_case_schema(session)
         filters = [
-            PityFunctionalCaseFile.deleted_at == 0,
-            PityFunctionalCaseFile.project_id == project_id,
+            ArgusFunctionalCaseFile.deleted_at == 0,
+            ArgusFunctionalCaseFile.project_id == project_id,
         ]
         if directory_id:
-            filters.append(PityFunctionalCaseFile.directory_id.in_(directory_ids))
+            filters.append(ArgusFunctionalCaseFile.directory_id.in_(directory_ids))
         if title:
-            filters.append(PityFunctionalCaseFile.title.like(f"%{title}%"))
-        total_sql = select(func.count(PityFunctionalCaseFile.id)).where(*filters)
+            filters.append(ArgusFunctionalCaseFile.title.like(f"%{title}%"))
+        total_sql = select(func.count(ArgusFunctionalCaseFile.id)).where(*filters)
         total = (await session.execute(total_sql)).scalar()
         result = await session.execute(
-            select(PityFunctionalCaseFile)
+            select(ArgusFunctionalCaseFile)
             .where(*filters)
-            .order_by(PityFunctionalCaseFile.sort_index.asc(), PityFunctionalCaseFile.id.desc())
+            .order_by(ArgusFunctionalCaseFile.sort_index.asc(), ArgusFunctionalCaseFile.id.desc())
         )
         files = result.scalars().all()
         user_ids = list({item.create_user for item in files if item.create_user is not None})
@@ -1087,20 +1087,20 @@ async def list_files(project_id: int, directory_id: int = None, title: str = "",
             row["create_user_name"] = user_name_map.get(item.create_user, "")
             row["creator_name"] = row["create_user_name"]
             data.append(row)
-    return PityResponse.success_with_size(data=data, total=total)
+    return ArgusResponse.success_with_size(data=data, total=total)
 
 
 @router.get("/file/query")
 async def query_file(id: int, project_id: int = None, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_functional_case_schema(session)
-        filters = [PityFunctionalCaseFile.id == id, PityFunctionalCaseFile.deleted_at == 0]
+        filters = [ArgusFunctionalCaseFile.id == id, ArgusFunctionalCaseFile.deleted_at == 0]
         if project_id is not None:
-            filters.append(PityFunctionalCaseFile.project_id == project_id)
-        result = await session.execute(select(PityFunctionalCaseFile).where(*filters))
+            filters.append(ArgusFunctionalCaseFile.project_id == project_id)
+        result = await session.execute(select(ArgusFunctionalCaseFile).where(*filters))
         model = result.scalars().first()
         if model is None:
-            return PityResponse.failed("功能用例不存在")
+            return ArgusResponse.failed("功能用例不存在")
         user_result = await session.execute(select(User).where(User.id == model.create_user))
         user = user_result.scalars().first()
         data = serialize_model(model)
@@ -1118,7 +1118,7 @@ async def query_file(id: int, project_id: int = None, _=Depends(Permission())):
         data["case_num"] = data["case_count"]
         data["create_user_name"] = pick_user_name(user)
         data["creator_name"] = data["create_user_name"]
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.post("/file/insert")
@@ -1128,15 +1128,15 @@ async def insert_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
     async with async_session() as session:
         await ensure_functional_case_schema(session)
         directory_result = await session.execute(
-            select(PityFunctionalCaseDirectory).where(
-                PityFunctionalCaseDirectory.id == form.directory_id,
-                PityFunctionalCaseDirectory.deleted_at == 0,
-                PityFunctionalCaseDirectory.project_id == form.project_id,
+            select(ArgusFunctionalCaseDirectory).where(
+                ArgusFunctionalCaseDirectory.id == form.directory_id,
+                ArgusFunctionalCaseDirectory.deleted_at == 0,
+                ArgusFunctionalCaseDirectory.project_id == form.project_id,
             )
         )
         if directory_result.scalars().first() is None:
-            return PityResponse.failed("目录不存在")
-        model = PityFunctionalCaseFile(
+            return ArgusResponse.failed("目录不存在")
+        model = ArgusFunctionalCaseFile(
             project_id=form.project_id,
             title=form.title,
             directory_id=form.directory_id,
@@ -1147,7 +1147,7 @@ async def insert_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
         )
         session.add(model)
         await session.flush()
-        await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
+        await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
         await session.refresh(model)
         await session.commit()
         user_result = await session.execute(select(User).where(User.id == model.create_user))
@@ -1169,37 +1169,37 @@ async def insert_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
     data["case_num"] = data["case_count"]
     data["create_user_name"] = pick_user_name(user)
     data["creator_name"] = data["create_user_name"]
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.post("/file/update")
 async def update_file(form: FunctionalCaseFileForm, user_info=Depends(Permission())):
     if not form.id:
-        return PityResponse.failed("id不能为空")
+        return ArgusResponse.failed("id不能为空")
     stats = analyze_case_data(form.data)
     case_items = extract_case_items(form.data)
     async with async_session() as session:
         await ensure_functional_case_schema(session)
         result = await session.execute(
-            select(PityFunctionalCaseFile).where(
-                PityFunctionalCaseFile.id == form.id,
-                PityFunctionalCaseFile.deleted_at == 0,
-                PityFunctionalCaseFile.project_id == form.project_id,
+            select(ArgusFunctionalCaseFile).where(
+                ArgusFunctionalCaseFile.id == form.id,
+                ArgusFunctionalCaseFile.deleted_at == 0,
+                ArgusFunctionalCaseFile.project_id == form.project_id,
             )
         )
         model = result.scalars().first()
         if model is None:
-            return PityResponse.failed("功能用例不存在")
+            return ArgusResponse.failed("功能用例不存在")
         old = deepcopy(model)
         directory_result = await session.execute(
-            select(PityFunctionalCaseDirectory).where(
-                PityFunctionalCaseDirectory.id == form.directory_id,
-                PityFunctionalCaseDirectory.deleted_at == 0,
-                PityFunctionalCaseDirectory.project_id == form.project_id,
+            select(ArgusFunctionalCaseDirectory).where(
+                ArgusFunctionalCaseDirectory.id == form.directory_id,
+                ArgusFunctionalCaseDirectory.deleted_at == 0,
+                ArgusFunctionalCaseDirectory.project_id == form.project_id,
             )
         )
         if directory_result.scalars().first() is None:
-            return PityResponse.failed("目录不存在")
+            return ArgusResponse.failed("目录不存在")
         dumped_case_data = dump_case_data(form.data)
         old_case_data = str(model.case_data or "")
         new_case_data = str(dumped_case_data or "")
@@ -1218,7 +1218,7 @@ async def update_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
         model.updated_at = datetime.now()
         changed_fields = ["title", "project_id", "directory_id", "case_data", "sort_index"]
         await session.flush()
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE,
@@ -1263,19 +1263,19 @@ async def update_file(form: FunctionalCaseFileForm, user_info=Depends(Permission
     data["case_num"] = data["case_count"]
     data["create_user_name"] = pick_user_name(user)
     data["creator_name"] = data["create_user_name"]
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.post("/file/ai-generate")
 async def ai_generate_file(form: FunctionalCaseAIGenerateForm, _=Depends(Permission())):
     if not form.requirement_text and not form.instruction_text and not form.images:
-        return PityResponse.failed("请至少提供需求描述、生成要求或需求截图")
+        return ArgusResponse.failed("请至少提供需求描述、生成要求或需求截图")
     try:
         ai_config = await GConfigDao.get_active_ai_model_config()
         ai_payload = call_kimi_generate(form, ai_config)
         title, data = normalize_ai_case_data(ai_payload, form.title)
         stats = analyze_case_data(data)
-        return PityResponse.success({
+        return ArgusResponse.success({
             "title": title,
             "data": data,
             "case_count": int(stats["case_count"] or 0),
@@ -1283,7 +1283,7 @@ async def ai_generate_file(form: FunctionalCaseAIGenerateForm, _=Depends(Permiss
             "case_num": int(stats["case_count"] or 0),
         })
     except Exception as exc:
-        return PityResponse.failed(str(exc))
+        return ArgusResponse.failed(str(exc))
 
 
 @router.post("/file/move")
@@ -1291,32 +1291,32 @@ async def move_file(form: FunctionalCaseFileMoveForm, user_info=Depends(Permissi
     async with async_session() as session:
         await ensure_functional_case_schema(session)
         result = await session.execute(
-            select(PityFunctionalCaseFile).where(
-                PityFunctionalCaseFile.id == form.id,
-                PityFunctionalCaseFile.deleted_at == 0,
-                PityFunctionalCaseFile.project_id == form.project_id,
+            select(ArgusFunctionalCaseFile).where(
+                ArgusFunctionalCaseFile.id == form.id,
+                ArgusFunctionalCaseFile.deleted_at == 0,
+                ArgusFunctionalCaseFile.project_id == form.project_id,
             )
         )
         model = result.scalars().first()
         if model is None:
-            return PityResponse.failed("功能用例不存在")
+            return ArgusResponse.failed("功能用例不存在")
         old = deepcopy(model)
         directory_result = await session.execute(
-            select(PityFunctionalCaseDirectory).where(
-                PityFunctionalCaseDirectory.id == form.directory_id,
-                PityFunctionalCaseDirectory.deleted_at == 0,
-                PityFunctionalCaseDirectory.project_id == form.project_id,
+            select(ArgusFunctionalCaseDirectory).where(
+                ArgusFunctionalCaseDirectory.id == form.directory_id,
+                ArgusFunctionalCaseDirectory.deleted_at == 0,
+                ArgusFunctionalCaseDirectory.project_id == form.project_id,
             )
         )
         if directory_result.scalars().first() is None:
-            return PityResponse.failed("目标目录不存在")
+            return ArgusResponse.failed("目标目录不存在")
         model.directory_id = form.directory_id
         model.project_id = form.project_id
         model.sort_index = form.sort_index
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
         await session.flush()
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE,
@@ -1327,27 +1327,27 @@ async def move_file(form: FunctionalCaseFileMoveForm, user_info=Depends(Permissi
         )
         await session.commit()
         await session.refresh(model)
-    return PityResponse.success(serialize_model(model))
+    return ArgusResponse.success(serialize_model(model))
 
 
 @router.get("/file/delete")
 async def delete_file(id: int, project_id: int = None, user_info=Depends(Permission())):
     async with async_session() as session:
         await ensure_functional_case_schema(session)
-        filters = [PityFunctionalCaseFile.id == id, PityFunctionalCaseFile.deleted_at == 0]
+        filters = [ArgusFunctionalCaseFile.id == id, ArgusFunctionalCaseFile.deleted_at == 0]
         if project_id is not None:
-            filters.append(PityFunctionalCaseFile.project_id == project_id)
-        result = await session.execute(select(PityFunctionalCaseFile).where(*filters))
+            filters.append(ArgusFunctionalCaseFile.project_id == project_id)
+        result = await session.execute(select(ArgusFunctionalCaseFile).where(*filters))
         model = result.scalars().first()
         if model is None:
-            return PityResponse.failed("功能用例不存在")
+            return ArgusResponse.failed("功能用例不存在")
         model.deleted_at = int(datetime.now().timestamp())
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
-        await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, model, key=model.id)
+        await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, model, key=model.id)
         await session.execute(
             text(
-                "UPDATE pity_functional_case_item "
+                "UPDATE argus_functional_case_item "
                 "SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
                 "WHERE file_id=:file_id AND deleted_at=0"
             ),
@@ -1359,7 +1359,7 @@ async def delete_file(id: int, project_id: int = None, user_info=Depends(Permiss
             },
         )
         await session.commit()
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.get("/file/asset/view")
@@ -1367,7 +1367,7 @@ async def view_functional_case_asset(object_key: str, bucket_name: str = ""):
     try:
         normalized_key = str(object_key or "").replace("\\", "/").strip().strip("/")
         if not normalized_key:
-            return PityResponse.failed("object_key不能为空")
+            return ArgusResponse.failed("object_key不能为空")
         client = OssClient.get_oss_client()
         detail = await client.get_object_detail(
             normalized_key,
@@ -1375,11 +1375,11 @@ async def view_functional_case_asset(object_key: str, bucket_name: str = ""):
         )
         view_url = str(detail.get("view_url") or "").strip()
         if not view_url:
-            return PityResponse.failed("资源访问地址不存在")
+            return ArgusResponse.failed("资源访问地址不存在")
         return RedirectResponse(url=view_url, status_code=307)
     except Exception as exc:
         logger.exception(f"访问功能用例资源失败: {exc}")
-        return PityResponse.failed("资源访问失败")
+        return ArgusResponse.failed("资源访问失败")
 
 
 @router.post("/file/image/upload")
@@ -1390,7 +1390,7 @@ async def upload_functional_case_image(
     try:
         content_type = str(file.content_type or "").lower()
         if not content_type.startswith("image/"):
-            return PityResponse.failed("仅支持图片文件上传")
+            return ArgusResponse.failed("仅支持图片文件上传")
         suffix = Path(file.filename or "").suffix.lower()
         allowed_suffix = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg"}
         if suffix not in allowed_suffix:
@@ -1398,7 +1398,7 @@ async def upload_functional_case_image(
         stored_name = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}{suffix}"
         content = await file.read()
         if not content:
-            return PityResponse.failed("上传失败，图片内容为空")
+            return ArgusResponse.failed("上传失败，图片内容为空")
         client = OssClient.get_oss_client()
         bucket_name = get_default_bucket_name() or None
         upload_result, _ = await client.create_file(
@@ -1417,7 +1417,7 @@ async def upload_functional_case_image(
         )
         object_key = upload_meta.get("object_key") or f"{FUNCTIONAL_CASE_ASSET_BASE_PATH}/{stored_name}"
         file_url = build_functional_case_asset_url(object_key, upload_meta.get("bucket_name") or bucket_name)
-        return PityResponse.success({
+        return ArgusResponse.success({
             "name": stored_name,
             "url": file_url,
             "file_path": object_key,
@@ -1426,7 +1426,7 @@ async def upload_functional_case_image(
         })
     except Exception as e:
         logger.exception(f"上传功能用例节点图片失败: {e}")
-        return PityResponse.failed("上传节点图片失败")
+        return ArgusResponse.failed("上传节点图片失败")
 
 
 @router.post("/file/attachment/upload")
@@ -1441,7 +1441,7 @@ async def upload_functional_case_attachment(
         stored_name = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}{suffix}"
         content = await file.read()
         if not content:
-            return PityResponse.failed("上传失败，附件内容为空")
+            return ArgusResponse.failed("上传失败，附件内容为空")
         client = OssClient.get_oss_client()
         bucket_name = get_default_bucket_name() or None
         upload_result, _ = await client.create_file(
@@ -1460,7 +1460,7 @@ async def upload_functional_case_attachment(
         )
         object_key = upload_meta.get("object_key") or f"{FUNCTIONAL_CASE_ASSET_BASE_PATH}/{stored_name}"
         file_url = build_functional_case_asset_url(object_key, upload_meta.get("bucket_name") or bucket_name)
-        return PityResponse.success({
+        return ArgusResponse.success({
             "name": file.filename or stored_name,
             "stored_name": stored_name,
             "url": file_url,
@@ -1471,4 +1471,4 @@ async def upload_functional_case_attachment(
         })
     except Exception as e:
         logger.exception(f"上传功能用例节点附件失败: {e}")
-        return PityResponse.failed("上传节点附件失败")
+        return ArgusResponse.failed("上传节点附件失败")

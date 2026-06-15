@@ -1,10 +1,10 @@
 from sqlalchemy import INT, Column, String, UniqueConstraint
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class Project(PityBase):
-    __tablename__ = 'pity_project'
+class Project(ArgusBase):
+    __tablename__ = 'argus_project'
     name = Column(String(16))
     owner = Column(INT)
     app = Column(String(32))

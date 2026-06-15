@@ -3,7 +3,7 @@ import time
 
 
 class OssFile(object):
-    _base_path = "pity"
+    _base_path = "argus"
 
     async def create_file(self, filepath: str, content, base_path: str = None, bucket_name: str = None,
                           content_type: str = None) -> (str, int):
@@ -39,6 +39,6 @@ class OssFile(object):
 
     @staticmethod
     def get_random_filename(filename):
-        random_str = list("pity")
+        random_str = list("argus")
         random.shuffle(random_str)
         return f"{time.time_ns()}_{''.join(random_str)}_{filename}"

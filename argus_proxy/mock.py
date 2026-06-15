@@ -6,7 +6,7 @@ from pymock import Mock
 from app.core.mock_rule import list_mock_rules_for_proxy, match_mock_rule, safe_json_loads
 
 
-class PityMock(object):
+class ArgusMock(object):
     def __init__(self):
         self.mock = Mock()
 

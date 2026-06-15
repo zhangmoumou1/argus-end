@@ -6,7 +6,7 @@ FMT = "%Y-%m-%d %H:%M:%S"
 FMT_S = "%Y-%m-%d %H:%M:%S.%f+0000"
 
 
-class PityFunction(object):
+class ArgusFunction(object):
 
     @staticmethod
     def now(mode: int = 1):
@@ -83,7 +83,7 @@ class PityFunction(object):
         :param num: 数量
         :return:
         """
-        ut = PityFunction.get_unit(unit)
+        ut = ArgusFunction.get_unit(unit)
         return datetime.now() - timedelta(**{ut: num})
 
     @staticmethod
@@ -95,7 +95,7 @@ class PityFunction(object):
         :param num: 数量
         :return:
         """
-        ut = PityFunction.get_unit(unit)
+        ut = ArgusFunction.get_unit(unit)
         return datetime.now() + timedelta(**{ut: num})
 
     @staticmethod

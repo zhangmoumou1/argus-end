@@ -1,10 +1,10 @@
 from sqlalchemy import Column, INT, String, TEXT
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class TestCaseAsserts(PityBase):
-    __tablename__ = "pity_testcase_asserts"
+class TestCaseAsserts(ArgusBase):
+    __tablename__ = "argus_testcase_asserts"
     name = Column(String(32), nullable=False)
     case_id = Column(INT, index=True)
     assert_type = Column(String(16), comment="equal: 等于 not_equal: 不等于 in: 属于")

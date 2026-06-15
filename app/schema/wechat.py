@@ -1,6 +1,6 @@
 from pydantic.v1 import BaseModel, validator
 
-from app.schema.base import PityModel
+from app.schema.base import ArgusModel
 
 
 class WechatForm(BaseModel):

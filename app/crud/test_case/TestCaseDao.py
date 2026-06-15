@@ -11,22 +11,22 @@ from sqlalchemy.future import select
 from app.crud import Mapper, ModelWrapper, connect
 from app.crud.test_case.ConstructorDao import ConstructorDao
 from app.crud.test_case.TestCaseAssertsDao import TestCaseAssertsDao
-from app.crud.test_case.TestCaseDirectory import PityTestcaseDirectoryDao
-from app.crud.test_case.TestCaseOutParametersDao import PityTestCaseOutParametersDao
-from app.crud.test_case.TestcaseDataDao import PityTestcaseDataDao
+from app.crud.test_case.TestCaseDirectory import ArgusTestcaseDirectoryDao
+from app.crud.test_case.TestCaseOutParametersDao import ArgusTestCaseOutParametersDao
+from app.crud.test_case.TestcaseDataDao import ArgusTestcaseDataDao
 from app.enums.OperationEnum import OperationType
 from app.enums.ConstructorEnum import ConstructorType
 from app.middleware.RedisManager import RedisHelper
 from app.models import async_session
 from app.models.constructor import Constructor
-from app.models.out_parameters import PityTestCaseOutParameters
+from app.models.out_parameters import ArgusTestCaseOutParameters
 from app.models.project import Project
 from app.models.test_case import TestCase
 from app.models.testcase_asserts import TestCaseAsserts
-from app.models.testcase_data import PityTestcaseData
-from app.models.testcase_directory import PityTestcaseDirectory
+from app.models.testcase_data import ArgusTestcaseData
+from app.models.testcase_directory import ArgusTestcaseDirectory
 from app.models.user import User
-from app.schema.testcase_out_parameters import PityTestCaseVariablesDto
+from app.schema.testcase_out_parameters import ArgusTestCaseVariablesDto
 from app.schema.testcase_schema import TestCaseForm, TestCaseInfo
 
 
@@ -37,7 +37,7 @@ class TestCaseDao(Mapper):
         try:
             filters = [TestCase.deleted_at == 0]
             if directory_id:
-                parents = await PityTestcaseDirectoryDao.get_directory_son(directory_id)
+                parents = await ArgusTestcaseDirectoryDao.get_directory_son(directory_id)
                 filters = [TestCase.deleted_at == 0, TestCase.directory_id.in_(parents)]
             if name:
                 filters.append(TestCase.name.like(f"%{name}%"))
@@ -107,8 +107,8 @@ class TestCaseDao(Mapper):
         session.expunge(cs)
         await TestCaseDao._insert(session, cs.id, user_id, data, constructor=(ConstructorDao, Constructor),
                                   asserts=(TestCaseAssertsDao, TestCaseAsserts),
-                                  out_parameters=(PityTestCaseOutParametersDao, PityTestCaseOutParameters),
-                                  data=(PityTestcaseDataDao, PityTestcaseData))
+                                  out_parameters=(ArgusTestCaseOutParametersDao, ArgusTestCaseOutParameters),
+                                  data=(ArgusTestcaseDataDao, ArgusTestcaseData))
         return cs
 
     @staticmethod
@@ -171,9 +171,9 @@ class TestCaseDao(Mapper):
         async with async_session() as session:
             async with session.begin():
                 directory = (await session.execute(
-                    select(PityTestcaseDirectory).where(
-                        PityTestcaseDirectory.id == directory_id,
-                        PityTestcaseDirectory.deleted_at == 0,
+                    select(ArgusTestcaseDirectory).where(
+                        ArgusTestcaseDirectory.id == directory_id,
+                        ArgusTestcaseDirectory.deleted_at == 0,
                     )
                 )).scalars().first()
                 if directory is None:
@@ -211,19 +211,19 @@ class TestCaseDao(Mapper):
                                                 item.expected, item.actually, user_id))
 
                 test_data = (await session.execute(
-                    select(PityTestcaseData).where(PityTestcaseData.case_id.in_(old_ids), PityTestcaseData.deleted_at == 0)
+                    select(ArgusTestcaseData).where(ArgusTestcaseData.case_id.in_(old_ids), ArgusTestcaseData.deleted_at == 0)
                 )).scalars().all()
                 for item in test_data:
-                    session.add(PityTestcaseData(item.env, old_new_map[item.case_id], item.name, item.json_data, user_id))
+                    session.add(ArgusTestcaseData(item.env, old_new_map[item.case_id], item.name, item.json_data, user_id))
 
                 out_parameters = (await session.execute(
-                    select(PityTestCaseOutParameters).where(
-                        PityTestCaseOutParameters.case_id.in_(old_ids),
-                        PityTestCaseOutParameters.deleted_at == 0,
+                    select(ArgusTestCaseOutParameters).where(
+                        ArgusTestCaseOutParameters.case_id.in_(old_ids),
+                        ArgusTestCaseOutParameters.deleted_at == 0,
                     )
                 )).scalars().all()
                 for item in out_parameters:
-                    session.add(PityTestCaseOutParameters(item.name, item.source, old_new_map[item.case_id], user_id,
+                    session.add(ArgusTestCaseOutParameters(item.name, item.source, old_new_map[item.case_id], user_id,
                                                           expression=item.expression, match_index=item.match_index))
 
                 constructors = (await session.execute(
@@ -270,9 +270,9 @@ class TestCaseDao(Mapper):
                 asserts = await TestCaseAssertsDao.async_list_test_case_asserts(data.id)
                 constructors = await ConstructorDao.list_constructor(case_id)
                 constructors_case = await TestCaseDao.query_test_case_by_constructors(constructors)
-                test_data = await PityTestcaseDataDao.list_testcase_data(case_id)
-                parameters = await PityTestCaseOutParametersDao.select_list(case_id=case_id,
-                                                                            _sort=(asc(PityTestCaseOutParameters.id),))
+                test_data = await ArgusTestcaseDataDao.list_testcase_data(case_id)
+                parameters = await ArgusTestCaseOutParametersDao.select_list(case_id=case_id,
+                                                                            _sort=(asc(ArgusTestCaseOutParameters.id),))
                 return dict(asserts=asserts, constructors=constructors, case=data, constructors_case=constructors_case,
                             test_data=test_data, out_parameters=parameters)
         except Exception as e:
@@ -293,7 +293,7 @@ class TestCaseDao(Mapper):
             raise Exception(f"查询用例失败: {str(e)}")
 
     @staticmethod
-    async def query_test_case_out_parameters(session, case_list: List[PityTestCaseVariablesDto], case_set=None,
+    async def query_test_case_out_parameters(session, case_list: List[ArgusTestCaseVariablesDto], case_set=None,
                                              var_list=None):
         if len(case_list) == 0:
             return
@@ -304,8 +304,8 @@ class TestCaseDao(Mapper):
         cs_list = list(c.case_id for c in case_list)
         step_case = list()
         name_dict = {c.case_id: c.step_name for c in case_list}
-        out = select(PityTestCaseOutParameters).where(PityTestCaseOutParameters.case_id.in_(cs_list),
-                                                      PityTestCaseOutParameters.deleted_at == 0)
+        out = select(ArgusTestCaseOutParameters).where(ArgusTestCaseOutParameters.case_id.in_(cs_list),
+                                                      ArgusTestCaseOutParameters.deleted_at == 0)
         parameters = await session.execute(out)
         for p in parameters.scalars().all():
             var_list.append(dict(stepName=name_dict[p.case_id], name="${%s}" % p.name))
@@ -323,7 +323,7 @@ class TestCaseDao(Mapper):
                 if case_id in case_set:
                     raise Exception("场景存在循环依赖")
                 case_set.add(case_id)
-                step_case.append(PityTestCaseVariablesDto(case_id=case_id, step_name=s.name))
+                step_case.append(ArgusTestCaseVariablesDto(case_id=case_id, step_name=s.name))
         await TestCaseDao.query_test_case_out_parameters(session, step_case, case_set, var_list)
 
     @staticmethod

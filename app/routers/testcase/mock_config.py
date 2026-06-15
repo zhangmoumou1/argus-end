@@ -17,9 +17,9 @@ from app.core.mock_rule import (
     safe_json_dumps,
     safe_json_loads,
 )
-from app.crud.operation.PityOperationDao import PityOperationDao
+from app.crud.operation.ArgusOperationDao import ArgusOperationDao
 from app.enums.OperationEnum import OperationType
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.models import async_session
 from app.routers import Permission, get_session
 from config import Config
@@ -109,14 +109,14 @@ async def list_mock_config(keyword: str = "", enabled: int = None, _=Depends(Per
             filters.append("enabled = :enabled")
             params["enabled"] = int(enabled)
         result = await session.execute(text(
-            "SELECT * FROM pity_mock_config "
+            "SELECT * FROM argus_mock_config "
             f"WHERE {' AND '.join(filters)} "
             "ORDER BY priority DESC, id DESC"
         ), params)
         rows = [row_to_dict(row) for row in result.fetchall()]
     for row in rows:
         row["mock_url"] = f"{Config.SERVER_HOST if hasattr(Config, 'SERVER_HOST') else ''}/mock-api{row.get('path_suffix')}"
-    return PityResponse.success(rows)
+    return ArgusResponse.success(rows)
 
 
 @router.post("/mock-config/save", summary="新增或更新Mock规则")
@@ -128,13 +128,13 @@ async def save_mock_config(form: dict, user_info=Depends(Permission()), session=
         mock_id = int(form.get("id") or 0)
         if mock_id:
             exists_row = (await session.execute(text(
-                "SELECT * FROM pity_mock_config WHERE id = :id AND deleted_at = 0"
+                "SELECT * FROM argus_mock_config WHERE id = :id AND deleted_at = 0"
             ), {"id": mock_id})).mappings().first()
             exists = exists_row
             if exists is None:
-                return PityResponse.failed("Mock规则不存在")
+                return ArgusResponse.failed("Mock规则不存在")
             await session.execute(text(
-                "UPDATE pity_mock_config SET "
+                "UPDATE argus_mock_config SET "
                 "name=:name, method=:method, path_suffix=:path_suffix, enabled=:enabled, priority=:priority, "
                 "match_query=:match_query, match_headers=:match_headers, match_body=:match_body, "
                 "response_status=:response_status, response_headers=:response_headers, response_body=:response_body, "
@@ -144,7 +144,7 @@ async def save_mock_config(form: dict, user_info=Depends(Permission()), session=
             new_row = dict(exists_row)
             new_row.update(payload)
             new_row["id"] = mock_id
-            await PityOperationDao.insert_log(
+            await ArgusOperationDao.insert_log(
                 session,
                 user_info["id"],
                 OperationType.UPDATE,
@@ -155,7 +155,7 @@ async def save_mock_config(form: dict, user_info=Depends(Permission()), session=
             )
         else:
             await session.execute(text(
-                "INSERT INTO pity_mock_config "
+                "INSERT INTO argus_mock_config "
                 "(name, method, path_suffix, enabled, priority, match_query, match_headers, match_body, "
                 "response_status, response_headers, response_body, response_delay_ms, remark, "
                 "created_at, updated_at, deleted_at, create_user, update_user) "
@@ -164,9 +164,9 @@ async def save_mock_config(form: dict, user_info=Depends(Permission()), session=
                 ":response_status, :response_headers, :response_body, :response_delay_ms, :remark, "
                 ":created_at, :updated_at, 0, :user_id, :user_id)"
             ), {**payload, "created_at": now, "updated_at": now, "user_id": user_info["id"]})
-            inserted = (await session.execute(text("SELECT * FROM pity_mock_config ORDER BY id DESC LIMIT 1"))).mappings().first()
+            inserted = (await session.execute(text("SELECT * FROM argus_mock_config ORDER BY id DESC LIMIT 1"))).mappings().first()
             if inserted:
-                await PityOperationDao.insert_log(
+                await ArgusOperationDao.insert_log(
                     session,
                     user_info["id"],
                     OperationType.INSERT,
@@ -176,10 +176,10 @@ async def save_mock_config(form: dict, user_info=Depends(Permission()), session=
                 )
         await session.commit()
         invalidate_mock_rule_cache()
-        return PityResponse.success()
+        return ArgusResponse.success()
     except Exception as exc:
         await session.rollback()
-        return PityResponse.failed(exc)
+        return ArgusResponse.failed(exc)
 
 
 @router.post("/mock-config/toggle", summary="启停Mock规则")
@@ -187,19 +187,19 @@ async def toggle_mock_config(form: dict, user_info=Depends(Permission()), sessio
     mock_id = int(form.get("id") or 0)
     enabled = 1 if form.get("enabled") else 0
     if not mock_id:
-        return PityResponse.failed("id不能为空")
+        return ArgusResponse.failed("id不能为空")
     await ensure_mock_config_schema(session)
     old_row = (await session.execute(text(
-        "SELECT * FROM pity_mock_config WHERE id=:id AND deleted_at = 0"
+        "SELECT * FROM argus_mock_config WHERE id=:id AND deleted_at = 0"
     ), {"id": mock_id})).mappings().first()
     await session.execute(text(
-        "UPDATE pity_mock_config SET enabled=:enabled, updated_at=:updated_at, update_user=:user_id "
+        "UPDATE argus_mock_config SET enabled=:enabled, updated_at=:updated_at, update_user=:user_id "
         "WHERE id=:id AND deleted_at = 0"
     ), {"enabled": enabled, "updated_at": datetime.now(), "user_id": user_info["id"], "id": mock_id})
     if old_row:
         new_row = dict(old_row)
         new_row["enabled"] = enabled
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE,
@@ -210,26 +210,26 @@ async def toggle_mock_config(form: dict, user_info=Depends(Permission()), sessio
         )
     await session.commit()
     invalidate_mock_rule_cache()
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.get("/mock-config/delete", summary="删除Mock规则")
 async def delete_mock_config(id: int, user_info=Depends(Permission()), session=Depends(get_session)):
     await ensure_mock_config_schema(session)
     old_row = (await session.execute(text(
-        "SELECT * FROM pity_mock_config WHERE id=:id AND deleted_at = 0"
+        "SELECT * FROM argus_mock_config WHERE id=:id AND deleted_at = 0"
     ), {"id": id})).mappings().first()
     await session.execute(text(
-        "UPDATE pity_mock_config SET deleted_at=:deleted_at, updated_at=:updated_at, update_user=:user_id "
+        "UPDATE argus_mock_config SET deleted_at=:deleted_at, updated_at=:updated_at, update_user=:user_id "
         "WHERE id=:id AND deleted_at = 0"
     ), {"deleted_at": int(datetime.now().timestamp()), "updated_at": datetime.now(), "user_id": user_info["id"], "id": id})
     if old_row:
         deleted_row = dict(old_row)
         deleted_row["deleted_at"] = int(datetime.now().timestamp())
-        await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, _mock_log_model(deleted_row, user_info["id"]), key=id)
+        await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, _mock_log_model(deleted_row, user_info["id"]), key=id)
     await session.commit()
     invalidate_mock_rule_cache()
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.api_route("/mock-api/{mock_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])

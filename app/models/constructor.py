@@ -4,11 +4,11 @@
 
 from sqlalchemy import Column, INT, String, BOOLEAN, UniqueConstraint, TEXT, select, desc
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class Constructor(PityBase):
-    __tablename__ = 'pity_constructor'
+class Constructor(ArgusBase):
+    __tablename__ = 'argus_constructor'
     __table_args__ = (
         UniqueConstraint('case_id', 'suffix', 'name', 'deleted_at'),
     )

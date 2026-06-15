@@ -17,7 +17,7 @@ async def range_(self, key_range, limit=None, revision=None, timeout=10, sort_or
 
 class EtcdClient(object):
     client = None
-    scheme = "pity"
+    scheme = "argus"
 
     def __init__(self, host):
         self.client = client(host)

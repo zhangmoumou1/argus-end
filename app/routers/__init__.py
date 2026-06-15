@@ -8,7 +8,7 @@ from starlette import status
 from app.crud import Mapper
 from app.crud.auth.UserDao import UserDao
 from app.exception.request import AuthException, PermissionException
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.middleware.Jwt import UserToken
 from app.models import async_session
 from config import Config
@@ -30,7 +30,7 @@ class Permission:
             user = await UserDao.query_user(user_info['id'])
             if user is None:
                 raise Exception("用户不存在")
-            user_info = PityResponse.model_to_dict(user, "password")
+            user_info = ArgusResponse.model_to_dict(user, "password")
         except PermissionException as e:
             raise e
         except Exception as e:
@@ -53,9 +53,9 @@ DAO = TypeVar("DAO", bound=Mapper)
 CurdParams = namedtuple("parameters", ["name", "type_", "default", "like"])
 
 
-class PityRouter(object):
+class ArgusRouter(object):
     """
-    pity路由基类，支持单标crud
+    argus路由基类，支持单标crud
     """
 
     def __init__(self, router: APIRouter, schema: Type[T], dao: Type[DAO], business, path, prefix="",
@@ -86,26 +86,26 @@ class PityRouter(object):
             model = data.dict()
             model.pop('id', None)
             result = await self.dao.insert(self.dao.model(**model, user=user_info.name))
-            return PityResponse.success(result)
+            return ArgusResponse.success(result)
 
         params = ",".join([f"{x.name}: {x.type_}" for x in query])
         if params:
             params += ', '
-        loc = dict(Permission=Permission, Depends=Depends, Response=PityResponse, self=self)
+        loc = dict(Permission=Permission, Depends=Depends, Response=ArgusResponse, self=self)
         list_func = f"""
-    async def list_data({PityRouter.get_query_parameters(query)}):
-        result = await self.dao.list_record({PityRouter.get_query_sentence(query)})
+    async def list_data({ArgusRouter.get_query_parameters(query)}):
+        result = await self.dao.list_record({ArgusRouter.get_query_sentence(query)})
         return Response.ok(Response.model_to_list(result))
             """
         exec(list_func, loc)
 
         async def update(data: self.schema, user_info=Depends(AuthUser())):  # type: ignore
             result = await self.dao.update_by_id(data, user_info.name)
-            return PityResponse.success(PityResponse.model_to_dict(result))
+            return ArgusResponse.success(ArgusResponse.model_to_dict(result))
 
         async def delete(id: int, user_info=Depends(Permission())):
             await self.dao.delete_by_id(id)
-            return PityResponse.success()
+            return ArgusResponse.success()
 
         self.router.add_api_route(f"{self.prefix}/{self.path}", create, tags=self.tags,
                                   summary=f"添加{self.business}", methods=['PUT'])

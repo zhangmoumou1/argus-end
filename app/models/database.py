@@ -1,11 +1,11 @@
 from sqlalchemy import INT, Column, String, UniqueConstraint
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 from app.models.environment import Environment
 
 
-class PityDatabase(PityBase):
-    __tablename__ = "pity_database_info"
+class ArgusDatabase(ArgusBase):
+    __tablename__ = "argus_database_info"
     __table_args__ = (
         UniqueConstraint('env', 'name', 'deleted_at'),
     )

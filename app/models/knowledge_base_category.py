@@ -1,10 +1,10 @@
 from sqlalchemy import Column, String, INT, UniqueConstraint
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityKnowledgeBaseCategory(PityBase):
-    __tablename__ = 'pity_knowledge_base_category'
+class ArgusKnowledgeBaseCategory(ArgusBase):
+    __tablename__ = 'argus_knowledge_base_category'
 
     name = Column(String(64), nullable=False, comment="分类名称")
     sort_order = Column(INT, nullable=True, default=0, comment="排序")

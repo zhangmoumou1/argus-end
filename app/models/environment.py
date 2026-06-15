@@ -2,11 +2,11 @@ from typing import Tuple
 
 from sqlalchemy import Column, String, UniqueConstraint
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class Environment(PityBase):
-    __tablename__ = 'pity_environment'
+class Environment(ArgusBase):
+    __tablename__ = 'argus_environment'
     # 环境名称
     name = Column(String(10))
     remarks = Column(String(200))

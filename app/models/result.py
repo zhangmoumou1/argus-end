@@ -7,8 +7,8 @@ from sqlalchemy import TEXT
 from app.models import Base
 
 
-class PityTestResult(Base):
-    __tablename__ = 'pity_test_result'
+class ArgusTestResult(Base):
+    __tablename__ = 'argus_test_result'
     id = Column(INT, primary_key=True)
 
     directory_id = None

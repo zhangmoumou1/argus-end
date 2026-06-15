@@ -2,10 +2,10 @@ from typing import List
 
 from pydantic.v1 import BaseModel, validator
 
-from app.schema.base import PityModel
+from app.schema.base import ArgusModel
 
 
-class PityTestPlanForm(BaseModel):
+class ArgusTestPlanForm(BaseModel):
     id: int = None
     project_id: int
     name: str
@@ -23,7 +23,7 @@ class PityTestPlanForm(BaseModel):
 
     @validator("case_list", "project_id", "env", "cron", "ordered", "priority", "name")
     def name_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
     @validator("pass_rate")
     def validate_pass_rate(cls, v):

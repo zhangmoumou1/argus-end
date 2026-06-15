@@ -3,7 +3,7 @@ from copy import deepcopy
 from sqlalchemy import select
 
 from app.crud import ModelWrapper, Mapper
-from app.crud.operation.PityOperationDao import PityOperationDao
+from app.crud.operation.ArgusOperationDao import ArgusOperationDao
 from app.enums.OperationEnum import OperationType
 from app.models import async_session
 from app.models.environment import Environment
@@ -57,7 +57,7 @@ class EnvironmentDao(Mapper):
                 changed = cls.update_model(env, data, user, True)
                 await session.flush()
                 if changed:
-                    await PityOperationDao.insert_log(
+                    await ArgusOperationDao.insert_log(
                         session,
                         user,
                         OperationType.UPDATE,

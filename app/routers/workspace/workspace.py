@@ -4,12 +4,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 
 from app.crud.project.ProjectDao import ProjectDao
-from app.models.interface_manage import PityApiService
+from app.models.interface_manage import ArgusApiService
 from app.crud.test_case.TestCaseDao import TestCaseDao
-from app.crud.test_case.TestPlan import PityTestPlanDao
-from app.handler.fatcory import PityResponse
+from app.crud.test_case.TestPlan import ArgusTestPlanDao
+from app.handler.fatcory import ArgusResponse
 from app.models import async_session
-from app.models.functional_case import PityFunctionalCaseItem
+from app.models.functional_case import ArgusFunctionalCaseItem
 from app.models.project import Project
 from app.models.test_case import TestCase
 from app.routers import Permission
@@ -47,11 +47,11 @@ async def _get_api_case_distribution(session, user_id: int):
             TestCase.deleted_at == 0,
             TestCase.api_service_id > 0,
         ).join(
-            PityApiService,
-            PityApiService.id == TestCase.api_service_id,
+            ArgusApiService,
+            ArgusApiService.id == TestCase.api_service_id,
         ).join(
             Project,
-            Project.id == PityApiService.project_id,
+            Project.id == ArgusApiService.project_id,
         ).group_by(Project.id, Project.name).order_by(func.count(TestCase.id).desc()).limit(3)
     )
     return [
@@ -81,9 +81,9 @@ async def query_user_statistics(user_info=Depends(Permission())):
         )).scalar() or 0
 
         functional_case_count = (await session.execute(
-            select(func.count(PityFunctionalCaseItem.id)).where(
-                PityFunctionalCaseItem.create_user == user_id,
-                PityFunctionalCaseItem.deleted_at == 0,
+            select(func.count(ArgusFunctionalCaseItem.id)).where(
+                ArgusFunctionalCaseItem.create_user == user_id,
+                ArgusFunctionalCaseItem.deleted_at == 0,
             )
         )).scalar() or 0
 
@@ -97,17 +97,17 @@ async def query_user_statistics(user_info=Depends(Permission())):
         )).scalar() or 0
 
         weekly_new_functional_case = (await session.execute(
-            select(func.count(PityFunctionalCaseItem.id)).where(
-                PityFunctionalCaseItem.create_user == user_id,
-                PityFunctionalCaseItem.deleted_at == 0,
-                PityFunctionalCaseItem.created_at >= week_start,
-                PityFunctionalCaseItem.created_at <= now,
+            select(func.count(ArgusFunctionalCaseItem.id)).where(
+                ArgusFunctionalCaseItem.create_user == user_id,
+                ArgusFunctionalCaseItem.deleted_at == 0,
+                ArgusFunctionalCaseItem.created_at >= week_start,
+                ArgusFunctionalCaseItem.created_at <= now,
             )
         )).scalar() or 0
 
         api_case_distribution = await _get_api_case_distribution(session, user_id)
         functional_case_distribution = await _get_top3_distribution(
-            session, PityFunctionalCaseItem, PityFunctionalCaseItem.project_id, user_id
+            session, ArgusFunctionalCaseItem, ArgusFunctionalCaseItem.project_id, user_id
         )
 
         api_daily_rows = (await session.execute(
@@ -124,14 +124,14 @@ async def query_user_statistics(user_info=Depends(Permission())):
 
         functional_daily_rows = (await session.execute(
             select(
-                func.date_format(PityFunctionalCaseItem.created_at, "%Y-%m-%d").label("date"),
-                func.count(PityFunctionalCaseItem.id).label("count"),
+                func.date_format(ArgusFunctionalCaseItem.created_at, "%Y-%m-%d").label("date"),
+                func.count(ArgusFunctionalCaseItem.id).label("count"),
             ).where(
-                PityFunctionalCaseItem.create_user == user_id,
-                PityFunctionalCaseItem.deleted_at == 0,
-                PityFunctionalCaseItem.created_at >= month_start,
-                PityFunctionalCaseItem.created_at <= now,
-            ).group_by(func.date_format(PityFunctionalCaseItem.created_at, "%Y-%m-%d"))
+                ArgusFunctionalCaseItem.create_user == user_id,
+                ArgusFunctionalCaseItem.deleted_at == 0,
+                ArgusFunctionalCaseItem.created_at >= month_start,
+                ArgusFunctionalCaseItem.created_at <= now,
+            ).group_by(func.date_format(ArgusFunctionalCaseItem.created_at, "%Y-%m-%d"))
         )).all()
 
     api_daily_map = {str(item.date): int(item.count or 0) for item in api_daily_rows}
@@ -166,7 +166,7 @@ async def query_user_statistics(user_info=Depends(Permission())):
     if not case_count and old_case_count:
         case_count = int(old_case_count)
 
-    return PityResponse.success(dict(
+    return ArgusResponse.success(dict(
         project_count=count,
         case_count=case_count,
         api_case_count=int(api_case_count),
@@ -185,5 +185,5 @@ async def query_user_statistics(user_info=Depends(Permission())):
 @router.get("/testplan", description="获取用户关注的测试计划执行数据")
 async def query_follow_testplan(user_info=Depends(Permission())):
     user_id = user_info['id']
-    ans = await PityTestPlanDao.query_user_follow_test_plan(user_id)
-    return PityResponse.success(ans)
+    ans = await ArgusTestPlanDao.query_user_follow_test_plan(user_id)
+    return ArgusResponse.success(ans)

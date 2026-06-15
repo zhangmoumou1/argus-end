@@ -4,8 +4,8 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import Mapper, connect
-from app.models.functional_case import PityFunctionalCaseItem
-from app.models.report import PityReport
+from app.models.functional_case import ArgusFunctionalCaseItem
+from app.models.report import ArgusReport
 from app.models.test_case import TestCase
 from app.models.user import User
 
@@ -75,9 +75,9 @@ class DashboardDao(Mapper):
     @classmethod
     async def _count_functional_priority_covered(cls, session: AsyncSession):
         query = await session.execute(
-            select(func.count(PityFunctionalCaseItem.id)).where(
-                PityFunctionalCaseItem.deleted_at == 0,
-                PityFunctionalCaseItem.case_priority.in_(["1", "2", 1, 2, "priority_1", "priority_2"]),
+            select(func.count(ArgusFunctionalCaseItem.id)).where(
+                ArgusFunctionalCaseItem.deleted_at == 0,
+                ArgusFunctionalCaseItem.case_priority.in_(["1", "2", 1, 2, "priority_1", "priority_2"]),
             )
         )
         return int(query.scalar() or 0)
@@ -85,21 +85,21 @@ class DashboardDao(Mapper):
     @classmethod
     async def _report_pass_rate(cls, session: AsyncSession, start: datetime, end: datetime):
         total_query = await session.execute(
-            select(func.count(PityReport.id)).where(
-                PityReport.deleted_at == 0,
-                PityReport.status == 3,
-                PityReport.start_at >= start,
-                PityReport.start_at <= end,
+            select(func.count(ArgusReport.id)).where(
+                ArgusReport.deleted_at == 0,
+                ArgusReport.status == 3,
+                ArgusReport.start_at >= start,
+                ArgusReport.start_at <= end,
             )
         )
         passed_query = await session.execute(
-            select(func.count(PityReport.id)).where(
-                PityReport.deleted_at == 0,
-                PityReport.status == 3,
-                PityReport.error_count == 0,
-                PityReport.failed_count == 0,
-                PityReport.start_at >= start,
-                PityReport.start_at <= end,
+            select(func.count(ArgusReport.id)).where(
+                ArgusReport.deleted_at == 0,
+                ArgusReport.status == 3,
+                ArgusReport.error_count == 0,
+                ArgusReport.failed_count == 0,
+                ArgusReport.start_at >= start,
+                ArgusReport.start_at <= end,
             )
         )
         total = int(total_query.scalar() or 0)
@@ -152,7 +152,7 @@ class DashboardDao(Mapper):
         trend_axis, trend_index = cls.build_daily_axis(start_time, end_time)
 
         api_case_total = await cls._count_created_between(session, TestCase, start_time, end_time)
-        functional_case_total = await cls._count_created_between(session, PityFunctionalCaseItem, start_time, end_time)
+        functional_case_total = await cls._count_created_between(session, ArgusFunctionalCaseItem, start_time, end_time)
         api_case_total_all = await cls._count_total(session, TestCase)
         functional_priority_total = await cls._count_functional_priority_covered(session)
         api_pass_rate = await cls._report_pass_rate(session, start_time, end_time)
@@ -160,7 +160,7 @@ class DashboardDao(Mapper):
         api_label, api_daily = await cls._count_by_day(session, TestCase, start_time, end_time, "api")
         functional_label, functional_daily = await cls._count_by_day(
             session,
-            PityFunctionalCaseItem,
+            ArgusFunctionalCaseItem,
             start_time,
             end_time,
             "functional",
@@ -174,7 +174,7 @@ class DashboardDao(Mapper):
                 trend_axis[trend_index[date_key]]["functional_case_count"] = int(value or 0)
 
         api_case_ranking = await cls._leaderboard(session, TestCase, start_time, end_time)
-        functional_case_ranking = await cls._leaderboard(session, PityFunctionalCaseItem, start_time, end_time)
+        functional_case_ranking = await cls._leaderboard(session, ArgusFunctionalCaseItem, start_time, end_time)
 
         coverage_rate = round(api_case_total_all / functional_priority_total * 100, 2) \
             if functional_priority_total > 0 else 0.0

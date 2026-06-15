@@ -2,12 +2,12 @@ from typing import List
 
 from sqlalchemy import Column, String, INT, TEXT, SMALLINT, UniqueConstraint
 
-from app.models.basic import PityBase
-from app.models.out_parameters import PityTestCaseOutParameters
+from app.models.basic import ArgusBase
+from app.models.out_parameters import ArgusTestCaseOutParameters
 
 
-class TestCase(PityBase):
-    __tablename__ = "pity_testcase"
+class TestCase(ArgusBase):
+    __tablename__ = "argus_testcase"
     name = Column(String(32), index=True)
     request_type = Column(INT, default=1, comment="请求类型 1: http 2: grpc 3: dubbo")
     url = Column(TEXT, nullable=False, comment="请求url")
@@ -33,7 +33,7 @@ class TestCase(PityBase):
     api_review_user = Column(INT, nullable=False, default=0, comment="接口版本审查人")
     api_review_at = Column(String(32), nullable=True, comment="接口版本审查时间")
 
-    out_parameters: List[PityTestCaseOutParameters] = None
+    out_parameters: List[ArgusTestCaseOutParameters] = None
     __table_args__ = (
         UniqueConstraint('directory_id', 'name', 'deleted_at'),
     )

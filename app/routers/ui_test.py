@@ -13,7 +13,7 @@ from sqlalchemy import bindparam, text
 from app.core.platform_task import PlatformTaskService
 from app.crud.config.GConfigDao import GConfigDao
 from app.enums.platform_task import PlatformTaskType
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.middleware.oss import OssClient, get_default_bucket_name, normalize_oss_upload_result
 from app.middleware.Jwt import UserToken
 from app.models import async_session
@@ -422,7 +422,7 @@ async def ensure_ui_test_schema(session):
         UI_SCHEMA_READY = True
         return
     await session.execute(text(
-        "CREATE TABLE IF NOT EXISTS pity_ui_test_case_ref ("
+        "CREATE TABLE IF NOT EXISTS argus_ui_test_case_ref ("
         "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
         "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
         "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
@@ -447,7 +447,7 @@ async def ensure_ui_test_schema(session):
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='UI测试用例引用表'"
     ))
     await session.execute(text(
-        "CREATE TABLE IF NOT EXISTS pity_ui_test_plan ("
+        "CREATE TABLE IF NOT EXISTS argus_ui_test_plan ("
         "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
         "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
         "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
@@ -470,7 +470,7 @@ async def ensure_ui_test_schema(session):
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='UI测试计划表'"
     ))
     await session.execute(text(
-        "CREATE TABLE IF NOT EXISTS pity_ui_test_plan_case ("
+        "CREATE TABLE IF NOT EXISTS argus_ui_test_plan_case ("
         "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
         "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
         "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
@@ -485,7 +485,7 @@ async def ensure_ui_test_schema(session):
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='UI测试计划用例关系表'"
     ))
     await session.execute(text(
-        "CREATE TABLE IF NOT EXISTS pity_ui_test_run ("
+        "CREATE TABLE IF NOT EXISTS argus_ui_test_run ("
         "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
         "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
         "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
@@ -517,7 +517,7 @@ async def ensure_ui_test_schema(session):
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='UI测试执行记录表'"
     ))
     await session.execute(text(
-        "CREATE TABLE IF NOT EXISTS pity_ui_test_step_result ("
+        "CREATE TABLE IF NOT EXISTS argus_ui_test_step_result ("
         "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
         "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
         "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
@@ -539,37 +539,37 @@ async def ensure_ui_test_schema(session):
     ))
     await _ensure_table_index(
         session,
-        "pity_ui_test_run",
+        "argus_ui_test_run",
         "idx_ui_run_queue_claim",
         "status, deleted_at, project_id, plan_id, id",
     )
     await _ensure_table_index(
         session,
-        "pity_ui_test_run",
+        "argus_ui_test_run",
         "idx_ui_run_debug_owner",
         "trigger_mode, create_user, project_id, case_ref_id, deleted_at, id",
     )
     await _ensure_table_index(
         session,
-        "pity_ui_test_run",
+        "argus_ui_test_run",
         "idx_ui_run_report_scope",
         "project_id, trigger_mode, deleted_at, id",
     )
     await _ensure_table_index(
         session,
-        "pity_ui_test_step_result",
+        "argus_ui_test_step_result",
         "idx_ui_step_run_order",
         "run_id, deleted_at, step_index, id",
     )
     await _ensure_table_index(
         session,
-        "pity_ui_test_case_ref",
+        "argus_ui_test_case_ref",
         "idx_ui_case_project_status_file",
         "project_id, status, deleted_at, file_id",
     )
     await _ensure_table_index(
         session,
-        "pity_ui_test_plan_case",
+        "argus_ui_test_plan_case",
         "idx_ui_plan_case_enabled_order",
         "plan_id, enabled, deleted_at, sort_index, id",
     )
@@ -577,15 +577,15 @@ async def ensure_ui_test_schema(session):
     existing_cols = set()
     try:
         result = await session.execute(text(
-            "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='pity_ui_test_plan'"
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='argus_ui_test_plan'"
         ))
         existing_cols = {row[0] for row in result.fetchall()}
     except Exception:
         pass
     for col, alter_sql in [
-        ('receiver', "ALTER TABLE pity_ui_test_plan ADD COLUMN receiver TEXT NULL COMMENT '推送用户ID，逗号分隔'"),
-        ('msg_type', "ALTER TABLE pity_ui_test_plan ADD COLUMN msg_type VARCHAR(64) NULL COMMENT '推送方式 0=邮件 1=钉钉 2=企业微信 3=飞书'"),
-        ('pass_rate', "ALTER TABLE pity_ui_test_plan ADD COLUMN pass_rate SMALLINT NOT NULL DEFAULT 0 COMMENT '成功率阈值，0表示未配置'"),
+        ('receiver', "ALTER TABLE argus_ui_test_plan ADD COLUMN receiver TEXT NULL COMMENT '推送用户ID，逗号分隔'"),
+        ('msg_type', "ALTER TABLE argus_ui_test_plan ADD COLUMN msg_type VARCHAR(64) NULL COMMENT '推送方式 0=邮件 1=钉钉 2=企业微信 3=飞书'"),
+        ('pass_rate', "ALTER TABLE argus_ui_test_plan ADD COLUMN pass_rate SMALLINT NOT NULL DEFAULT 0 COMMENT '成功率阈值，0表示未配置'"),
     ]:
         if col not in existing_cols:
             await session.execute(text(alter_sql))
@@ -596,10 +596,10 @@ async def ensure_ui_test_schema(session):
 async def ensure_ui_test_gateway_schema(session):
     if not Config.RUNTIME_SCHEMA_MIGRATION_ENABLED:
         return
-    result = await session.execute(text("SHOW COLUMNS FROM pity_gateway LIKE 'page_url'"))
+    result = await session.execute(text("SHOW COLUMNS FROM argus_gateway LIKE 'page_url'"))
     if result.first() is None:
         await session.execute(text(
-            "ALTER TABLE pity_gateway "
+            "ALTER TABLE argus_gateway "
             "ADD COLUMN page_url VARCHAR(255) NULL DEFAULT '' COMMENT '页面地址'"
         ))
         await session.commit()
@@ -609,7 +609,7 @@ async def _scan_project_cases(session, project_id, operator_user_id):
     await ensure_ui_test_schema(session)
     file_rows = await session.execute(
         text(
-            "SELECT id, title, case_data FROM pity_functional_case_file "
+            "SELECT id, title, case_data FROM argus_functional_case_file "
             "WHERE deleted_at=0 AND project_id=:project_id ORDER BY updated_at DESC, id DESC"
         ),
         {"project_id": project_id},
@@ -620,7 +620,7 @@ async def _scan_project_cases(session, project_id, operator_user_id):
     existing_rows = await session.execute(
         text(
             "SELECT id, file_id, node_path, deleted_at "
-            "FROM pity_ui_test_case_ref "
+            "FROM argus_ui_test_case_ref "
             "WHERE project_id=:project_id "
             "ORDER BY CASE WHEN deleted_at=0 THEN 0 ELSE 1 END ASC, id ASC"
         ),
@@ -685,7 +685,7 @@ async def _scan_project_cases(session, project_id, operator_user_id):
     if update_rows:
         await session.execute(
             text(
-                "UPDATE pity_ui_test_case_ref SET "
+                "UPDATE argus_ui_test_case_ref SET "
                 "deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at, "
                 "project_id=:project_id, file_id=:file_id, file_title=:file_title, node_uid=:node_uid, "
                 "node_title=:node_title, node_path=:node_path, status=:status, step_count=:step_count, "
@@ -698,7 +698,7 @@ async def _scan_project_cases(session, project_id, operator_user_id):
     if insert_rows:
         await session.execute(
             text(
-                "INSERT INTO pity_ui_test_case_ref "
+                "INSERT INTO argus_ui_test_case_ref "
                 "(deleted_at, create_user, update_user, created_at, updated_at, project_id, file_id, file_title, node_uid, node_title, node_path, status, step_count, dsl_json, validation_result, source_snapshot, last_scanned_at) "
                 "VALUES "
                 "(:deleted_at, :create_user, :update_user, :created_at, :updated_at, :project_id, :file_id, :file_title, :node_uid, :node_title, :node_path, :status, :step_count, :dsl_json, :validation_result, :source_snapshot, :last_scanned_at)"
@@ -708,7 +708,7 @@ async def _scan_project_cases(session, project_id, operator_user_id):
     if processed_case_ids:
         await session.execute(
             text(
-                "UPDATE pity_ui_test_case_ref SET deleted_at=:deleted_at, update_user=:user_id, updated_at=:updated_at "
+                "UPDATE argus_ui_test_case_ref SET deleted_at=:deleted_at, update_user=:user_id, updated_at=:updated_at "
                 "WHERE project_id=:project_id AND deleted_at=0 AND id NOT IN :ids"
             ).bindparams(bindparam("ids", expanding=True)),
             {
@@ -722,7 +722,7 @@ async def _scan_project_cases(session, project_id, operator_user_id):
     else:
         await session.execute(
             text(
-                "UPDATE pity_ui_test_case_ref SET deleted_at=:deleted_at, update_user=:user_id, updated_at=:updated_at "
+                "UPDATE argus_ui_test_case_ref SET deleted_at=:deleted_at, update_user=:user_id, updated_at=:updated_at "
                 "WHERE project_id=:project_id AND deleted_at=0"
             ),
             {
@@ -810,7 +810,7 @@ async def _create_ui_plan_run(session, plan: dict, cases, create_user_id=0, trig
 
     insert_result = await session.execute(
         text(
-            "INSERT INTO pity_ui_test_run "
+            "INSERT INTO argus_ui_test_run "
             "(created_at, updated_at, deleted_at, create_user, update_user, project_id, plan_id, case_ref_id, run_name, status, trigger_mode, browser, headless, artifact_bucket, artifact_prefix, screenshot_dir, video_path, trace_path, report_path, result_json_path, runner_payload, started_at) "
             "VALUES "
             "(:created_at, :updated_at, 0, :create_user, :update_user, :project_id, :plan_id, 0, :run_name, 'queued', :trigger_mode, :browser, :headless, :artifact_bucket, '', '', '', '', '', '', :runner_payload, :started_at)"
@@ -847,7 +847,7 @@ async def _create_ui_plan_run(session, plan: dict, cases, create_user_id=0, trig
     artifact_prefix = f"{UI_OBJECT_PREFIX}/{project_id}/{plan_id}/{run_id}"
     await session.execute(
         text(
-            "UPDATE pity_ui_test_run SET artifact_prefix=:artifact_prefix, screenshot_dir=:screenshot_dir, "
+            "UPDATE argus_ui_test_run SET artifact_prefix=:artifact_prefix, screenshot_dir=:screenshot_dir, "
             "video_path=:video_path, trace_path=:trace_path, report_path=:report_path, result_json_path=:result_json_path "
             "WHERE id=:id"
         ),
@@ -881,7 +881,7 @@ def _parse_cron_trigger(cron):
 async def _enqueue_ui_plan_run(plan_id, user_id=0, trigger_mode="scheduler"):
     async with async_session() as session:
         plan_row = await session.execute(
-            text("SELECT * FROM pity_ui_test_plan WHERE deleted_at=0 AND id=:id AND status='enabled'"),
+            text("SELECT * FROM argus_ui_test_plan WHERE deleted_at=0 AND id=:id AND status='enabled'"),
             {"id": int(plan_id)},
         )
         plan = plan_row.mappings().first()
@@ -890,9 +890,9 @@ async def _enqueue_ui_plan_run(plan_id, user_id=0, trigger_mode="scheduler"):
         case_rows = await session.execute(
             text(
                 "SELECT p.project_id, p.name, p.browser, p.headless, pc.case_ref_id, r.file_title, r.node_title, r.node_path, r.dsl_json "
-                "FROM pity_ui_test_plan p "
-                "LEFT JOIN pity_ui_test_plan_case pc ON p.id=pc.plan_id "
-                "LEFT JOIN pity_ui_test_case_ref r ON pc.case_ref_id=r.id "
+                "FROM argus_ui_test_plan p "
+                "LEFT JOIN argus_ui_test_plan_case pc ON p.id=pc.plan_id "
+                "LEFT JOIN argus_ui_test_case_ref r ON pc.case_ref_id=r.id "
                 "WHERE p.deleted_at=0 AND pc.deleted_at=0 AND pc.enabled=1 AND r.deleted_at=0 AND r.status='valid' "
                 "AND p.id=:plan_id ORDER BY pc.sort_index ASC, pc.id ASC"
             ),
@@ -939,7 +939,7 @@ async def restore_ui_test_scheduler_jobs():
         rows = await session.execute(
             text(
                 "SELECT id, name, cron, status "
-                "FROM pity_ui_test_plan WHERE deleted_at=0"
+                "FROM argus_ui_test_plan WHERE deleted_at=0"
             )
         )
         for item in rows.mappings().all():
@@ -1154,9 +1154,9 @@ async def scan_ui_test_cases(request: Request, session=Depends(get_session), use
     payload = await request.json()
     project_id = int(payload.get("project_id") or 0)
     if project_id <= 0:
-        return PityResponse.failed("project_id不能为空")
+        return ArgusResponse.failed("project_id不能为空")
     result = await _scan_project_cases(session, project_id, int(user_info["id"]))
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)
 
 
 @router.get("/case/list")
@@ -1167,7 +1167,7 @@ async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "
     page, size, offset = _clamp_pagination(page, size, 200)
     existing_row = await session.execute(
         text(
-            "SELECT COUNT(1) AS total FROM pity_ui_test_case_ref "
+            "SELECT COUNT(1) AS total FROM argus_ui_test_case_ref "
             "WHERE deleted_at=0 AND project_id=:project_id"
         ),
         {"project_id": int(project_id or 0)},
@@ -1192,8 +1192,8 @@ async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "
         "SUM(CASE WHEN r.status='invalid_ui_node' THEN 1 ELSE 0 END) AS invalid_ui_case_count, "
         "SUM(CASE WHEN r.status='empty_ui_node' THEN 1 ELSE 0 END) AS empty_ui_case_count, "
         "MAX(r.last_scanned_at) AS last_scanned_at "
-        "FROM pity_functional_case_file f "
-        "LEFT JOIN pity_ui_test_case_ref r ON f.id=r.file_id AND r.deleted_at=0 "
+        "FROM argus_functional_case_file f "
+        "LEFT JOIN argus_ui_test_case_ref r ON f.id=r.file_id AND r.deleted_at=0 "
         "WHERE f.deleted_at=0 AND f.project_id=:project_id "
         "AND (:keyword='' OR f.title LIKE :like_keyword OR CAST(f.id AS CHAR) LIKE :like_keyword) "
         "GROUP BY f.id, f.title "
@@ -1225,12 +1225,12 @@ async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "
             item["status"] = "empty_ui_node"
         result.append(item)
     if not paged:
-        return PityResponse.success(result)
+        return ArgusResponse.success(result)
     count_sql = (
         "SELECT COUNT(1) AS total FROM ("
         "SELECT f.id "
-        "FROM pity_functional_case_file f "
-        "LEFT JOIN pity_ui_test_case_ref r ON f.id=r.file_id AND r.deleted_at=0 "
+        "FROM argus_functional_case_file f "
+        "LEFT JOIN argus_ui_test_case_ref r ON f.id=r.file_id AND r.deleted_at=0 "
         "WHERE f.deleted_at=0 AND f.project_id=:project_id "
         "AND (:keyword='' OR f.title LIKE :like_keyword OR CAST(f.id AS CHAR) LIKE :like_keyword) "
         "GROUP BY f.id, f.title "
@@ -1242,7 +1242,7 @@ async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "
     count_sql += ") t"
     count_row = await session.execute(text(count_sql), count_params)
     total = int((count_row.mappings().first() or {}).get("total") or 0)
-    return PityResponse.success(_paged_payload(result, total, page, size))
+    return ArgusResponse.success(_paged_payload(result, total, page, size))
 
 
 @router.get("/case/nodes")
@@ -1254,7 +1254,7 @@ async def list_ui_test_case_nodes(file_id: int, include_dsl: bool = False,
         text(
             "SELECT id, file_id, file_title, node_uid, node_title, node_path, status, step_count, validation_result, last_scanned_at "
             f"{dsl_column} "
-            "FROM pity_ui_test_case_ref WHERE deleted_at=0 AND file_id=:file_id ORDER BY id ASC"
+            "FROM argus_ui_test_case_ref WHERE deleted_at=0 AND file_id=:file_id ORDER BY id ASC"
         ),
         {"file_id": file_id},
     )
@@ -1265,7 +1265,7 @@ async def list_ui_test_case_nodes(file_id: int, include_dsl: bool = False,
         item["validation_result"] = _parse_json_text(item.get("validation_result")) or {}
         item["dsl_json"] = (_parse_json_text(item.get("dsl_json")) or {}) if include_dsl else {}
         data.append(item)
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.get("/case/detail")
@@ -1275,18 +1275,18 @@ async def get_ui_test_case_detail(id: int, session=Depends(get_session), _=Depen
         text(
             "SELECT id, project_id, file_id, file_title, node_uid, node_title, node_path, status, step_count, "
             "dsl_json, validation_result, source_snapshot, last_scanned_at "
-            "FROM pity_ui_test_case_ref WHERE deleted_at=0 AND id=:id"
+            "FROM argus_ui_test_case_ref WHERE deleted_at=0 AND id=:id"
         ),
         {"id": id},
     )
     item = row.mappings().first()
     if not item:
-        return PityResponse.failed("UI测试用例不存在")
+        return ArgusResponse.failed("UI测试用例不存在")
     data = dict(item)
     data["dsl_json"] = _parse_json_text(data.get("dsl_json")) or {}
     data["validation_result"] = _parse_json_text(data.get("validation_result")) or {}
     data["source_snapshot"] = _parse_json_text(data.get("source_snapshot")) or {}
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.post("/case/validate")
@@ -1295,22 +1295,22 @@ async def validate_ui_test_case(request: Request, session=Depends(get_session), 
     payload = await request.json()
     case_ref_id = int(payload.get("id") or 0)
     if case_ref_id <= 0:
-        return PityResponse.failed("id不能为空")
+        return ArgusResponse.failed("id不能为空")
     row = await session.execute(
         text(
             "SELECT id, project_id, file_id, node_uid, node_path "
-            "FROM pity_ui_test_case_ref WHERE deleted_at=0 AND id=:id"
+            "FROM argus_ui_test_case_ref WHERE deleted_at=0 AND id=:id"
         ),
         {"id": case_ref_id},
     )
     record = row.mappings().first()
     if not record:
-        return PityResponse.failed("UI测试用例不存在")
+        return ArgusResponse.failed("UI测试用例不存在")
     await _scan_project_cases(session, int(record["project_id"]), int(user_info["id"]))
     refreshed = await session.execute(
         text(
             "SELECT id, status, step_count, validation_result, dsl_json, last_scanned_at "
-            "FROM pity_ui_test_case_ref "
+            "FROM argus_ui_test_case_ref "
             "WHERE deleted_at=0 AND project_id=:project_id AND file_id=:file_id AND node_uid=:node_uid"
         ),
         {
@@ -1321,11 +1321,11 @@ async def validate_ui_test_case(request: Request, session=Depends(get_session), 
     )
     item = refreshed.mappings().first()
     if not item:
-        return PityResponse.failed(f"UI测试用例已失效: {record.get('node_path') or case_ref_id}")
+        return ArgusResponse.failed(f"UI测试用例已失效: {record.get('node_path') or case_ref_id}")
     data = dict(item)
     data["validation_result"] = _parse_json_text(data.get("validation_result")) or {}
     data["dsl_json"] = _parse_json_text(data.get("dsl_json")) or {}
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.post("/case/preview-dsl")
@@ -1334,15 +1334,15 @@ async def preview_ui_test_case_dsl(request: Request, session=Depends(get_session
     payload = await request.json()
     case_ref_id = int(payload.get("id") or 0)
     if case_ref_id <= 0:
-        return PityResponse.failed("id不能为空")
+        return ArgusResponse.failed("id不能为空")
     row = await session.execute(
-        text("SELECT id, status, dsl_json, validation_result FROM pity_ui_test_case_ref WHERE deleted_at=0 AND id=:id"),
+        text("SELECT id, status, dsl_json, validation_result FROM argus_ui_test_case_ref WHERE deleted_at=0 AND id=:id"),
         {"id": case_ref_id},
     )
     record = row.mappings().first()
     if not record:
-        return PityResponse.failed("UI测试用例不存在")
-    return PityResponse.success({
+        return ArgusResponse.failed("UI测试用例不存在")
+    return ArgusResponse.success({
         "id": int(record["id"]),
         "status": record["status"],
         "dsl": _parse_json_text(record.get("dsl_json")) or {},
@@ -1359,44 +1359,44 @@ async def trial_run_ui_test_case(request: Request, session=Depends(get_session),
     env_id = int(payload.get("env_id") or 0)
     address_id = int(payload.get("address_id") or 0)
     if case_ref_id <= 0:
-        return PityResponse.failed("id不能为空")
+        return ArgusResponse.failed("id不能为空")
     if env_id <= 0:
-        return PityResponse.failed("env_id不能为空")
+        return ArgusResponse.failed("env_id不能为空")
 
     row = await session.execute(
         text(
             "SELECT id, project_id, file_title, node_title, node_path, status, dsl_json "
-            "FROM pity_ui_test_case_ref WHERE deleted_at=0 AND id=:id"
+            "FROM argus_ui_test_case_ref WHERE deleted_at=0 AND id=:id"
         ),
         {"id": case_ref_id},
     )
     case_ref = row.mappings().first()
     if not case_ref:
-        return PityResponse.failed("UI测试用例不存在")
+        return ArgusResponse.failed("UI测试用例不存在")
     if str(case_ref["status"]) != "valid":
-        return PityResponse.failed("该UI测试用例当前不可试运行")
+        return ArgusResponse.failed("该UI测试用例当前不可试运行")
 
     env_row = await session.execute(
-        text("SELECT id, name FROM pity_environment WHERE deleted_at=0 AND id=:id"),
+        text("SELECT id, name FROM argus_environment WHERE deleted_at=0 AND id=:id"),
         {"id": env_id},
     )
     env_data = env_row.mappings().first()
     if not env_data:
-        return PityResponse.failed("所选环境不存在")
+        return ArgusResponse.failed("所选环境不存在")
     env_name = str(env_data.get("name") or "").strip()
     address_name = ""
     page_url = ""
     resolved_base_url = ""
     if address_id > 0:
         gateway_row = await session.execute(
-            text("SELECT id, env, name, gateway, page_url FROM pity_gateway WHERE deleted_at=0 AND id=:id"),
+            text("SELECT id, env, name, gateway, page_url FROM argus_gateway WHERE deleted_at=0 AND id=:id"),
             {"id": address_id},
         )
         gateway_data = gateway_row.mappings().first()
         if not gateway_data:
-            return PityResponse.failed("所选地址前缀不存在")
+            return ArgusResponse.failed("所选地址前缀不存在")
         if int(gateway_data.get("env") or 0) != env_id:
-            return PityResponse.failed("地址前缀与所选环境不匹配")
+            return ArgusResponse.failed("地址前缀与所选环境不匹配")
         address_name = str(gateway_data.get("name") or "").strip()
         page_url = str(gateway_data.get("page_url") or "").strip()
         resolved_base_url = _compose_plan_base_url(gateway_data.get("gateway"), page_url)
@@ -1404,7 +1404,7 @@ async def trial_run_ui_test_case(request: Request, session=Depends(get_session),
     now_dt = datetime.now()
     insert_result = await session.execute(
         text(
-            "INSERT INTO pity_ui_test_run "
+            "INSERT INTO argus_ui_test_run "
             "(created_at, updated_at, deleted_at, create_user, update_user, project_id, plan_id, case_ref_id, run_name, status, trigger_mode, browser, headless, artifact_bucket, artifact_prefix, screenshot_dir, video_path, trace_path, report_path, result_json_path, runner_payload, started_at) "
             "VALUES "
             "(:created_at, :updated_at, 0, :create_user, :update_user, :project_id, 0, :case_ref_id, :run_name, :status, :trigger_mode, :browser, :headless, :artifact_bucket, :artifact_prefix, :screenshot_dir, :video_path, :trace_path, :report_path, :result_json_path, :runner_payload, :started_at)"
@@ -1452,7 +1452,7 @@ async def trial_run_ui_test_case(request: Request, session=Depends(get_session),
     artifact_prefix = f"{UI_OBJECT_PREFIX}/{int(case_ref['project_id'] or 0)}/0/{run_id}"
     await session.execute(
         text(
-            "UPDATE pity_ui_test_run SET artifact_prefix=:artifact_prefix, screenshot_dir=:screenshot_dir, "
+            "UPDATE argus_ui_test_run SET artifact_prefix=:artifact_prefix, screenshot_dir=:screenshot_dir, "
             "video_path=:video_path, trace_path=:trace_path, report_path=:report_path, result_json_path=:result_json_path "
             "WHERE id=:id"
         ),
@@ -1470,7 +1470,7 @@ async def trial_run_ui_test_case(request: Request, session=Depends(get_session),
     ai_model = await GConfigDao.get_active_ai_model_config()
     bootstrap = _build_runner_bootstrap_payload(request, user_info, int(case_ref["project_id"] or 0), [run_id], 0, ai_model)
     _write_runner_bootstrap_file(bootstrap)
-    return PityResponse.success({"run_id": run_id, "trigger_mode": "trial", "runner_bootstrap": bootstrap})
+    return ArgusResponse.success({"run_id": run_id, "trigger_mode": "trial", "runner_bootstrap": bootstrap})
 
 
 @router.get("/plan/candidates")
@@ -1479,7 +1479,7 @@ async def list_ui_plan_candidates(project_id: int, session=Depends(get_session),
     rows = await session.execute(
         text(
             "SELECT file_id, file_title, id, node_title, node_path, step_count "
-            "FROM pity_ui_test_case_ref "
+            "FROM argus_ui_test_case_ref "
             "WHERE deleted_at=0 AND project_id=:project_id AND status='valid' "
             "ORDER BY file_title ASC, id ASC"
         ),
@@ -1501,7 +1501,7 @@ async def list_ui_plan_candidates(project_id: int, session=Depends(get_session),
             "node_path": row["node_path"],
             "step_count": int(row["step_count"] or 0),
         })
-    return PityResponse.success(list(grouped.values()))
+    return ArgusResponse.success(list(grouped.values()))
 
 
 @router.get("/plan/list")
@@ -1514,8 +1514,8 @@ async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str
         "SELECT p.id, p.project_id, p.name, p.description, p.env_name, p.base_url, p.browser, p.headless, "
         "p.ordered, p.cron, p.retry_times, p.status, p.created_at, "
         "COUNT(pc.id) AS case_count "
-        "FROM pity_ui_test_plan p "
-        "LEFT JOIN pity_ui_test_plan_case pc ON p.id=pc.plan_id AND pc.deleted_at=0 "
+        "FROM argus_ui_test_plan p "
+        "LEFT JOIN argus_ui_test_plan_case pc ON p.id=pc.plan_id AND pc.deleted_at=0 "
         "WHERE p.deleted_at=0 "
     )
     params = {}
@@ -1551,8 +1551,8 @@ async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str
     except Exception:
         pass
     if not paged:
-        return PityResponse.success(items)
-    count_sql = "SELECT COUNT(1) AS total FROM pity_ui_test_plan p WHERE p.deleted_at=0 "
+        return ArgusResponse.success(items)
+    count_sql = "SELECT COUNT(1) AS total FROM argus_ui_test_plan p WHERE p.deleted_at=0 "
     count_params = {}
     if int(project_id or 0) > 0:
         count_sql += "AND p.project_id=:project_id "
@@ -1565,24 +1565,24 @@ async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str
         count_params["like_keyword"] = f"%{normalized_keyword}%"
     count_row = await session.execute(text(count_sql), count_params)
     total = int((count_row.mappings().first() or {}).get("total") or 0)
-    return PityResponse.success(_paged_payload(items, total, page, size))
+    return ArgusResponse.success(_paged_payload(items, total, page, size))
 
 
 @router.get("/plan/detail")
 async def get_ui_test_plan_detail(id: int, session=Depends(get_session), _=Depends(Permission())):
     await ensure_ui_test_schema(session)
     plan_row = await session.execute(
-        text("SELECT * FROM pity_ui_test_plan WHERE deleted_at=0 AND id=:id"),
+        text("SELECT * FROM argus_ui_test_plan WHERE deleted_at=0 AND id=:id"),
         {"id": id},
     )
     plan = plan_row.mappings().first()
     if not plan:
-        return PityResponse.failed("UI测试计划不存在")
+        return ArgusResponse.failed("UI测试计划不存在")
     case_rows = await session.execute(
         text(
             "SELECT pc.id, pc.case_ref_id, pc.sort_index, pc.enabled, r.file_title, r.node_title, r.node_path, r.status "
-            "FROM pity_ui_test_plan_case pc "
-            "LEFT JOIN pity_ui_test_case_ref r ON pc.case_ref_id=r.id "
+            "FROM argus_ui_test_plan_case pc "
+            "LEFT JOIN argus_ui_test_case_ref r ON pc.case_ref_id=r.id "
             "WHERE pc.deleted_at=0 AND pc.plan_id=:plan_id ORDER BY pc.sort_index ASC, pc.id ASC"
         ),
         {"plan_id": id},
@@ -1602,7 +1602,7 @@ async def get_ui_test_plan_detail(id: int, session=Depends(get_session), _=Depen
             data["next_run"] = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         pass
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.post("/plan/save")
@@ -1614,22 +1614,22 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
     project_id = int(payload.get("project_id") or 0)
     name = str(payload.get("name") or "").strip()
     if project_id <= 0:
-        return PityResponse.failed("project_id不能为空")
+        return ArgusResponse.failed("project_id不能为空")
     if not name:
-        return PityResponse.failed("计划名称不能为空")
+        return ArgusResponse.failed("计划名称不能为空")
     selected_case_ref_ids = [int(item) for item in (payload.get("selected_case_ref_ids") or []) if int(item or 0) > 0]
     if not selected_case_ref_ids:
-        return PityResponse.failed("请至少选择一个UI自动化用例")
+        return ArgusResponse.failed("请至少选择一个UI自动化用例")
     valid_rows = await session.execute(
         text(
-            "SELECT id FROM pity_ui_test_case_ref "
+            "SELECT id FROM argus_ui_test_case_ref "
             "WHERE deleted_at=0 AND project_id=:project_id AND status='valid' AND id IN :ids"
         ).bindparams(bindparam("ids", expanding=True)),
         {"project_id": project_id, "ids": list(set(selected_case_ref_ids))},
     )
     valid_ids = {int(row["id"]) for row in valid_rows.mappings().all()}
     if len(valid_ids) != len(set(selected_case_ref_ids)):
-        return PityResponse.failed("包含不可执行或已失效的UI自动化用例")
+        return ArgusResponse.failed("包含不可执行或已失效的UI自动化用例")
 
     now_dt = datetime.now()
     env_id = int(payload.get("env_id") or 0)
@@ -1640,27 +1640,27 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
     resolved_base_url = str(payload.get("base_url") or "").strip()
     if env_id > 0:
         env_row = await session.execute(
-            text("SELECT id, name FROM pity_environment WHERE deleted_at=0 AND id=:id"),
+            text("SELECT id, name FROM argus_environment WHERE deleted_at=0 AND id=:id"),
             {"id": env_id},
         )
         env_data = env_row.mappings().first()
         if not env_data:
-            return PityResponse.failed("所选环境不存在")
+            return ArgusResponse.failed("所选环境不存在")
         env_name = str(env_data.get("name") or "").strip()
     if address_id > 0:
         gateway_row = await session.execute(
-            text("SELECT id, env, name, gateway, page_url FROM pity_gateway WHERE deleted_at=0 AND id=:id"),
+            text("SELECT id, env, name, gateway, page_url FROM argus_gateway WHERE deleted_at=0 AND id=:id"),
             {"id": address_id},
         )
         gateway_data = gateway_row.mappings().first()
         if not gateway_data:
-            return PityResponse.failed("所选地址前缀不存在")
+            return ArgusResponse.failed("所选地址前缀不存在")
         if env_id > 0 and int(gateway_data.get("env") or 0) != env_id:
-            return PityResponse.failed("地址前缀与所选环境不匹配")
+            return ArgusResponse.failed("地址前缀与所选环境不匹配")
         if env_id <= 0:
             env_id = int(gateway_data.get("env") or 0)
             env_row = await session.execute(
-                text("SELECT id, name FROM pity_environment WHERE deleted_at=0 AND id=:id"),
+                text("SELECT id, name FROM argus_environment WHERE deleted_at=0 AND id=:id"),
                 {"id": env_id},
             )
             env_data = env_row.mappings().first()
@@ -1677,7 +1677,7 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
         None,
     )
     if ai_model_id and not selected_model:
-        return PityResponse.failed("所选AI模型不存在或未启用")
+        return ArgusResponse.failed("所选AI模型不存在或未启用")
     runner_config = json.dumps({
         "ai_model_id": ai_model_id,
         "env_id": env_id,
@@ -1695,14 +1695,14 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
 
     if plan_id > 0:
         plan_row = await session.execute(
-            text("SELECT id FROM pity_ui_test_plan WHERE deleted_at=0 AND id=:id"),
+            text("SELECT id FROM argus_ui_test_plan WHERE deleted_at=0 AND id=:id"),
             {"id": plan_id},
         )
         if not plan_row.first():
-            return PityResponse.failed("UI测试计划不存在")
+            return ArgusResponse.failed("UI测试计划不存在")
         await session.execute(
             text(
-                "UPDATE pity_ui_test_plan SET project_id=:project_id, name=:name, description=:description, "
+                "UPDATE argus_ui_test_plan SET project_id=:project_id, name=:name, description=:description, "
                 "env_name=:env_name, base_url=:base_url, browser=:browser, headless=:headless, ordered=:ordered, "
                 "cron=:cron, retry_times=:retry_times, status=:status, runner_config=:runner_config, "
                 "receiver=:receiver, msg_type=:msg_type, pass_rate=:pass_rate, notification_config_id=:notification_config_id, "
@@ -1732,7 +1732,7 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
         )
         await session.execute(
             text(
-                "UPDATE pity_ui_test_plan_case SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
+                "UPDATE argus_ui_test_plan_case SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
                 "WHERE plan_id=:plan_id AND deleted_at=0"
             ),
             {
@@ -1745,7 +1745,7 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
     else:
         insert_result = await session.execute(
             text(
-                "INSERT INTO pity_ui_test_plan "
+                "INSERT INTO argus_ui_test_plan "
                 "(created_at, updated_at, deleted_at, create_user, update_user, project_id, name, description, env_name, base_url, browser, headless, ordered, cron, retry_times, status, runner_config, receiver, msg_type, pass_rate, notification_config_id) "
                 "VALUES "
                 "(:created_at, :updated_at, 0, :create_user, :update_user, :project_id, :name, :description, :env_name, :base_url, :browser, :headless, :ordered, :cron, :retry_times, :status, :runner_config, :receiver, :msg_type, :pass_rate, :notification_config_id)"
@@ -1788,7 +1788,7 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
         })
     await session.execute(
         text(
-            "INSERT INTO pity_ui_test_plan_case "
+            "INSERT INTO argus_ui_test_plan_case "
             "(created_at, updated_at, deleted_at, create_user, update_user, plan_id, case_ref_id, sort_index, enabled) "
             "VALUES "
             "(:created_at, :updated_at, 0, :create_user, :update_user, :plan_id, :case_ref_id, :sort_index, 1)"
@@ -1802,7 +1802,7 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
         str(payload.get("cron") or "").strip(),
         str(payload.get("status") or "enabled").strip() == "enabled",
     )
-    return PityResponse.success({"id": plan_id})
+    return ArgusResponse.success({"id": plan_id})
 
 
 @router.post("/plan/run")
@@ -1811,19 +1811,19 @@ async def run_ui_test_plan(request: Request, session=Depends(get_session), user_
     payload = await request.json()
     plan_id = int(payload.get("id") or 0)
     if plan_id <= 0:
-        return PityResponse.failed("计划ID不能为空")
+        return ArgusResponse.failed("计划ID不能为空")
     plan_row = await session.execute(
-        text("SELECT * FROM pity_ui_test_plan WHERE deleted_at=0 AND id=:id"),
+        text("SELECT * FROM argus_ui_test_plan WHERE deleted_at=0 AND id=:id"),
         {"id": plan_id},
     )
     plan = plan_row.mappings().first()
     if not plan:
-        return PityResponse.failed("UI测试计划不存在")
+        return ArgusResponse.failed("UI测试计划不存在")
     case_rows = await session.execute(
         text(
             "SELECT pc.case_ref_id, r.file_title, r.node_title, r.node_path, r.dsl_json "
-            "FROM pity_ui_test_plan_case pc "
-            "LEFT JOIN pity_ui_test_case_ref r ON pc.case_ref_id=r.id "
+            "FROM argus_ui_test_plan_case pc "
+            "LEFT JOIN argus_ui_test_case_ref r ON pc.case_ref_id=r.id "
             "WHERE pc.deleted_at=0 AND pc.plan_id=:plan_id AND pc.enabled=1 AND r.deleted_at=0 AND r.status='valid' "
             "ORDER BY pc.sort_index ASC, pc.id ASC"
         ),
@@ -1831,7 +1831,7 @@ async def run_ui_test_plan(request: Request, session=Depends(get_session), user_
     )
     cases = case_rows.mappings().all()
     if not cases:
-        return PityResponse.failed("该计划没有可执行的UI自动化用例")
+        return ArgusResponse.failed("该计划没有可执行的UI自动化用例")
 
     run_id = await _create_ui_plan_run(
         session,
@@ -1842,7 +1842,7 @@ async def run_ui_test_plan(request: Request, session=Depends(get_session), user_
     )
     if not run_id:
         await session.rollback()
-        return PityResponse.failed("该计划的UI自动化用例缺少可执行步骤，请重新扫描或校验用例")
+        return ArgusResponse.failed("该计划的UI自动化用例缺少可执行步骤，请重新扫描或校验用例")
     await session.commit()
     ai_model = await GConfigDao.get_active_ai_model_config()
     bootstrap = _build_runner_bootstrap_payload(
@@ -1864,7 +1864,7 @@ async def run_ui_test_plan(request: Request, session=Depends(get_session), user_
         resource_key=f"ui_plan_{plan_id}",
         payload={"plan_id": plan_id, "run_id": run_id, "executor": int(user_info["id"])},
     )
-    return PityResponse.success({
+    return ArgusResponse.success({
         "run_ids": [run_id] if run_id else [],
         "platform_task_id": int(platform_task.id or 0),
         "bucket": UI_BUCKET_NAME,
@@ -1897,10 +1897,10 @@ async def list_ui_test_runs(
     normalized_scope = str(scope or "report").strip().lower()
     page, size, offset = _clamp_pagination(page, size, 200)
     base_from = (
-        "FROM pity_ui_test_run r "
-        "LEFT JOIN pity_ui_test_plan p ON r.plan_id=p.id "
-        "LEFT JOIN pity_ui_test_case_ref c ON r.case_ref_id=c.id "
-        "LEFT JOIN pity_user u ON r.create_user=u.id "
+        "FROM argus_ui_test_run r "
+        "LEFT JOIN argus_ui_test_plan p ON r.plan_id=p.id "
+        "LEFT JOIN argus_ui_test_case_ref c ON r.case_ref_id=c.id "
+        "LEFT JOIN argus_user u ON r.create_user=u.id "
     )
     where_sql = "WHERE r.deleted_at=0 "
     params = {}
@@ -1982,12 +1982,12 @@ async def list_ui_test_runs(
         item.pop("plan_env_name", None)
         items.append(item)
     if not paged:
-        return PityResponse.success(items)
+        return ArgusResponse.success(items)
 
     count_params = {key: value for key, value in params.items() if key not in {"limit", "offset"}}
     count_row = await session.execute(text(f"SELECT COUNT(1) AS total {base_from}{where_sql}"), count_params)
     total = int((count_row.mappings().first() or {}).get("total") or 0)
-    return PityResponse.success(_paged_payload(items, total, page, size))
+    return ArgusResponse.success(_paged_payload(items, total, page, size))
 
 
 @router.get("/run/detail")
@@ -2011,24 +2011,24 @@ async def get_ui_test_run_detail(
             "p.name AS plan_name, p.env_name AS plan_env_name, pr.name AS project_name, "
             "u.name AS executor_name, c.file_title, c.node_title, c.node_path "
             f"{run_payload_columns} "
-            "FROM pity_ui_test_run r "
-            "LEFT JOIN pity_ui_test_plan p ON r.plan_id=p.id "
-            "LEFT JOIN pity_project pr ON r.project_id=pr.id "
-            "LEFT JOIN pity_ui_test_case_ref c ON r.case_ref_id=c.id "
-            "LEFT JOIN pity_user u ON r.create_user=u.id "
+            "FROM argus_ui_test_run r "
+            "LEFT JOIN argus_ui_test_plan p ON r.plan_id=p.id "
+            "LEFT JOIN argus_project pr ON r.project_id=pr.id "
+            "LEFT JOIN argus_ui_test_case_ref c ON r.case_ref_id=c.id "
+            "LEFT JOIN argus_user u ON r.create_user=u.id "
             "WHERE r.deleted_at=0 AND r.id=:id"
         ),
         {"id": id},
     )
     run = run_row.mappings().first()
     if not run:
-        return PityResponse.failed("UI测试执行记录不存在")
+        return ArgusResponse.failed("UI测试执行记录不存在")
     step_payload_columns = ", request_payload, result_payload" if include_step_payload else ""
     step_rows = await session.execute(
         text(
             "SELECT id, step_index, step_name, step_type, status, screenshot_path, error_message, duration_ms "
             f"{step_payload_columns} "
-            "FROM pity_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id ORDER BY step_index ASC, id ASC"
+            "FROM argus_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id ORDER BY step_index ASC, id ASC"
         ),
         {"run_id": id},
     )
@@ -2078,7 +2078,7 @@ async def get_ui_test_run_detail(
         ] if item]
     else:
         data["artifacts"] = []
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.get("/run/share-detail")
@@ -2102,24 +2102,24 @@ async def get_ui_test_shared_run_detail(
             "p.name AS plan_name, p.env_name AS plan_env_name, pr.name AS project_name, "
             "u.name AS executor_name, c.file_title, c.node_title, c.node_path "
             f"{run_payload_columns} "
-            "FROM pity_ui_test_run r "
-            "LEFT JOIN pity_ui_test_plan p ON r.plan_id=p.id "
-            "LEFT JOIN pity_project pr ON r.project_id=pr.id "
-            "LEFT JOIN pity_ui_test_case_ref c ON r.case_ref_id=c.id "
-            "LEFT JOIN pity_user u ON r.create_user=u.id "
+            "FROM argus_ui_test_run r "
+            "LEFT JOIN argus_ui_test_plan p ON r.plan_id=p.id "
+            "LEFT JOIN argus_project pr ON r.project_id=pr.id "
+            "LEFT JOIN argus_ui_test_case_ref c ON r.case_ref_id=c.id "
+            "LEFT JOIN argus_user u ON r.create_user=u.id "
             "WHERE r.deleted_at=0 AND r.id=:id"
         ),
         {"id": id},
     )
     run = run_row.mappings().first()
     if not run:
-        return PityResponse.failed("UI测试执行记录不存在")
+        return ArgusResponse.failed("UI测试执行记录不存在")
     step_payload_columns = ", request_payload, result_payload" if include_step_payload else ""
     step_rows = await session.execute(
         text(
             "SELECT id, step_index, step_name, step_type, status, screenshot_path, error_message, duration_ms "
             f"{step_payload_columns} "
-            "FROM pity_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id ORDER BY step_index ASC, id ASC"
+            "FROM argus_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id ORDER BY step_index ASC, id ASC"
         ),
         {"run_id": id},
     )
@@ -2169,7 +2169,7 @@ async def get_ui_test_shared_run_detail(
         ] if item]
     else:
         data["artifacts"] = []
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.get("/run/step-detail")
@@ -2180,13 +2180,13 @@ async def get_ui_test_run_step_detail(id: int, session=Depends(get_session)):
         text(
             "SELECT id, run_id, step_index, step_name, step_type, status, screenshot_path, request_payload, "
             "result_payload, error_message, duration_ms, created_at, updated_at "
-            "FROM pity_ui_test_step_result WHERE deleted_at=0 AND id=:id"
+            "FROM argus_ui_test_step_result WHERE deleted_at=0 AND id=:id"
         ),
         {"id": id},
     )
     item = row.mappings().first()
     if not item:
-        return PityResponse.failed("UI测试步骤结果不存在")
+        return ArgusResponse.failed("UI测试步骤结果不存在")
     data = dict(item)
     data["request_payload"] = _parse_json_text(data.get("request_payload")) or data.get("request_payload") or ""
     data["result_payload"] = _parse_json_text(data.get("result_payload")) or data.get("result_payload") or ""
@@ -2196,7 +2196,7 @@ async def get_ui_test_run_step_detail(id: int, session=Depends(get_session)):
         client = None
     if client and data.get("screenshot_path"):
         run_row = await session.execute(
-            text("SELECT artifact_bucket FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+            text("SELECT artifact_bucket FROM argus_ui_test_run WHERE deleted_at=0 AND id=:id"),
             {"id": int(data.get("run_id") or 0)},
         )
         run = run_row.mappings().first() or {}
@@ -2208,7 +2208,7 @@ async def get_ui_test_run_step_detail(id: int, session=Depends(get_session)):
         )
     else:
         data["screenshot_artifact"] = None
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.post("/run/stop")
@@ -2217,26 +2217,26 @@ async def stop_ui_test_run(request: Request, session=Depends(get_session), user_
     payload = await request.json()
     run_id = int(payload.get("id") or payload.get("run_id") or 0)
     if run_id <= 0:
-        return PityResponse.failed("id不能为空")
+        return ArgusResponse.failed("id不能为空")
 
     row = await session.execute(
-        text("SELECT id, status FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+        text("SELECT id, status FROM argus_ui_test_run WHERE deleted_at=0 AND id=:id"),
         {"id": run_id},
     )
     run = row.mappings().first()
     if not run:
-        return PityResponse.failed("UI测试执行记录不存在")
+        return ArgusResponse.failed("UI测试执行记录不存在")
 
     current_status = str(run.get("status") or "").strip().lower()
     if current_status in UI_RUN_TERMINAL_STATUSES:
-        return PityResponse.success({
+        return ArgusResponse.success({
             "run_id": run_id,
             "status": current_status,
             "stopped": current_status == "cancelled",
             "message": "当前执行记录已结束，无需停止。",
         })
     if current_status not in UI_RUN_ACTIVE_STATUSES:
-        return PityResponse.failed(f"当前状态不允许停止：{current_status or '-'}")
+        return ArgusResponse.failed(f"当前状态不允许停止：{current_status or '-'}")
 
     now_dt = datetime.now()
     message = str(payload.get("reason") or "用户手动停止UI测试执行").strip()
@@ -2248,7 +2248,7 @@ async def stop_ui_test_run(request: Request, session=Depends(get_session), user_
     }
     updated = await session.execute(
         text(
-            "UPDATE pity_ui_test_run SET status='cancelled', result_payload=:result_payload, "
+            "UPDATE argus_ui_test_run SET status='cancelled', result_payload=:result_payload, "
             "error_message=:error_message, finished_at=:finished_at, update_user=:update_user, updated_at=:updated_at "
             "WHERE id=:id AND deleted_at=0 AND status IN ('queued', 'claimed', 'running', 'uploading')"
         ),
@@ -2263,9 +2263,9 @@ async def stop_ui_test_run(request: Request, session=Depends(get_session), user_
     )
     if int(updated.rowcount or 0) == 0:
         await session.rollback()
-        return PityResponse.failed("执行记录状态已变化，请刷新后重试")
+        return ArgusResponse.failed("执行记录状态已变化，请刷新后重试")
     await session.commit()
-    return PityResponse.success({"run_id": run_id, "status": "cancelled", "stopped": True})
+    return ArgusResponse.success({"run_id": run_id, "status": "cancelled", "stopped": True})
 
 
 @router.post("/run/retry")
@@ -2274,23 +2274,23 @@ async def retry_ui_test_run(request: Request, session=Depends(get_session), user
     payload = await request.json()
     run_id = int(payload.get("id") or 0)
     if run_id <= 0:
-        return PityResponse.failed("id不能为空")
+        return ArgusResponse.failed("id不能为空")
 
     row = await session.execute(
         text(
             "SELECT id, project_id, plan_id, case_ref_id, browser, headless, run_name, runner_payload "
-            "FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"
+            "FROM argus_ui_test_run WHERE deleted_at=0 AND id=:id"
         ),
         {"id": run_id},
     )
     source_run = row.mappings().first()
     if not source_run:
-        return PityResponse.failed("UI测试执行记录不存在")
+        return ArgusResponse.failed("UI测试执行记录不存在")
 
     now_dt = datetime.now()
     insert_result = await session.execute(
         text(
-            "INSERT INTO pity_ui_test_run "
+            "INSERT INTO argus_ui_test_run "
             "(created_at, updated_at, deleted_at, create_user, update_user, project_id, plan_id, case_ref_id, run_name, status, trigger_mode, browser, headless, artifact_bucket, artifact_prefix, screenshot_dir, video_path, trace_path, report_path, result_json_path, runner_payload, started_at) "
             "VALUES "
             "(:created_at, :updated_at, 0, :create_user, :update_user, :project_id, :plan_id, :case_ref_id, :run_name, 'queued', 'retry', :browser, :headless, :artifact_bucket, '', '', '', '', '', '', :runner_payload, :started_at)"
@@ -2315,7 +2315,7 @@ async def retry_ui_test_run(request: Request, session=Depends(get_session), user
     artifact_prefix = f"{UI_OBJECT_PREFIX}/{int(source_run['project_id'] or 0)}/{int(source_run['plan_id'] or 0)}/{new_run_id}"
     await session.execute(
         text(
-            "UPDATE pity_ui_test_run SET artifact_prefix=:artifact_prefix, screenshot_dir=:screenshot_dir, "
+            "UPDATE argus_ui_test_run SET artifact_prefix=:artifact_prefix, screenshot_dir=:screenshot_dir, "
             "video_path=:video_path, trace_path=:trace_path, report_path=:report_path, result_json_path=:result_json_path "
             "WHERE id=:id"
         ),
@@ -2340,7 +2340,7 @@ async def retry_ui_test_run(request: Request, session=Depends(get_session), user
         ai_model,
     )
     _write_runner_bootstrap_file(bootstrap)
-    return PityResponse.success({"run_id": new_run_id, "trigger_mode": "retry", "runner_bootstrap": bootstrap})
+    return ArgusResponse.success({"run_id": new_run_id, "trigger_mode": "retry", "runner_bootstrap": bootstrap})
 
 
 @router.get("/resource/status")
@@ -2352,7 +2352,7 @@ async def get_ui_test_resource_status(project_id: int = 0, session=Depends(get_s
         "SUM(CASE WHEN status IN ('claimed', 'running', 'uploading') THEN 1 ELSE 0 END) AS running_count, "
         "SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success_count, "
         "SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed_count "
-        "FROM pity_ui_test_run WHERE deleted_at=0 AND trigger_mode<>'trial' "
+        "FROM argus_ui_test_run WHERE deleted_at=0 AND trigger_mode<>'trial' "
     )
     params = {}
     if int(project_id or 0) > 0:
@@ -2366,7 +2366,7 @@ async def get_ui_test_resource_status(project_id: int = 0, session=Depends(get_s
     stats["object_prefix"] = UI_OBJECT_PREFIX
     stats["runner_status"] = "waiting_runner"
     stats["oss_status"] = "configured" if UI_BUCKET_NAME else "missing_bucket"
-    return PityResponse.success(stats)
+    return ArgusResponse.success(stats)
 
 
 @router.get("/plan/switch")
@@ -2374,14 +2374,14 @@ async def switch_ui_test_plan(id: int, status: bool, session=Depends(get_session
     await ensure_ui_test_schema(session)
     now_dt = datetime.now()
     row = await session.execute(
-        text("SELECT id, name, cron FROM pity_ui_test_plan WHERE deleted_at=0 AND id=:id"),
+        text("SELECT id, name, cron FROM argus_ui_test_plan WHERE deleted_at=0 AND id=:id"),
         {"id": int(id)},
     )
     plan = row.mappings().first()
     if not plan:
-        return PityResponse.failed("UI测试计划不存在")
+        return ArgusResponse.failed("UI测试计划不存在")
     await session.execute(
-        text("UPDATE pity_ui_test_plan SET status=:status, update_user=:update_user, updated_at=:updated_at WHERE id=:id"),
+        text("UPDATE argus_ui_test_plan SET status=:status, update_user=:update_user, updated_at=:updated_at WHERE id=:id"),
         {
             "id": int(id),
             "status": "enabled" if bool(status) else "disabled",
@@ -2391,7 +2391,7 @@ async def switch_ui_test_plan(id: int, status: bool, session=Depends(get_session
     )
     await session.commit()
     _sync_ui_plan_scheduler(int(id), str(plan.get("name") or ""), str(plan.get("cron") or ""), bool(status))
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.get("/plan/delete")
@@ -2400,14 +2400,14 @@ async def delete_ui_test_plan(id: int, session=Depends(get_session), user_info=D
     now_dt = datetime.now()
     deleted_at = int(now_dt.timestamp())
     row = await session.execute(
-        text("SELECT id FROM pity_ui_test_plan WHERE deleted_at=0 AND id=:id"),
+        text("SELECT id FROM argus_ui_test_plan WHERE deleted_at=0 AND id=:id"),
         {"id": int(id)},
     )
     plan = row.mappings().first()
     if not plan:
-        return PityResponse.failed("UI测试计划不存在")
+        return ArgusResponse.failed("UI测试计划不存在")
     await session.execute(
-        text("UPDATE pity_ui_test_plan SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at WHERE id=:id"),
+        text("UPDATE argus_ui_test_plan SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at WHERE id=:id"),
         {
             "id": int(id),
             "deleted_at": deleted_at,
@@ -2416,7 +2416,7 @@ async def delete_ui_test_plan(id: int, session=Depends(get_session), user_info=D
         },
     )
     await session.execute(
-        text("UPDATE pity_ui_test_plan_case SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at WHERE plan_id=:plan_id AND deleted_at=0"),
+        text("UPDATE argus_ui_test_plan_case SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at WHERE plan_id=:plan_id AND deleted_at=0"),
         {
             "plan_id": int(id),
             "deleted_at": deleted_at,
@@ -2431,7 +2431,7 @@ async def delete_ui_test_plan(id: int, session=Depends(get_session), user_info=D
         pass
     except Exception:
         pass
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/runner/claim")
@@ -2443,13 +2443,13 @@ async def claim_ui_test_run(request: Request, session=Depends(get_session), user
     run_id = int(payload.get("run_id") or 0)
     any_project = _normalize_bool(payload.get("any_project"), False)
     if project_id <= 0 and run_id <= 0 and not any_project:
-        return PityResponse.failed("project_id或run_id不能为空")
+        return ArgusResponse.failed("project_id或run_id不能为空")
 
     sql = (
         "SELECT id, project_id, plan_id, case_ref_id, run_name, status, trigger_mode, browser, headless, "
         "artifact_bucket, artifact_prefix, screenshot_dir, video_path, trace_path, report_path, result_json_path, "
         "runner_payload, created_at, started_at "
-        "FROM pity_ui_test_run WHERE deleted_at=0 AND status='queued' "
+        "FROM argus_ui_test_run WHERE deleted_at=0 AND status='queued' "
     )
     params = {}
     if run_id > 0:
@@ -2467,12 +2467,12 @@ async def claim_ui_test_run(request: Request, session=Depends(get_session), user
     row = await session.execute(text(sql), params)
     task = row.mappings().first()
     if not task:
-        return PityResponse.success(None, msg="当前没有可领取的UI任务")
+        return ArgusResponse.success(None, msg="当前没有可领取的UI任务")
 
     now_dt = datetime.now()
     updated = await session.execute(
         text(
-            "UPDATE pity_ui_test_run SET status='claimed', update_user=:update_user, updated_at=:updated_at, "
+            "UPDATE argus_ui_test_run SET status='claimed', update_user=:update_user, updated_at=:updated_at, "
             "started_at=COALESCE(started_at, :started_at) WHERE id=:id AND deleted_at=0 AND status='queued'"
         ),
         {
@@ -2484,27 +2484,27 @@ async def claim_ui_test_run(request: Request, session=Depends(get_session), user
     )
     if int(updated.rowcount or 0) == 0:
         await session.rollback()
-        return PityResponse.success(None, msg="任务已被其他Runner领取")
+        return ArgusResponse.success(None, msg="任务已被其他Runner领取")
     await session.commit()
 
     claimed = dict(task)
     claimed["status"] = "claimed"
     claimed["runner_payload"] = _parse_json_text(claimed.get("runner_payload")) or {}
-    return PityResponse.success(claimed)
+    return ArgusResponse.success(claimed)
 
 
 @router.get("/runner/run/status")
 async def get_runner_ui_test_run_status(run_id: int, session=Depends(get_session), _=Depends(Permission())):
     await ensure_ui_test_schema(session)
     row = await session.execute(
-        text("SELECT id, status, error_message, updated_at FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+        text("SELECT id, status, error_message, updated_at FROM argus_ui_test_run WHERE deleted_at=0 AND id=:id"),
         {"id": int(run_id or 0)},
     )
     run = row.mappings().first()
     if not run:
-        return PityResponse.failed("UI测试执行记录不存在")
+        return ArgusResponse.failed("UI测试执行记录不存在")
     status = str(run.get("status") or "").strip().lower()
-    return PityResponse.success({
+    return ArgusResponse.success({
         "run_id": int(run["id"]),
         "status": status,
         "cancelled": status == "cancelled",
@@ -2521,15 +2521,15 @@ async def save_ui_test_step_result(request: Request, session=Depends(get_session
     run_id = int(payload.get("run_id") or 0)
     step_index = int(payload.get("step_index") or 0)
     if run_id <= 0:
-        return PityResponse.failed("run_id不能为空")
+        return ArgusResponse.failed("run_id不能为空")
 
     run_row = await session.execute(
-        text("SELECT id, status FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+        text("SELECT id, status FROM argus_ui_test_run WHERE deleted_at=0 AND id=:id"),
         {"id": run_id},
     )
     run = run_row.mappings().first()
     if not run:
-        return PityResponse.failed("UI测试执行记录不存在")
+        return ArgusResponse.failed("UI测试执行记录不存在")
 
     step_name = str(payload.get("step_name") or f"Step {step_index}").strip()
     step_type = str(payload.get("step_type") or "").strip()
@@ -2542,14 +2542,14 @@ async def save_ui_test_step_result(request: Request, session=Depends(get_session
     now_dt = datetime.now()
 
     existing_row = await session.execute(
-        text("SELECT id FROM pity_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id AND step_index=:step_index LIMIT 1"),
+        text("SELECT id FROM argus_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id AND step_index=:step_index LIMIT 1"),
         {"run_id": run_id, "step_index": step_index},
     )
     existing = existing_row.mappings().first()
     if existing:
         await session.execute(
             text(
-                "UPDATE pity_ui_test_step_result SET step_name=:step_name, step_type=:step_type, status=:status, "
+                "UPDATE argus_ui_test_step_result SET step_name=:step_name, step_type=:step_type, status=:status, "
                 "screenshot_path=:screenshot_path, request_payload=:request_payload, result_payload=:result_payload, "
                 "error_message=:error_message, duration_ms=:duration_ms, update_user=:update_user, updated_at=:updated_at "
                 "WHERE id=:id"
@@ -2571,7 +2571,7 @@ async def save_ui_test_step_result(request: Request, session=Depends(get_session
     else:
         await session.execute(
             text(
-                "INSERT INTO pity_ui_test_step_result "
+                "INSERT INTO argus_ui_test_step_result "
                 "(created_at, updated_at, deleted_at, create_user, update_user, run_id, step_index, step_name, step_type, status, screenshot_path, request_payload, result_payload, error_message, duration_ms) "
                 "VALUES "
                 "(:created_at, :updated_at, 0, :create_user, :update_user, :run_id, :step_index, :step_name, :step_type, :status, :screenshot_path, :request_payload, :result_payload, :error_message, :duration_ms)"
@@ -2596,11 +2596,11 @@ async def save_ui_test_step_result(request: Request, session=Depends(get_session
 
     if str(run.get("status") or "") in {"queued", "claimed"} and status in {"running", "success", "failed"}:
         await session.execute(
-            text("UPDATE pity_ui_test_run SET status='running', update_user=:update_user, updated_at=:updated_at WHERE id=:id"),
+            text("UPDATE argus_ui_test_run SET status='running', update_user=:update_user, updated_at=:updated_at WHERE id=:id"),
             {"id": run_id, "update_user": int(user_info["id"]), "updated_at": now_dt},
         )
     await session.commit()
-    return PityResponse.success({"run_id": run_id, "step_index": step_index, "status": status})
+    return ArgusResponse.success({"run_id": run_id, "step_index": step_index, "status": status})
 
 
 @router.post("/runner/run/save")
@@ -2609,21 +2609,21 @@ async def save_ui_test_run_result(request: Request, session=Depends(get_session)
     payload = await request.json()
     run_id = int(payload.get("run_id") or 0)
     if run_id <= 0:
-        return PityResponse.failed("run_id不能为空")
+        return ArgusResponse.failed("run_id不能为空")
 
     run_row = await session.execute(
-        text("SELECT id, status FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+        text("SELECT id, status FROM argus_ui_test_run WHERE deleted_at=0 AND id=:id"),
         {"id": run_id},
     )
     run = run_row.mappings().first()
     if not run:
-        return PityResponse.failed("UI测试执行记录不存在")
+        return ArgusResponse.failed("UI测试执行记录不存在")
 
     now_dt = datetime.now()
     status = _normalize_ui_run_status(payload.get("status"), "success")
     current_status = str(run.get("status") or "").strip().lower()
     if current_status == "cancelled" and status != "cancelled":
-        return PityResponse.success({
+        return ArgusResponse.success({
             "run_id": run_id,
             "status": "cancelled",
             "ignored": True,
@@ -2632,7 +2632,7 @@ async def save_ui_test_run_result(request: Request, session=Depends(get_session)
     result_payload = json.dumps(payload.get("result_payload"), ensure_ascii=False) if "result_payload" in payload else None
     error_message = str(payload.get("error_message") or "").strip()
     step_count_row = await session.execute(
-        text("SELECT COUNT(1) AS step_count FROM pity_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id"),
+        text("SELECT COUNT(1) AS step_count FROM argus_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id"),
         {"run_id": run_id},
     )
     saved_step_count = int((step_count_row.mappings().first() or {}).get("step_count") or 0)
@@ -2665,7 +2665,7 @@ async def save_ui_test_run_result(request: Request, session=Depends(get_session)
     }
     await session.execute(
         text(
-            "UPDATE pity_ui_test_run SET status=:status, result_payload=:result_payload, error_message=:error_message, "
+            "UPDATE argus_ui_test_run SET status=:status, result_payload=:result_payload, error_message=:error_message, "
             "finished_at=CASE WHEN :finished_at IS NULL THEN finished_at ELSE :finished_at END, "
             "updated_at=:updated_at, update_user=:update_user, "
             "artifact_prefix=CASE WHEN :artifact_prefix='' THEN artifact_prefix ELSE :artifact_prefix END, "
@@ -2687,7 +2687,7 @@ async def save_ui_test_run_result(request: Request, session=Depends(get_session)
             asyncio.create_task(UiNotice.notify(0, run_id))
         except Exception:
             pass
-    return PityResponse.success({"run_id": run_id, "status": status})
+    return ArgusResponse.success({"run_id": run_id, "status": status})
 
 
 @router.post("/runner/artifact/upload")
@@ -2695,21 +2695,21 @@ async def upload_ui_test_artifact(run_id: int = Form(...), object_key: str = For
                                   session=Depends(get_session), _=Depends(Permission())):
     await ensure_ui_test_schema(session)
     run_row = await session.execute(
-        text("SELECT id, status, artifact_prefix, artifact_bucket FROM pity_ui_test_run WHERE deleted_at=0 AND id=:id"),
+        text("SELECT id, status, artifact_prefix, artifact_bucket FROM argus_ui_test_run WHERE deleted_at=0 AND id=:id"),
         {"id": int(run_id)},
     )
     run = run_row.mappings().first()
     if not run:
-        return PityResponse.failed("UI测试执行记录不存在")
+        return ArgusResponse.failed("UI测试执行记录不存在")
     if str(run.get("status") or "").strip().lower() == "cancelled":
-        return PityResponse.failed("UI测试执行已停止，跳过产物上传")
+        return ArgusResponse.failed("UI测试执行已停止，跳过产物上传")
 
     normalized_key = str(object_key or "").replace("\\", "/").strip().strip("/")
     artifact_prefix = str(run.get("artifact_prefix") or "").strip().strip("/")
     if not normalized_key:
-        return PityResponse.failed("object_key不能为空")
+        return ArgusResponse.failed("object_key不能为空")
     if artifact_prefix and not normalized_key.startswith(f"{artifact_prefix}/") and normalized_key != artifact_prefix:
-        return PityResponse.failed("object_key不在当前run的artifact_prefix下")
+        return ArgusResponse.failed("object_key不在当前run的artifact_prefix下")
 
     client = OssClient.get_oss_client()
     content = await file.read()
@@ -2723,9 +2723,9 @@ async def upload_ui_test_artifact(run_id: int = Form(...), object_key: str = For
             content_type=file.content_type or "application/octet-stream",
         )
     except Exception as exc:
-        return PityResponse.failed(str(exc))
+        return ArgusResponse.failed(str(exc))
     upload_meta = normalize_oss_upload_result(client, upload_result, normalized_key, bucket_name=bucket_name)
-    return PityResponse.success({
+    return ArgusResponse.success({
         "run_id": int(run_id),
         "bucket_name": upload_meta.get("bucket_name") or bucket_name or "",
         "object_key": upload_meta.get("object_key") or normalized_key,

@@ -14,7 +14,7 @@ from app.core.platform_mq import (
 from app.core.platform_audit import PlatformAuditService
 from app.enums.platform_task import PlatformResultStatus, PlatformTaskStatus
 from app.models import async_session
-from app.models.platform_task import PityPlatformTask
+from app.models.platform_task import ArgusPlatformTask
 from app.utils.logger import Log
 
 logger = Log("platform_task")
@@ -40,9 +40,9 @@ class PlatformTaskService:
     async def get_task(task_id):
         async with async_session() as session:
             result = await session.execute(
-                select(PityPlatformTask).where(
-                    PityPlatformTask.id == int(task_id or 0),
-                    PityPlatformTask.deleted_at == 0,
+                select(ArgusPlatformTask).where(
+                    ArgusPlatformTask.id == int(task_id or 0),
+                    ArgusPlatformTask.deleted_at == 0,
                 )
             )
             return result.scalars().first()
@@ -63,7 +63,7 @@ class PlatformTaskService:
     ):
         queue_name = build_task_queue_name(task_type, resource_key)
         async with async_session() as session:
-            model = PityPlatformTask(
+            model = ArgusPlatformTask(
                 user=int(user_id or 0),
                 task_type=str(task_type or ""),
                 biz_id=int(biz_id or 0),
@@ -131,9 +131,9 @@ class PlatformTaskService:
     async def claim_queued_task(task_id, stage="running", stage_text="任务执行中"):
         async with async_session() as session:
             result = await session.execute(
-                select(PityPlatformTask).where(
-                    PityPlatformTask.id == int(task_id or 0),
-                    PityPlatformTask.deleted_at == 0,
+                select(ArgusPlatformTask).where(
+                    ArgusPlatformTask.id == int(task_id or 0),
+                    ArgusPlatformTask.deleted_at == 0,
                 )
             )
             task = result.scalars().first()
@@ -162,9 +162,9 @@ class PlatformTaskService:
     async def update_task(task_id, **fields):
         async with async_session() as session:
             result = await session.execute(
-                select(PityPlatformTask).where(
-                    PityPlatformTask.id == int(task_id or 0),
-                    PityPlatformTask.deleted_at == 0,
+                select(ArgusPlatformTask).where(
+                    ArgusPlatformTask.id == int(task_id or 0),
+                    ArgusPlatformTask.deleted_at == 0,
                 )
             )
             task = result.scalars().first()
@@ -249,9 +249,9 @@ class PlatformTaskService:
     async def mark_retry(task_id, error_message="", stage_text="任务执行失败，等待重试"):
         async with async_session() as session:
             result = await session.execute(
-                select(PityPlatformTask).where(
-                    PityPlatformTask.id == int(task_id or 0),
-                    PityPlatformTask.deleted_at == 0,
+                select(ArgusPlatformTask).where(
+                    ArgusPlatformTask.id == int(task_id or 0),
+                    ArgusPlatformTask.deleted_at == 0,
                 )
             )
             task = result.scalars().first()

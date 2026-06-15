@@ -8,11 +8,11 @@ from app.crud.config.NotificationChannelDao import NotificationChannelDao
 from app.crud.config.NotificationConfigDao import NotificationConfigDao
 from app.crud.config.NotificationGroupDao import NotificationGroupDao
 from app.crud.config.NotificationTemplateDao import NotificationTemplateDao
-from app.handler.fatcory import PityResponse
-from app.models.notification_channel import PityNotificationChannel
-from app.models.notification_config import PityNotificationConfig
-from app.models.notification_group import PityUserGroup
-from app.models.notification_template import PityNotificationTemplate
+from app.handler.fatcory import ArgusResponse
+from app.models.notification_channel import ArgusNotificationChannel
+from app.models.notification_config import ArgusNotificationConfig
+from app.models.notification_group import ArgusUserGroup
+from app.models.notification_template import ArgusNotificationTemplate
 from app.routers import Permission, get_session
 from config import Config
 
@@ -46,16 +46,16 @@ async def list_channels(channel_type: int = None, user_info=Depends(Permission(C
             "created_at": item.created_at.strftime("%Y-%m-%d %H:%M:%S") if item.created_at else "",
             "updated_at": item.updated_at.strftime("%Y-%m-%d %H:%M:%S") if item.updated_at else "",
         })
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)
 
 
 @router.get("/channel/detail")
 async def get_channel_detail(id: int, user_info=Depends(Permission(Config.ADMIN))):
     item = await NotificationChannelDao.get_channel(id)
     if item is None:
-        return PityResponse.failed("渠道不存在")
+        return ArgusResponse.failed("渠道不存在")
     cfg = json.loads(item.config_json) if item.config_json else {}
-    return PityResponse.success({
+    return ArgusResponse.success({
         "id": item.id,
         "name": item.name,
         "channel_type": item.channel_type,
@@ -73,9 +73,9 @@ async def insert_channel(request: Request, user_info=Depends(Permission(Config.A
     config_json = json.dumps(body.get("config_json", {}), ensure_ascii=False)
     enabled = bool(body.get("enabled", True))
     description = body.get("description", "")
-    model = PityNotificationChannel(name, channel_type, config_json, user_info["id"], enabled, description)
+    model = ArgusNotificationChannel(name, channel_type, config_json, user_info["id"], enabled, description)
     result = await NotificationChannelDao.insert(model=model)
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)
 
 
 @router.post("/channel/update")
@@ -84,7 +84,7 @@ async def update_channel(request: Request, user_info=Depends(Permission(Config.A
     channel_id = int(body.get("id", 0))
     channel = await NotificationChannelDao.get_channel(channel_id)
     if channel is None:
-        return PityResponse.failed("渠道不存在")
+        return ArgusResponse.failed("渠道不存在")
     if "name" in body:
         channel.name = body["name"]
     if "channel_type" in body:
@@ -101,7 +101,7 @@ async def update_channel(request: Request, user_info=Depends(Permission(Config.A
     async with async_session() as session:
         await session.merge(channel)
         await session.commit()
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/channel/delete")
@@ -111,7 +111,7 @@ async def delete_channel(request: Request, user_info=Depends(Permission(Config.A
     from app.crud import async_session
     async with async_session() as session:
         await NotificationChannelDao.delete_by_id(channel_id, session=session)
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/channel/test")
@@ -121,7 +121,7 @@ async def test_channel(request: Request, user_info=Depends(Permission(Config.ADM
     channel_id = int(body.get("id", 0))
     channel = await NotificationChannelDao.get_channel(channel_id)
     if channel is None:
-        return PityResponse.failed("渠道不存在")
+        return ArgusResponse.failed("渠道不存在")
     return await _send_test(channel, user_info)
 
 
@@ -163,10 +163,10 @@ async def _send_test(channel, user_info):
             fs = FeiShu(cfg.get("webhook_url", ""))
             await fs.send_msg("通知渠道测试", test_content)
         else:
-            return PityResponse.failed("不支持的渠道类型")
-        return PityResponse.success()
+            return ArgusResponse.failed("不支持的渠道类型")
+        return ArgusResponse.success()
     except Exception as e:
-        return PityResponse.failed(f"发送失败: {str(e)}")
+        return ArgusResponse.failed(f"发送失败: {str(e)}")
 
 
 # ==================== 通知模板 ====================
@@ -185,15 +185,15 @@ async def list_templates(channel_type: int = None, user_info=Depends(Permission(
             "created_at": item.created_at.strftime("%Y-%m-%d %H:%M:%S") if item.created_at else "",
             "updated_at": item.updated_at.strftime("%Y-%m-%d %H:%M:%S") if item.updated_at else "",
         })
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)
 
 
 @router.get("/template/detail")
 async def get_template_detail(id: int, user_info=Depends(Permission(Config.ADMIN))):
     item = await NotificationTemplateDao.get_template(id)
     if item is None:
-        return PityResponse.failed("模板不存在")
-    return PityResponse.success({
+        return ArgusResponse.failed("模板不存在")
+    return ArgusResponse.success({
         "id": item.id,
         "name": item.name,
         "channel_type": item.channel_type,
@@ -211,9 +211,9 @@ async def insert_template(request: Request, user_info=Depends(Permission(Config.
     content_template = body.get("content_template", "")
     subject_template = body.get("subject_template", "")
     enabled = bool(body.get("enabled", True))
-    model = PityNotificationTemplate(name, channel_type, content_template, user_info["id"], subject_template, enabled)
+    model = ArgusNotificationTemplate(name, channel_type, content_template, user_info["id"], subject_template, enabled)
     result = await NotificationTemplateDao.insert(model=model)
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)
 
 
 @router.post("/template/update")
@@ -222,7 +222,7 @@ async def update_template(request: Request, user_info=Depends(Permission(Config.
     tpl_id = int(body.get("id", 0))
     tpl = await NotificationTemplateDao.get_template(tpl_id)
     if tpl is None:
-        return PityResponse.failed("模板不存在")
+        return ArgusResponse.failed("模板不存在")
     for field in ("name", "channel_type", "content_template", "subject_template", "enabled"):
         if field in body:
             setattr(tpl, field, body[field])
@@ -232,7 +232,7 @@ async def update_template(request: Request, user_info=Depends(Permission(Config.
     async with async_session() as session:
         await session.merge(tpl)
         await session.commit()
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/template/delete")
@@ -242,7 +242,7 @@ async def delete_template(request: Request, user_info=Depends(Permission(Config.
     from app.crud import async_session
     async with async_session() as session:
         await NotificationTemplateDao.delete_by_id(tpl_id, session=session)
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 # ==================== 用户组 ====================
@@ -260,7 +260,7 @@ async def list_groups(user_info=Depends(Permission(Config.ADMIN))):
             "member_count": len(members),
             "created_at": item.created_at.strftime("%Y-%m-%d %H:%M:%S") if item.created_at else "",
         })
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)
 
 
 @router.put("/group/insert")
@@ -272,13 +272,13 @@ async def insert_group(request: Request, user_info=Depends(Permission(Config.ADM
     from app.crud import async_session
     async with async_session() as session:
         async with session.begin():
-            model = PityUserGroup(name, user_info["id"], description)
+            model = ArgusUserGroup(name, user_info["id"], description)
             session.add(model)
             await session.flush()
             if member_ids:
                 await NotificationGroupDao.add_members(session, model.id, member_ids)
             session.expunge(model)
-    return PityResponse.success(model)
+    return ArgusResponse.success(model)
 
 
 @router.post("/group/update")
@@ -290,21 +290,21 @@ async def update_group(request: Request, user_info=Depends(Permission(Config.ADM
     async with async_session() as session:
         async with session.begin():
             await session.execute(
-                update(PityUserGroup)
-                .where(PityUserGroup.id == group_id)
+                update(ArgusUserGroup)
+                .where(ArgusUserGroup.id == group_id)
                 .values(name=body.get("name"), description=body.get("description", ""),
                         updated_at=datetime.now(), update_user=user_info["id"])
             )
             member_ids = body.get("members", [])
-            from app.models.notification_group import PityUserGroupMember
+            from app.models.notification_group import ArgusUserGroupMember
             await session.execute(
-                update(PityUserGroupMember)
-                .where(PityUserGroupMember.group_id == group_id, PityUserGroupMember.deleted_at == 0)
+                update(ArgusUserGroupMember)
+                .where(ArgusUserGroupMember.group_id == group_id, ArgusUserGroupMember.deleted_at == 0)
                 .values(deleted_at=0)
             )
             for uid in member_ids:
-                session.add(PityUserGroupMember(group_id, uid))
-    return PityResponse.success()
+                session.add(ArgusUserGroupMember(group_id, uid))
+    return ArgusResponse.success()
 
 
 @router.post("/group/delete")
@@ -314,16 +314,16 @@ async def delete_group(request: Request, user_info=Depends(Permission(Config.ADM
     from app.crud import async_session
     async with async_session() as session:
         await NotificationGroupDao.delete_by_id(group_id, session=session)
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.get("/group/detail")
 async def get_group_detail(id: int, user_info=Depends(Permission(Config.ADMIN))):
     group = await NotificationGroupDao.get_group(id)
     if group is None:
-        return PityResponse.failed("用户组不存在")
+        return ArgusResponse.failed("用户组不存在")
     members = await NotificationGroupDao.get_members(id)
-    return PityResponse.success({
+    return ArgusResponse.success({
         "id": group.id,
         "name": group.name,
         "description": group.description or "",
@@ -350,15 +350,15 @@ async def list_configs(user_info=Depends(Permission(Config.ADMIN))):
             "created_at": item.created_at.strftime("%Y-%m-%d %H:%M:%S") if item.created_at else "",
             "updated_at": item.updated_at.strftime("%Y-%m-%d %H:%M:%S") if item.updated_at else "",
         })
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)
 
 
 @router.get("/config/detail")
 async def get_config_detail(id: int, user_info=Depends(Permission(Config.ADMIN))):
     detail = await NotificationConfigDao.get_config_detail(id)
     if detail is None:
-        return PityResponse.failed("通知配置不存在")
-    return PityResponse.success(detail)
+        return ArgusResponse.failed("通知配置不存在")
+    return ArgusResponse.success(detail)
 
 
 @router.put("/config/insert")
@@ -369,9 +369,9 @@ async def insert_config(request: Request, user_info=Depends(Permission(Config.AD
     template_id = body.get("template_id")
     receiver = ",".join(str(x) for x in (body.get("receiver") or []) if str(x).strip().isdigit())
     group_ids = ",".join(str(x) for x in (body.get("group_ids") or []) if str(x).strip().isdigit())
-    model = PityNotificationConfig(name, channel_ids, user_info["id"], template_id, receiver, group_ids)
+    model = ArgusNotificationConfig(name, channel_ids, user_info["id"], template_id, receiver, group_ids)
     result = await NotificationConfigDao.insert(model=model)
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)
 
 
 @router.post("/config/update")
@@ -380,7 +380,7 @@ async def update_config(request: Request, user_info=Depends(Permission(Config.AD
     config_id = int(body.get("id", 0))
     config = await NotificationConfigDao.get_config(config_id)
     if config is None:
-        return PityResponse.failed("通知配置不存在")
+        return ArgusResponse.failed("通知配置不存在")
     for field in ("name",):
         if field in body:
             setattr(config, field, body[field])
@@ -398,7 +398,7 @@ async def update_config(request: Request, user_info=Depends(Permission(Config.AD
     async with async_session() as session:
         await session.merge(config)
         await session.commit()
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/config/delete")
@@ -408,7 +408,7 @@ async def delete_config(request: Request, user_info=Depends(Permission(Config.AD
     from app.crud import async_session
     async with async_session() as session:
         await NotificationConfigDao.delete_by_id(config_id, session=session)
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 # ==================== 对外查询接口（供测试计划下拉选择使用） ====================
@@ -418,7 +418,7 @@ async def list_all_configs(user_info=Depends(Permission())):
     """所有用户可用的通知配置列表（仅id和name）"""
     data = await NotificationConfigDao.list_configs()
     result = [{"id": item.id, "name": item.name} for item in data]
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)
 
 
 @router.get("/channel/list_enabled")
@@ -427,11 +427,11 @@ async def list_enabled_channels(user_info=Depends(Permission())):
     data = await NotificationChannelDao.list_enabled()
     result = [{"id": item.id, "name": item.name, "channel_type": item.channel_type,
                "channel_type_name": CHANNEL_TYPE_NAMES.get(item.channel_type, "未知")} for item in data]
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)
 
 
 @router.get("/template/list_enabled")
 async def list_enabled_templates(channel_type: int = None, user_info=Depends(Permission())):
     data = await NotificationTemplateDao.list_templates(channel_type)
     result = [{"id": item.id, "name": item.name, "channel_type": item.channel_type} for item in data if item.enabled]
-    return PityResponse.success(result)
+    return ArgusResponse.success(result)

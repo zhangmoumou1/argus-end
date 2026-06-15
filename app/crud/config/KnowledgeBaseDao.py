@@ -2,29 +2,29 @@ from sqlalchemy import select, func
 
 from app.crud import Mapper, ModelWrapper
 from app.models import async_session
-from app.models.knowledge_base import PityKnowledgeBase
+from app.models.knowledge_base import ArgusKnowledgeBase
 from app.models.user import User
 
 
-@ModelWrapper(PityKnowledgeBase)
+@ModelWrapper(ArgusKnowledgeBase)
 class KnowledgeBaseDao(Mapper):
 
     @staticmethod
     async def list_docs(page: int, size: int, title: str = ""):
         try:
-            filters = [PityKnowledgeBase.deleted_at == 0]
+            filters = [ArgusKnowledgeBase.deleted_at == 0]
             if title:
-                filters.append(PityKnowledgeBase.title.like(f"%{title}%"))
+                filters.append(ArgusKnowledgeBase.title.like(f"%{title}%"))
 
             async with async_session() as session:
-                total_sql = select(func.count(PityKnowledgeBase.id)).where(*filters)
+                total_sql = select(func.count(ArgusKnowledgeBase.id)).where(*filters)
                 total = (await session.execute(total_sql)).scalar() or 0
 
                 sql = (
-                    select(PityKnowledgeBase, User.name.label("create_user_name"))
-                    .outerjoin(User, User.id == PityKnowledgeBase.create_user)
+                    select(ArgusKnowledgeBase, User.name.label("create_user_name"))
+                    .outerjoin(User, User.id == ArgusKnowledgeBase.create_user)
                     .where(*filters)
-                    .order_by(PityKnowledgeBase.id.desc())
+                    .order_by(ArgusKnowledgeBase.id.desc())
                     .offset((page - 1) * size)
                     .limit(size)
                 )

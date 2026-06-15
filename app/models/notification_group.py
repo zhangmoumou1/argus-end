@@ -1,10 +1,10 @@
 from sqlalchemy import INT, VARCHAR, Column
 
-from app.models.basic import PityBase, Base
+from app.models.basic import ArgusBase, Base
 
 
-class PityUserGroup(PityBase):
-    __tablename__ = "pity_user_group"
+class ArgusUserGroup(ArgusBase):
+    __tablename__ = "argus_user_group"
     name = Column(VARCHAR(64), nullable=False, comment="用户组名称")
     description = Column(VARCHAR(200), nullable=True, comment="用户组描述")
 
@@ -18,8 +18,8 @@ class PityUserGroup(PityBase):
         self.description = description
 
 
-class PityUserGroupMember(Base):
-    __tablename__ = "pity_user_group_member"
+class ArgusUserGroupMember(Base):
+    __tablename__ = "argus_user_group_member"
     id = Column(INT, primary_key=True)
     group_id = Column(INT, nullable=False, comment="用户组ID")
     user_id = Column(INT, nullable=False, comment="用户ID")

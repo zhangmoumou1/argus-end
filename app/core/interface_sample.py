@@ -6,14 +6,14 @@ from urllib.parse import parse_qs, urlparse
 from loguru import logger
 from sqlalchemy import select, text
 
-from app.models.interface_manage import PityApiEndpoint, PityApiEndpointSample, PityApiService
+from app.models.interface_manage import ArgusApiEndpoint, ArgusApiEndpointSample, ArgusApiService
 
 
 MANUAL_SAMPLE_SOURCES = {"manual", "manual_associate", "manual_input"}
 
 
 SAMPLE_CREATE_SQL = (
-    "CREATE TABLE IF NOT EXISTS pity_api_endpoint_sample ("
+    "CREATE TABLE IF NOT EXISTS argus_api_endpoint_sample ("
     "id INT PRIMARY KEY AUTO_INCREMENT,"
     "project_id INT NOT NULL DEFAULT 0,"
     "service_id INT NOT NULL DEFAULT 0,"
@@ -106,7 +106,7 @@ def _parse_record_url(url: str):
     }
 
 
-def _candidate_paths(endpoint: PityApiEndpoint):
+def _candidate_paths(endpoint: ArgusApiEndpoint):
     ans = []
     endpoint_path = normalize_api_path(getattr(endpoint, "path", "") or "/")
     if endpoint_path not in ans:
@@ -120,7 +120,7 @@ def _candidate_paths(endpoint: PityApiEndpoint):
     return ans
 
 
-def _extract_service_host(service: PityApiService):
+def _extract_service_host(service: ArgusApiService):
     base_url = str(getattr(service, "base_url", "") or "").strip()
     if not base_url:
         return ""
@@ -168,7 +168,7 @@ def _score_variant_match(request_variant: str, trim_count: int, candidate_path: 
     return 0
 
 
-def _score_candidate(request_host: str, request_path: str, endpoint: PityApiEndpoint, service: PityApiService):
+def _score_candidate(request_host: str, request_path: str, endpoint: ArgusApiEndpoint, service: ArgusApiService):
     service_host = _extract_service_host(service)
     best = 0
     matched_variant = ""
@@ -186,11 +186,11 @@ def _score_candidate(request_host: str, request_path: str, endpoint: PityApiEndp
 async def ensure_interface_sample_schema(session):
     await session.execute(text(SAMPLE_CREATE_SQL))
     for column_sql in [
-        "ALTER TABLE pity_api_endpoint_sample MODIFY COLUMN request_query LONGTEXT NULL",
-        "ALTER TABLE pity_api_endpoint_sample MODIFY COLUMN request_headers LONGTEXT NULL",
-        "ALTER TABLE pity_api_endpoint_sample MODIFY COLUMN request_body LONGTEXT NULL",
-        "ALTER TABLE pity_api_endpoint_sample MODIFY COLUMN response_headers LONGTEXT NULL",
-        "ALTER TABLE pity_api_endpoint_sample MODIFY COLUMN response_body LONGTEXT NULL",
+        "ALTER TABLE argus_api_endpoint_sample MODIFY COLUMN request_query LONGTEXT NULL",
+        "ALTER TABLE argus_api_endpoint_sample MODIFY COLUMN request_headers LONGTEXT NULL",
+        "ALTER TABLE argus_api_endpoint_sample MODIFY COLUMN request_body LONGTEXT NULL",
+        "ALTER TABLE argus_api_endpoint_sample MODIFY COLUMN response_headers LONGTEXT NULL",
+        "ALTER TABLE argus_api_endpoint_sample MODIFY COLUMN response_body LONGTEXT NULL",
     ]:
         try:
             await session.execute(text(column_sql))
@@ -205,13 +205,13 @@ async def match_endpoint_for_record(session, request_data: dict):
     method = str(request_data.get("request_method") or "GET").upper()
     parsed = _parse_record_url(request_url)
     result = await session.execute(
-        select(PityApiEndpoint, PityApiService)
-        .join(PityApiService, PityApiService.id == PityApiEndpoint.service_id)
+        select(ArgusApiEndpoint, ArgusApiService)
+        .join(ArgusApiService, ArgusApiService.id == ArgusApiEndpoint.service_id)
         .where(
-            PityApiEndpoint.deleted_at == 0,
-            PityApiService.deleted_at == 0,
-            PityApiEndpoint.method == method,
-            PityApiEndpoint.endpoint_status != "deprecated",
+            ArgusApiEndpoint.deleted_at == 0,
+            ArgusApiService.deleted_at == 0,
+            ArgusApiEndpoint.method == method,
+            ArgusApiEndpoint.endpoint_status != "deprecated",
         )
     )
     best_pair = (None, None, "")
@@ -342,9 +342,9 @@ async def batch_upsert_endpoint_samples_by_record(session, requests_data, user_i
 async def get_endpoint_sample(session, endpoint_id: int):
     return (
         await session.execute(
-            select(PityApiEndpointSample).where(
-                PityApiEndpointSample.endpoint_id == endpoint_id,
-                PityApiEndpointSample.deleted_at == 0,
+            select(ArgusApiEndpointSample).where(
+                ArgusApiEndpointSample.endpoint_id == endpoint_id,
+                ArgusApiEndpointSample.deleted_at == 0,
             )
         )
     ).scalars().first()
@@ -352,13 +352,13 @@ async def get_endpoint_sample(session, endpoint_id: int):
 
 async def save_endpoint_sample(
     session,
-    endpoint: PityApiEndpoint,
-    service: PityApiService,
+    endpoint: ArgusApiEndpoint,
+    service: ArgusApiService,
     request_data: dict,
     user_id: int = 0,
     sample_source: str = "record",
     matched_variant: str = "",
-    sample: PityApiEndpointSample = None,
+    sample: ArgusApiEndpointSample = None,
 ):
     parsed = _parse_record_url(request_data.get("url"))
     sample_name = f"最近录制实例-{datetime_now_text(request_data.get('created_at'))}"
@@ -380,7 +380,7 @@ async def save_endpoint_sample(
         "recorded_at": str(request_data.get("created_at") or ""),
     }
     if sample is None:
-        sample = PityApiEndpointSample(user=user_id or 0, **payload)
+        sample = ArgusApiEndpointSample(user=user_id or 0, **payload)
         session.add(sample)
     else:
         for key, value in payload.items():

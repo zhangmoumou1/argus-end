@@ -1,6 +1,6 @@
 from pydantic.v1 import BaseModel, validator
 
-from app.schema.base import PityModel
+from app.schema.base import ArgusModel
 
 
 class PyScriptForm(BaseModel):
@@ -9,5 +9,5 @@ class PyScriptForm(BaseModel):
 
     @validator("command")
     def name_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 

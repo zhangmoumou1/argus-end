@@ -1,13 +1,13 @@
 from sqlalchemy import BIGINT, Column, ForeignKey, INT, String, TEXT
 from sqlalchemy.dialects.mysql import LONGTEXT
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityFunctionalCaseDirectory(PityBase):
-    __tablename__ = "pity_functional_case_directory"
+class ArgusFunctionalCaseDirectory(ArgusBase):
+    __tablename__ = "argus_functional_case_directory"
 
-    project_id = Column(INT, ForeignKey("pity_project.id"), index=True, nullable=True, comment="所属项目")
+    project_id = Column(INT, ForeignKey("argus_project.id"), index=True, nullable=True, comment="所属项目")
     name = Column(String(64), nullable=False, comment="目录名称")
     parent = Column(INT, nullable=True, comment="父目录")
     sort_index = Column(INT, nullable=False, default=0, comment="排序")
@@ -25,10 +25,10 @@ class PityFunctionalCaseDirectory(PityBase):
         self.sort_index = sort_index
 
 
-class PityFunctionalCaseFile(PityBase):
-    __tablename__ = "pity_functional_case_file"
+class ArgusFunctionalCaseFile(ArgusBase):
+    __tablename__ = "argus_functional_case_file"
 
-    project_id = Column(INT, ForeignKey("pity_project.id"), index=True, nullable=True, comment="所属项目")
+    project_id = Column(INT, ForeignKey("argus_project.id"), index=True, nullable=True, comment="所属项目")
     title = Column(String(128), nullable=False, comment="功能用例名称")
     directory_id = Column(INT, nullable=False, comment="所属目录")
     file_path = Column(String(255), nullable=False, comment="功能用例JSON文件路径")
@@ -50,10 +50,10 @@ class PityFunctionalCaseFile(PityBase):
         self.sort_index = sort_index
 
 
-class PityFunctionalCaseItem(PityBase):
-    __tablename__ = "pity_functional_case_item"
+class ArgusFunctionalCaseItem(ArgusBase):
+    __tablename__ = "argus_functional_case_item"
 
-    project_id = Column(INT, ForeignKey("pity_project.id"), index=True, nullable=True, comment="所属项目")
+    project_id = Column(INT, ForeignKey("argus_project.id"), index=True, nullable=True, comment="所属项目")
     directory_id = Column(INT, nullable=False, comment="所属目录")
     file_id = Column(INT, nullable=False, index=True, comment="所属功能用例文件ID")
     case_uid = Column(String(64), nullable=False, index=True, comment="用例稳定标识")
@@ -77,8 +77,8 @@ class PityFunctionalCaseItem(PityBase):
         self.case_pass = case_pass
 
 
-class PityFunctionalCaseSkillDoc(PityBase):
-    __tablename__ = "pity_functional_case_skill_doc"
+class ArgusFunctionalCaseSkillDoc(ArgusBase):
+    __tablename__ = "argus_functional_case_skill_doc"
 
     title = Column(String(128), nullable=False, comment="文档名称")
     description = Column(String(500), nullable=True, comment="文档描述")
@@ -100,8 +100,8 @@ class PityFunctionalCaseSkillDoc(PityBase):
         self.is_shared = is_shared
 
 
-class PityFunctionalCaseSkillTask(PityBase):
-    __tablename__ = "pity_functional_case_skill_task"
+class ArgusFunctionalCaseSkillTask(ArgusBase):
+    __tablename__ = "argus_functional_case_skill_task"
 
     project_id = Column(INT, nullable=False, default=0, comment="所属项目")
     case_file_id = Column(INT, nullable=False, default=0, comment="目标功能用例文件ID")

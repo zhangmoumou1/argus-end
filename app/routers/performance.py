@@ -19,24 +19,24 @@ from sqlalchemy import desc, select, text
 
 from app.core.executor import Executor
 from app.core.platform_task import PlatformTaskService
-from app.crud.operation.PityOperationDao import PityOperationDao
+from app.crud.operation.ArgusOperationDao import ArgusOperationDao
 from app.enums.OperationEnum import OperationType
 from app.enums.platform_task import PlatformTaskType
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.middleware.AsyncHttpClient import AsyncRequest
 from app.middleware.oss import OssClient, get_public_bucket_name
 from app.models import async_session
-from app.models.interface_manage import PityApiEndpointSample, PityApiEndpointVersion
+from app.models.interface_manage import ArgusApiEndpointSample, ArgusApiEndpointVersion
 from app.models.performance import (
-    PityPerformanceParameterFile,
-    PityPerformancePlan,
-    PityPerformanceReport,
-    PityPerformanceRunLog,
+    ArgusPerformanceParameterFile,
+    ArgusPerformancePlan,
+    ArgusPerformanceReport,
+    ArgusPerformanceRunLog,
 )
 from app.models.test_case import TestCase
-from app.models.out_parameters import PityTestCaseOutParameters
+from app.models.out_parameters import ArgusTestCaseOutParameters
 from app.routers import Permission
-from app.schema.performance import PityPerformanceParameterValidateForm, PityPerformancePlanForm
+from app.schema.performance import ArgusPerformanceParameterValidateForm, ArgusPerformancePlanForm
 from app.utils.logger import Log
 from config import Config
 
@@ -58,7 +58,7 @@ def resolve_grafana_url():
     if env_value:
         return env_value.strip().strip('"').strip("'")
 
-    env_name = "pro.env" if str(os.getenv("PITY_ENV") or "").lower() == "pro" else "dev.env"
+    env_name = "pro.env" if str(os.getenv("ARGUS_ENV") or "").lower() == "pro" else "dev.env"
     env_path = Path(__file__).resolve().parents[2] / "conf" / env_name
     if env_path.exists():
         for raw_line in env_path.read_text(encoding="utf-8").splitlines():
@@ -82,24 +82,24 @@ async def ensure_performance_schema(session):
     if performance_schema_checked:
         return
     try:
-        rows = await session.execute(text("SHOW COLUMNS FROM pity_performance_plan"))
+        rows = await session.execute(text("SHOW COLUMNS FROM argus_performance_plan"))
         columns = {row[0] for row in rows.fetchall()}
         if "source_type" not in columns:
-            await session.execute(text("ALTER TABLE pity_performance_plan ADD COLUMN source_type VARCHAR(16) NOT NULL DEFAULT 'single'"))
+            await session.execute(text("ALTER TABLE argus_performance_plan ADD COLUMN source_type VARCHAR(16) NOT NULL DEFAULT 'single'"))
         if "case_list" not in columns:
-            await session.execute(text("ALTER TABLE pity_performance_plan ADD COLUMN case_list TEXT NULL"))
+            await session.execute(text("ALTER TABLE argus_performance_plan ADD COLUMN case_list TEXT NULL"))
         if "load_mode" not in columns:
-            await session.execute(text("ALTER TABLE pity_performance_plan ADD COLUMN load_mode VARCHAR(16) NOT NULL DEFAULT 'concurrency'"))
+            await session.execute(text("ALTER TABLE argus_performance_plan ADD COLUMN load_mode VARCHAR(16) NOT NULL DEFAULT 'concurrency'"))
         if "load_config" not in columns:
-            await session.execute(text("ALTER TABLE pity_performance_plan ADD COLUMN load_config TEXT NULL"))
+            await session.execute(text("ALTER TABLE argus_performance_plan ADD COLUMN load_config TEXT NULL"))
         if "threshold_config" not in columns:
-            await session.execute(text("ALTER TABLE pity_performance_plan ADD COLUMN threshold_config TEXT NULL"))
+            await session.execute(text("ALTER TABLE argus_performance_plan ADD COLUMN threshold_config TEXT NULL"))
         if "parameter_config" not in columns:
-            await session.execute(text("ALTER TABLE pity_performance_plan ADD COLUMN parameter_config TEXT NULL"))
+            await session.execute(text("ALTER TABLE argus_performance_plan ADD COLUMN parameter_config TEXT NULL"))
         if "assertions_config" not in columns:
-            await session.execute(text("ALTER TABLE pity_performance_plan ADD COLUMN assertions_config TEXT NULL"))
+            await session.execute(text("ALTER TABLE argus_performance_plan ADD COLUMN assertions_config TEXT NULL"))
         await session.execute(text(
-            "CREATE TABLE IF NOT EXISTS pity_performance_parameter_file ("
+            "CREATE TABLE IF NOT EXISTS argus_performance_parameter_file ("
             "id INT PRIMARY KEY AUTO_INCREMENT,"
             "project_id INT NOT NULL,"
             "name VARCHAR(128) NOT NULL,"
@@ -118,7 +118,7 @@ async def ensure_performance_schema(session):
             ")"
         ))
         await session.execute(text(
-            "CREATE TABLE IF NOT EXISTS pity_performance_run_log ("
+            "CREATE TABLE IF NOT EXISTS argus_performance_run_log ("
             "id INT PRIMARY KEY AUTO_INCREMENT,"
             "run_id INT NOT NULL,"
             "level VARCHAR(16) NOT NULL DEFAULT 'INFO',"
@@ -131,14 +131,14 @@ async def ensure_performance_schema(session):
             "deleted_at BIGINT NOT NULL DEFAULT 0"
             ")"
         ))
-        report_rows = await session.execute(text("SHOW COLUMNS FROM pity_performance_report"))
+        report_rows = await session.execute(text("SHOW COLUMNS FROM argus_performance_report"))
         report_columns = {row[0]: str(row[1]).lower() for row in report_rows.fetchall()}
         if report_columns.get("summary_json") == "text":
-            await session.execute(text("ALTER TABLE pity_performance_report MODIFY COLUMN summary_json LONGTEXT NULL"))
+            await session.execute(text("ALTER TABLE argus_performance_report MODIFY COLUMN summary_json LONGTEXT NULL"))
         if report_columns.get("timeline_json") == "text":
-            await session.execute(text("ALTER TABLE pity_performance_report MODIFY COLUMN timeline_json LONGTEXT NULL"))
+            await session.execute(text("ALTER TABLE argus_performance_report MODIFY COLUMN timeline_json LONGTEXT NULL"))
         if report_columns.get("errors_json") == "text":
-            await session.execute(text("ALTER TABLE pity_performance_report MODIFY COLUMN errors_json LONGTEXT NULL"))
+            await session.execute(text("ALTER TABLE argus_performance_report MODIFY COLUMN errors_json LONGTEXT NULL"))
         performance_schema_checked = True
     except Exception as exc:
         log.warning(f"检查性能测试表结构失败: {exc}")
@@ -535,9 +535,9 @@ async def load_parameter_variables(session, parameter_config, state):
             state_file_key = build_bucket_parameter_file_id(bucket_file_path)
         else:
             row = await session.execute(
-                select(PityPerformanceParameterFile).where(
-                    PityPerformanceParameterFile.id == int(file_id),
-                    PityPerformanceParameterFile.deleted_at == 0,
+                select(ArgusPerformanceParameterFile).where(
+                    ArgusPerformanceParameterFile.id == int(file_id),
+                    ArgusPerformanceParameterFile.deleted_at == 0,
                 )
             )
             file_record = row.scalars().first()
@@ -592,9 +592,9 @@ async def collect_setup_output_names(session, setup_config):
     if not case_ids:
         return set()
     rows = await session.execute(
-        select(PityTestCaseOutParameters.name).where(
-            PityTestCaseOutParameters.case_id.in_(case_ids),
-            PityTestCaseOutParameters.deleted_at == 0,
+        select(ArgusTestCaseOutParameters.name).where(
+            ArgusTestCaseOutParameters.case_id.in_(case_ids),
+            ArgusTestCaseOutParameters.deleted_at == 0,
         )
     )
     return {
@@ -672,7 +672,7 @@ def collect_variable_references(raw_values):
     return references
 
 
-async def validate_parameter_payload(session, form: PityPerformanceParameterValidateForm):
+async def validate_parameter_payload(session, form: ArgusPerformanceParameterValidateForm):
     parameter_config = form.parameter_config if isinstance(form.parameter_config, dict) else safe_json_loads(form.parameter_config, {})
     parameter_config = normalize_parameter_config(parameter_config)
     manual_names = {
@@ -697,9 +697,9 @@ async def validate_parameter_payload(session, form: PityPerformanceParameterVali
             file_columns.update(columns)
         else:
             row = await session.execute(
-                select(PityPerformanceParameterFile).where(
-                    PityPerformanceParameterFile.id == int(file_id),
-                    PityPerformanceParameterFile.deleted_at == 0,
+                select(ArgusPerformanceParameterFile).where(
+                    ArgusPerformanceParameterFile.id == int(file_id),
+                    ArgusPerformanceParameterFile.deleted_at == 0,
                 )
             )
             file_record = row.scalars().first()
@@ -1084,7 +1084,7 @@ def summarize_threshold(report):
 async def append_run_log(run_id, executor, level, message, detail=None):
     async with async_session() as session:
         async with session.begin():
-            log_model = PityPerformanceRunLog(
+            log_model = ArgusPerformanceRunLog(
                 executor,
                 run_id=run_id,
                 level=level,
@@ -1111,10 +1111,10 @@ async def build_case_chain_preview(case_ids):
             if case is None:
                 continue
             out_params = await session.execute(
-                select(PityTestCaseOutParameters).where(
-                    PityTestCaseOutParameters.case_id == case_id,
-                    PityTestCaseOutParameters.deleted_at == 0,
-                ).order_by(PityTestCaseOutParameters.id)
+                select(ArgusTestCaseOutParameters).where(
+                    ArgusTestCaseOutParameters.case_id == case_id,
+                    ArgusTestCaseOutParameters.deleted_at == 0,
+                ).order_by(ArgusTestCaseOutParameters.id)
             )
             extractors = []
             for item in out_params.scalars().all():
@@ -1145,7 +1145,7 @@ async def create_report(plan, executor, status=0):
                 "source_type": getattr(plan, "source_type", "single"),
                 "load_mode": getattr(plan, "load_mode", "concurrency"),
             }
-            report = PityPerformanceReport(
+            report = ArgusPerformanceReport(
                 executor,
                 plan_id=plan.id,
                 env=plan.env,
@@ -1167,9 +1167,9 @@ async def update_report_status(report_id, status):
     async with async_session() as session:
         async with session.begin():
             row = await session.execute(
-                select(PityPerformanceReport).where(
-                    PityPerformanceReport.id == report_id,
-                    PityPerformanceReport.deleted_at == 0,
+                select(ArgusPerformanceReport).where(
+                    ArgusPerformanceReport.id == report_id,
+                    ArgusPerformanceReport.deleted_at == 0,
                 )
             )
             report = row.scalars().first()
@@ -1182,9 +1182,9 @@ async def finalize_report(report_id, summary):
     async with async_session() as session:
         async with session.begin():
             row = await session.execute(
-                select(PityPerformanceReport).where(
-                    PityPerformanceReport.id == report_id,
-                    PityPerformanceReport.deleted_at == 0,
+                select(ArgusPerformanceReport).where(
+                    ArgusPerformanceReport.id == report_id,
+                    ArgusPerformanceReport.deleted_at == 0,
                 )
             )
             report = row.scalars().first()
@@ -1226,9 +1226,9 @@ async def mark_report_terminal(report_id, status=3):
     async with async_session() as session:
         async with session.begin():
             row = await session.execute(
-                select(PityPerformanceReport).where(
-                    PityPerformanceReport.id == report_id,
-                    PityPerformanceReport.deleted_at == 0,
+                select(ArgusPerformanceReport).where(
+                    ArgusPerformanceReport.id == report_id,
+                    ArgusPerformanceReport.deleted_at == 0,
                 )
             )
             report = row.scalars().first()
@@ -1369,9 +1369,9 @@ async def execute_plan_once(plan, executor, variables=None, global_headers=None)
 async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
     async with async_session() as session:
         row = await session.execute(
-            select(PityPerformancePlan).where(
-                PityPerformancePlan.id == plan_id,
-                PityPerformancePlan.deleted_at == 0,
+            select(ArgusPerformancePlan).where(
+                ArgusPerformancePlan.id == plan_id,
+                ArgusPerformancePlan.deleted_at == 0,
             )
         )
         plan = row.scalars().first()
@@ -1873,54 +1873,54 @@ async def list_performance_plan(page: int, size: int, project_id: int = None, na
                                 create_user: int = None, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_performance_schema(session)
-        sql = select(PityPerformancePlan).where(PityPerformancePlan.deleted_at == 0).order_by(
-            desc(PityPerformancePlan.updated_at)
+        sql = select(ArgusPerformancePlan).where(ArgusPerformancePlan.deleted_at == 0).order_by(
+            desc(ArgusPerformancePlan.updated_at)
         )
         if project_id:
-            sql = sql.where(PityPerformancePlan.project_id == project_id)
+            sql = sql.where(ArgusPerformancePlan.project_id == project_id)
         if name:
-            sql = sql.where(PityPerformancePlan.name.like(f"%{name}%"))
+            sql = sql.where(ArgusPerformancePlan.name.like(f"%{name}%"))
         if env:
-            sql = sql.where(PityPerformancePlan.env == env)
+            sql = sql.where(ArgusPerformancePlan.env == env)
         if create_user:
-            sql = sql.where(PityPerformancePlan.create_user == create_user)
+            sql = sql.where(ArgusPerformancePlan.create_user == create_user)
         data = await session.execute(sql)
         total = data.raw.rowcount
         if total == 0:
-            return PityResponse.success_with_size([], 0)
+            return ArgusResponse.success_with_size([], 0)
         page_sql = sql.offset((page - 1) * size).limit(size)
         page_data = await session.execute(page_sql)
-        return PityResponse.success_with_size(page_data.scalars().all(), total=total)
+        return ArgusResponse.success_with_size(page_data.scalars().all(), total=total)
 
 
 @router.post("/plan/insert")
-async def insert_performance_plan(form: PityPerformancePlanForm, user_info=Depends(Permission())):
+async def insert_performance_plan(form: ArgusPerformancePlanForm, user_info=Depends(Permission())):
     async with async_session() as session:
         async with session.begin():
             await ensure_performance_schema(session)
             payload = normalize_plan_payload(form.dict(exclude={"id"}))
-            model = PityPerformancePlan(user_info["id"], **payload)
+            model = ArgusPerformancePlan(user_info["id"], **payload)
             session.add(model)
             await session.flush()
-            await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
+            await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
             plan_id = model.id
-    return PityResponse.success({"id": plan_id})
+    return ArgusResponse.success({"id": plan_id})
 
 
 @router.post("/plan/update")
-async def update_performance_plan(form: PityPerformancePlanForm, user_info=Depends(Permission())):
+async def update_performance_plan(form: ArgusPerformancePlanForm, user_info=Depends(Permission())):
     async with async_session() as session:
         async with session.begin():
             await ensure_performance_schema(session)
             row = await session.execute(
-                select(PityPerformancePlan).where(
-                    PityPerformancePlan.id == form.id,
-                    PityPerformancePlan.deleted_at == 0,
+                select(ArgusPerformancePlan).where(
+                    ArgusPerformancePlan.id == form.id,
+                    ArgusPerformancePlan.deleted_at == 0,
                 )
             )
             model = row.scalars().first()
             if model is None:
-                return PityResponse.failed("性能计划不存在")
+                return ArgusResponse.failed("性能计划不存在")
             old = deepcopy(model)
             payload = normalize_plan_payload(form.dict(exclude_unset=True))
             for key, value in payload.items():
@@ -1930,8 +1930,8 @@ async def update_performance_plan(form: PityPerformancePlanForm, user_info=Depen
             model.update_user = user_info["id"]
             model.updated_at = datetime.now()
             await session.flush()
-            await PityOperationDao.insert_log(session, user_info["id"], OperationType.UPDATE, model, old, model.id, changed=[k for k in payload.keys() if k != "id"])
-    return PityResponse.success()
+            await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.UPDATE, model, old, model.id, changed=[k for k in payload.keys() if k != "id"])
+    return ArgusResponse.success()
 
 
 @router.get("/plan/delete")
@@ -1939,20 +1939,20 @@ async def delete_performance_plan(id: int, user_info=Depends(Permission())):
     async with async_session() as session:
         async with session.begin():
             row = await session.execute(
-                select(PityPerformancePlan).where(
-                    PityPerformancePlan.id == id,
-                    PityPerformancePlan.deleted_at == 0,
+                select(ArgusPerformancePlan).where(
+                    ArgusPerformancePlan.id == id,
+                    ArgusPerformancePlan.deleted_at == 0,
                 )
             )
             model = row.scalars().first()
             if model is None:
-                return PityResponse.failed("性能计划不存在")
+                return ArgusResponse.failed("性能计划不存在")
             model.deleted_at = int(time.time() * 1000)
             model.update_user = user_info["id"]
             model.updated_at = datetime.now()
             await session.flush()
-            await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, model, key=id)
-    return PityResponse.success()
+            await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, model, key=id)
+    return ArgusResponse.success()
 
 
 @router.get("/plan/execute")
@@ -1960,14 +1960,14 @@ async def execute_performance_plan(id: int, user_info=Depends(Permission())):
     async with async_session() as session:
         await ensure_performance_schema(session)
         row = await session.execute(
-            select(PityPerformancePlan).where(
-                PityPerformancePlan.id == id,
-                PityPerformancePlan.deleted_at == 0,
+            select(ArgusPerformancePlan).where(
+                ArgusPerformancePlan.id == id,
+                ArgusPerformancePlan.deleted_at == 0,
             )
         )
         plan = row.scalars().first()
         if plan is None:
-            return PityResponse.failed("性能计划不存在")
+            return ArgusResponse.failed("性能计划不存在")
     log_model = SimpleNamespace(
         name=plan.name,
         action="执行性能测试计划",
@@ -1983,7 +1983,7 @@ async def execute_performance_plan(id: int, user_info=Depends(Permission())):
     )
     async with async_session() as log_session:
         async with log_session.begin():
-            await PityOperationDao.insert_log(
+            await ArgusOperationDao.insert_log(
                 log_session,
                 user_info["id"],
                 OperationType.UPDATE,
@@ -2007,7 +2007,7 @@ async def execute_performance_plan(id: int, user_info=Depends(Permission())):
         resource_key=f"performance_plan_{id}",
         payload={"plan_id": id, "report_id": report_id, "executor": user_info["id"]},
     )
-    return PityResponse.success(
+    return ArgusResponse.success(
         {"report_id": report_id, "platform_task_id": platform_task.id},
         msg="性能计划已入队，请稍后查看执行记录",
     )
@@ -2019,20 +2019,20 @@ async def list_performance_report(page: int, size: int, start_time: str, end_tim
     start = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
     end = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
     async with async_session() as session:
-        sql = select(PityPerformanceReport).where(
-            PityPerformanceReport.deleted_at == 0,
-            PityPerformanceReport.created_at.between(start, end),
-        ).order_by(desc(PityPerformanceReport.created_at))
+        sql = select(ArgusPerformanceReport).where(
+            ArgusPerformanceReport.deleted_at == 0,
+            ArgusPerformanceReport.created_at.between(start, end),
+        ).order_by(desc(ArgusPerformanceReport.created_at))
         if executor is not None:
-            sql = sql.where(PityPerformanceReport.executor == executor)
+            sql = sql.where(ArgusPerformanceReport.executor == executor)
         if status is not None:
-            sql = sql.where(PityPerformanceReport.status == status)
+            sql = sql.where(ArgusPerformanceReport.status == status)
         if plan_id is not None:
-            sql = sql.where(PityPerformanceReport.plan_id == plan_id)
+            sql = sql.where(ArgusPerformanceReport.plan_id == plan_id)
         data = await session.execute(sql)
         total = data.raw.rowcount
         if total == 0:
-            return PityResponse.success_with_size([], 0)
+            return ArgusResponse.success_with_size([], 0)
         page_sql = sql.offset((page - 1) * size).limit(size)
         page_data = await session.execute(page_sql)
         records = page_data.scalars().all()
@@ -2043,9 +2043,9 @@ async def list_performance_report(page: int, size: int, start_time: str, end_tim
         plan_map = {}
         if missing_summary_plan_ids:
             plan_rows = await session.execute(
-                select(PityPerformancePlan).where(
-                    PityPerformancePlan.id.in_(missing_summary_plan_ids),
-                    PityPerformancePlan.deleted_at == 0,
+                select(ArgusPerformancePlan).where(
+                    ArgusPerformancePlan.id.in_(missing_summary_plan_ids),
+                    ArgusPerformancePlan.deleted_at == 0,
                 )
             )
             plan_map = {item.id: item for item in plan_rows.scalars().all()}
@@ -2059,12 +2059,12 @@ async def list_performance_report(page: int, size: int, start_time: str, end_tim
                 "source_type": getattr(plan, "source_type", "single"),
                 "load_mode": getattr(plan, "load_mode", "concurrency"),
             }, ensure_ascii=False)
-        return PityResponse.success_with_size(records, total=total)
+        return ArgusResponse.success_with_size(records, total=total)
 
 
 @router.get("/monitor/config")
 async def query_performance_monitor_config(_=Depends(Permission())):
-    return PityResponse.success({
+    return ArgusResponse.success({
         "grafana_url": resolve_grafana_url(),
     })
 
@@ -2074,22 +2074,22 @@ async def query_performance_report(id: int, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_performance_schema(session)
         row = await session.execute(
-            select(PityPerformanceReport).where(
-                PityPerformanceReport.id == id,
-                PityPerformanceReport.deleted_at == 0,
+            select(ArgusPerformanceReport).where(
+                ArgusPerformanceReport.id == id,
+                ArgusPerformanceReport.deleted_at == 0,
             )
         )
         report = row.scalars().first()
         if report is None:
-            return PityResponse.failed("性能报告不存在")
+            return ArgusResponse.failed("性能报告不存在")
         errors = normalize_report_errors(report)
         log_rows = await session.execute(
-            select(PityPerformanceRunLog).where(
-                PityPerformanceRunLog.run_id == id,
-                PityPerformanceRunLog.deleted_at == 0,
-            ).order_by(PityPerformanceRunLog.created_at.asc())
+            select(ArgusPerformanceRunLog).where(
+                ArgusPerformanceRunLog.run_id == id,
+                ArgusPerformanceRunLog.deleted_at == 0,
+            ).order_by(ArgusPerformanceRunLog.created_at.asc())
         )
-        return PityResponse.success({
+        return ArgusResponse.success({
             "report": report,
             "summary": safe_json_loads(report.summary_json, {}),
             "timeline": safe_json_loads(report.timeline_json, []),
@@ -2104,25 +2104,25 @@ async def query_performance_run_logs(run_id: int, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_performance_schema(session)
         rows = await session.execute(
-            select(PityPerformanceRunLog).where(
-                PityPerformanceRunLog.run_id == run_id,
-                PityPerformanceRunLog.deleted_at == 0,
-            ).order_by(PityPerformanceRunLog.created_at.asc())
+            select(ArgusPerformanceRunLog).where(
+                ArgusPerformanceRunLog.run_id == run_id,
+                ArgusPerformanceRunLog.deleted_at == 0,
+            ).order_by(ArgusPerformanceRunLog.created_at.asc())
         )
-        return PityResponse.success(rows.scalars().all())
+        return ArgusResponse.success(rows.scalars().all())
 
 
 @router.get("/parameter-files")
 async def list_performance_parameter_files(project_id: int = None, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_performance_schema(session)
-        sql = select(PityPerformanceParameterFile).where(PityPerformanceParameterFile.deleted_at == 0).order_by(
-            desc(PityPerformanceParameterFile.updated_at)
+        sql = select(ArgusPerformanceParameterFile).where(ArgusPerformanceParameterFile.deleted_at == 0).order_by(
+            desc(ArgusPerformanceParameterFile.updated_at)
         )
         if project_id:
-            sql = sql.where(PityPerformanceParameterFile.project_id == project_id)
+            sql = sql.where(ArgusPerformanceParameterFile.project_id == project_id)
         rows = await session.execute(sql)
-        return PityResponse.success(rows.scalars().all())
+        return ArgusResponse.success(rows.scalars().all())
 
 
 @router.post("/parameter-files/upload")
@@ -2136,14 +2136,14 @@ async def upload_performance_parameter_file(
             await ensure_performance_schema(session)
             suffix = Path(file.filename or "").suffix.lower()
             if suffix not in {".csv"}:
-                return PityResponse.failed("当前仅支持 CSV 参数文件")
+                return ArgusResponse.failed("当前仅支持 CSV 参数文件")
             PERFORMANCE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
             store_name = f"{int(time.time() * 1000)}_{uuid.uuid4().hex}{suffix}"
             file_path = PERFORMANCE_UPLOAD_DIR / store_name
             content = await file.read()
             file_path.write_bytes(content)
             columns, rows = parse_csv_file(file_path)
-            model = PityPerformanceParameterFile(
+            model = ArgusPerformanceParameterFile(
                 user_info["id"],
                 project_id=int(project_id),
                 name=name or Path(file.filename or "参数文件").stem,
@@ -2157,8 +2157,8 @@ async def upload_performance_parameter_file(
             )
             session.add(model)
             await session.flush()
-            await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
-            return PityResponse.success({
+            await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
+            return ArgusResponse.success({
                 "id": model.id,
                 "file_name": model.file_name,
                 "columns": columns,
@@ -2171,19 +2171,19 @@ async def preview_performance_parameter_file(id: int, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_performance_schema(session)
         row = await session.execute(
-            select(PityPerformanceParameterFile).where(
-                PityPerformanceParameterFile.id == id,
-                PityPerformanceParameterFile.deleted_at == 0,
+            select(ArgusPerformanceParameterFile).where(
+                ArgusPerformanceParameterFile.id == id,
+                ArgusPerformanceParameterFile.deleted_at == 0,
             )
         )
         record = row.scalars().first()
         if record is None:
-            return PityResponse.failed("参数文件不存在")
+            return ArgusResponse.failed("参数文件不存在")
         file_path = Path(record.file_path)
         if not file_path.exists():
-            return PityResponse.failed("参数文件已丢失")
+            return ArgusResponse.failed("参数文件已丢失")
         columns, rows = parse_csv_file(file_path, record.encoding or "utf-8", record.delimiter or ",")
-        return PityResponse.success({
+        return ArgusResponse.success({
             "columns": columns,
             "rows": rows[:10],
             "row_count": len(rows),
@@ -2196,54 +2196,54 @@ async def delete_performance_parameter_file(id: int, user_info=Depends(Permissio
         async with session.begin():
             await ensure_performance_schema(session)
             row = await session.execute(
-                select(PityPerformanceParameterFile).where(
-                    PityPerformanceParameterFile.id == id,
-                    PityPerformanceParameterFile.deleted_at == 0,
+                select(ArgusPerformanceParameterFile).where(
+                    ArgusPerformanceParameterFile.id == id,
+                    ArgusPerformanceParameterFile.deleted_at == 0,
                 )
             )
             record = row.scalars().first()
             if record is None:
-                return PityResponse.failed("参数文件不存在")
+                return ArgusResponse.failed("参数文件不存在")
             record.deleted_at = int(time.time() * 1000)
             record.updated_at = datetime.now()
             record.update_user = user_info["id"]
             await session.flush()
-            await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, record, key=id)
-        return PityResponse.success()
+            await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, record, key=id)
+        return ArgusResponse.success()
 
 
 @router.post("/plan/validate-parameters")
-async def validate_performance_plan_parameters(form: PityPerformanceParameterValidateForm, _=Depends(Permission())):
+async def validate_performance_plan_parameters(form: ArgusPerformanceParameterValidateForm, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_performance_schema(session)
         result = await validate_parameter_payload(session, form)
-        return PityResponse.success(result)
+        return ArgusResponse.success(result)
 
 
 @router.get("/plan/case-preview")
 async def query_performance_case_preview(case_ids: str, _=Depends(Permission())):
     ids = parse_case_ids(case_ids)
     preview = await build_case_chain_preview(ids)
-    return PityResponse.success(preview)
+    return ArgusResponse.success(preview)
 
 
 @router.get("/plan/source")
 async def query_performance_plan_source(api_version_id: int, _=Depends(Permission())):
     async with async_session() as session:
         version_row = await session.execute(
-            select(PityApiEndpointVersion).where(
-                PityApiEndpointVersion.id == api_version_id,
-                PityApiEndpointVersion.deleted_at == 0,
+            select(ArgusApiEndpointVersion).where(
+                ArgusApiEndpointVersion.id == api_version_id,
+                ArgusApiEndpointVersion.deleted_at == 0,
             )
         )
         version = version_row.scalars().first()
         if version is None:
-            return PityResponse.failed("接口版本不存在")
+            return ArgusResponse.failed("接口版本不存在")
         sample_row = await session.execute(
-            select(PityApiEndpointSample).where(
-                PityApiEndpointSample.api_version_id == api_version_id,
-                PityApiEndpointSample.deleted_at == 0,
-            ).order_by(desc(PityApiEndpointSample.id))
+            select(ArgusApiEndpointSample).where(
+                ArgusApiEndpointSample.api_version_id == api_version_id,
+                ArgusApiEndpointSample.deleted_at == 0,
+            ).order_by(desc(ArgusApiEndpointSample.id))
         )
         sample = sample_row.scalars().first()
         request_url = version.full_url or ""
@@ -2255,7 +2255,7 @@ async def query_performance_plan_source(api_version_id: int, _=Depends(Permissio
             request_headers = sample.request_headers or request_headers
             request_query = sample.request_query or request_query
             request_body = sample.request_body or request_body
-        return PityResponse.success({
+        return ArgusResponse.success({
             "request_method": version.method,
             "request_url": request_url,
             "request_headers": request_headers,

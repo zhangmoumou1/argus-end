@@ -193,12 +193,13 @@ class UserDao(Mapper):
         :return:
         """
         try:
-            pwd = UserToken.add_salt(password)
+            password_candidates = UserToken.build_password_candidates(password)
+            latest_pwd = UserToken.add_salt(password)
             async with async_session() as session:
                 async with session.begin():
                     # 查询用户名/密码匹配且没有被删除的用户
                     query = await session.execute(
-                        select(User).where(or_(User.username == username, User.email == username), User.password == pwd,
+                        select(User).where(or_(User.username == username, User.email == username), User.password.in_(password_candidates),
                                            User.deleted_at == 0))
                     user = query.scalars().first()
                     if user is None:
@@ -206,6 +207,8 @@ class UserDao(Mapper):
                     if not user.is_valid:
                         # 说明用户被禁用
                         raise Exception("您的账号已被封禁, 请联系管理员")
+                    if user.password != latest_pwd:
+                        user.password = latest_pwd
                     user.last_login_at = datetime.now()
                     await session.flush()
                     session.expunge(user)

@@ -1,23 +1,23 @@
 from app.crud import Mapper, ModelWrapper
-from app.models.notification_template import PityNotificationTemplate
+from app.models.notification_template import ArgusNotificationTemplate
 
 
-@ModelWrapper(PityNotificationTemplate)
+@ModelWrapper(ArgusNotificationTemplate)
 class NotificationTemplateDao(Mapper):
 
     @classmethod
     async def list_templates(cls, channel_type: int = None):
-        condition = [PityNotificationTemplate.deleted_at == 0]
+        condition = [ArgusNotificationTemplate.deleted_at == 0]
         if channel_type is not None:
-            condition.append(PityNotificationTemplate.channel_type == channel_type)
+            condition.append(ArgusNotificationTemplate.channel_type == channel_type)
         return await cls.select_list(condition=condition)
 
     @classmethod
     async def list_by_channel_type(cls, channel_type: int):
         return await cls.select_list(condition=[
-            PityNotificationTemplate.deleted_at == 0,
-            PityNotificationTemplate.channel_type == channel_type,
-            PityNotificationTemplate.enabled == True,
+            ArgusNotificationTemplate.deleted_at == 0,
+            ArgusNotificationTemplate.channel_type == channel_type,
+            ArgusNotificationTemplate.enabled == True,
         ])
 
     @classmethod

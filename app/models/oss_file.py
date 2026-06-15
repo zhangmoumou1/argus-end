@@ -1,23 +1,23 @@
 """
-pity oss文件映射表
+argus oss文件映射表
 """
 from sqlalchemy import String, Column, UniqueConstraint
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 units = (
     "B", "KB", "MB", "GB", "TB"
 )
 
 
-class PityOssFile(PityBase):
+class ArgusOssFile(ArgusBase):
     # 因为没有目录的概念，都是目录+文件名
     file_path = Column(String(255), nullable=False, index=True, comment="文件路径")
     bucket_name = Column(String(64), nullable=False, comment="桶名称")
     object_key = Column(String(255), nullable=False, comment="对象key")
     file_size = Column(String(16), comment="文件大小")
 
-    __tablename__ = "pity_oss_file"
+    __tablename__ = "argus_oss_file"
     __fields__ = (file_path, bucket_name, object_key, file_size)
     __tag__ = "oss"
     __alias__ = dict(file_path="文件路径", bucket_name="桶名称", object_key="对象Key", file_size="文件大小")

@@ -9,12 +9,12 @@ from app.crud import Mapper, ModelWrapper
 from app.enums.OperationEnum import OperationType
 from app.middleware.RedisManager import RedisHelper
 from app.models import async_session
-from app.models.out_parameters import PityTestCaseOutParameters
-from app.schema.testcase_out_parameters import PityTestCaseOutParametersForm
+from app.models.out_parameters import ArgusTestCaseOutParameters
+from app.schema.testcase_out_parameters import ArgusTestCaseOutParametersForm
 
 
-@ModelWrapper(PityTestCaseOutParameters)
-class PityTestCaseOutParametersDao(Mapper):
+@ModelWrapper(ArgusTestCaseOutParameters)
+class ArgusTestCaseOutParametersDao(Mapper):
 
     @classmethod
     async def should_remove(cls, before, after):
@@ -32,30 +32,30 @@ class PityTestCaseOutParametersDao(Mapper):
 
     @classmethod
     @RedisHelper.up_cache("dao")
-    async def update_many(cls, case_id: int, data: List[PityTestCaseOutParametersForm], user_id: int):
+    async def update_many(cls, case_id: int, data: List[ArgusTestCaseOutParametersForm], user_id: int):
         result = []
         try:
             async with async_session() as session:
                 async with session.begin():
-                    source = await session.execute(select(PityTestCaseOutParameters).where(
-                        PityTestCaseOutParameters.case_id == case_id,
-                        PityTestCaseOutParameters.deleted_at == 0,
+                    source = await session.execute(select(ArgusTestCaseOutParameters).where(
+                        ArgusTestCaseOutParameters.case_id == case_id,
+                        ArgusTestCaseOutParameters.deleted_at == 0,
                     ))
                     before = source.scalars().all()
                     for item in data:
                         # if item.id is None:
                         #     # add
-                        #     temp = PityTestCaseOutParameters(**item.dict(), case_id=case_id, user_id=user_id)
+                        #     temp = ArgusTestCaseOutParameters(**item.dict(), case_id=case_id, user_id=user_id)
                         #     session.add(temp)
                         # else:
-                        query = await session.execute(select(PityTestCaseOutParameters).where(
-                            PityTestCaseOutParameters.name == item.name, PityTestCaseOutParameters.case_id == case_id,
-                            PityTestCaseOutParameters.deleted_at == 0
+                        query = await session.execute(select(ArgusTestCaseOutParameters).where(
+                            ArgusTestCaseOutParameters.name == item.name, ArgusTestCaseOutParameters.case_id == case_id,
+                            ArgusTestCaseOutParameters.deleted_at == 0
                         ))
                         temp = query.scalars().first()
                         if temp is None:
                             # 走新增逻辑
-                            temp = PityTestCaseOutParameters(**item.dict(), case_id=case_id, user_id=user_id)
+                            temp = ArgusTestCaseOutParameters(**item.dict(), case_id=case_id, user_id=user_id)
                             session.add(temp)
                             await session.flush()
                             await cls.insert_log(session, user_id, OperationType.INSERT, temp, key=temp.id)
@@ -83,15 +83,15 @@ class PityTestCaseOutParametersDao(Mapper):
                     should_remove = await cls.should_remove(before, [x.id for x in result])
                     if should_remove:
                         remove_query = await session.execute(
-                            select(PityTestCaseOutParameters).where(
-                                PityTestCaseOutParameters.id.in_(should_remove),
-                                PityTestCaseOutParameters.deleted_at == 0,
+                            select(ArgusTestCaseOutParameters).where(
+                                ArgusTestCaseOutParameters.id.in_(should_remove),
+                                ArgusTestCaseOutParameters.deleted_at == 0,
                             )
                         )
                         remove_rows = remove_query.scalars().all()
                         await session.execute(
-                            update(PityTestCaseOutParameters).where(
-                                PityTestCaseOutParameters.id.in_(should_remove)).values(
+                            update(ArgusTestCaseOutParameters).where(
+                                ArgusTestCaseOutParameters.id.in_(should_remove)).values(
                                 deleted_at=int(time.time() * 1000)))
                         await session.flush()
                         for row in remove_rows:

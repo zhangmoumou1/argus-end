@@ -12,7 +12,7 @@ from datetime import datetime
 
 import requests
 from app.crud.config.GConfigDao import GConfigDao
-from app.crud.operation.PityOperationDao import PityOperationDao
+from app.crud.operation.ArgusOperationDao import ArgusOperationDao
 from app.core.platform_audit import PlatformAuditService
 from app.core.platform_task import PlatformTaskService
 from app.enums.OperationEnum import OperationType
@@ -21,10 +21,10 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.models import async_session
-from app.models.functional_case import PityFunctionalCaseSkillDoc, PityFunctionalCaseSkillTask
-from app.models.operation_log import PityOperationLog
+from app.models.functional_case import ArgusFunctionalCaseSkillDoc, ArgusFunctionalCaseSkillTask
+from app.models.operation_log import ArgusOperationLog
 from app.models.user import User
 from app.routers import Permission
 from app.schema.functional_case import FunctionalCaseSkillDocForm, FunctionalCaseSkillTaskForm
@@ -45,7 +45,7 @@ COMPRESSED_PAYLOAD_PREFIX = "gz:"
 
 
 def serialize_model(model):
-    return PityResponse.model_to_dict(model)
+    return ArgusResponse.model_to_dict(model)
 
 
 async def ensure_skill_task_schema(session):
@@ -57,29 +57,29 @@ async def ensure_skill_task_schema(session):
         return
     try:
         for column_name, sql in [
-            ("description", "ALTER TABLE pity_functional_case_skill_doc ADD COLUMN description VARCHAR(500) NULL COMMENT '文档描述'"),
-            ("case_file_id", "ALTER TABLE pity_functional_case_skill_task ADD COLUMN case_file_id INT NOT NULL DEFAULT 0 COMMENT '目标功能用例文件ID'"),
-            ("input_payload", "ALTER TABLE pity_functional_case_skill_task ADD COLUMN input_payload TEXT NULL COMMENT '任务输入'"),
-            ("stage", "ALTER TABLE pity_functional_case_skill_task ADD COLUMN stage VARCHAR(64) NOT NULL DEFAULT 'queued' COMMENT '执行阶段'"),
-            ("stage_text", "ALTER TABLE pity_functional_case_skill_task ADD COLUMN stage_text VARCHAR(255) NULL COMMENT '阶段说明'"),
-            ("progress", "ALTER TABLE pity_functional_case_skill_task ADD COLUMN progress INT NOT NULL DEFAULT 0 COMMENT '进度'"),
-            ("review_provider", "ALTER TABLE pity_functional_case_skill_task ADD COLUMN review_provider VARCHAR(32) NULL COMMENT '评审模型'"),
-            ("review_rounds", "ALTER TABLE pity_functional_case_skill_task ADD COLUMN review_rounds INT NOT NULL DEFAULT 0 COMMENT '评审轮次'"),
-            ("task_logs", "ALTER TABLE pity_functional_case_skill_task ADD COLUMN task_logs TEXT NULL COMMENT '任务日志'"),
+            ("description", "ALTER TABLE argus_functional_case_skill_doc ADD COLUMN description VARCHAR(500) NULL COMMENT '文档描述'"),
+            ("case_file_id", "ALTER TABLE argus_functional_case_skill_task ADD COLUMN case_file_id INT NOT NULL DEFAULT 0 COMMENT '目标功能用例文件ID'"),
+            ("input_payload", "ALTER TABLE argus_functional_case_skill_task ADD COLUMN input_payload TEXT NULL COMMENT '任务输入'"),
+            ("stage", "ALTER TABLE argus_functional_case_skill_task ADD COLUMN stage VARCHAR(64) NOT NULL DEFAULT 'queued' COMMENT '执行阶段'"),
+            ("stage_text", "ALTER TABLE argus_functional_case_skill_task ADD COLUMN stage_text VARCHAR(255) NULL COMMENT '阶段说明'"),
+            ("progress", "ALTER TABLE argus_functional_case_skill_task ADD COLUMN progress INT NOT NULL DEFAULT 0 COMMENT '进度'"),
+            ("review_provider", "ALTER TABLE argus_functional_case_skill_task ADD COLUMN review_provider VARCHAR(32) NULL COMMENT '评审模型'"),
+            ("review_rounds", "ALTER TABLE argus_functional_case_skill_task ADD COLUMN review_rounds INT NOT NULL DEFAULT 0 COMMENT '评审轮次'"),
+            ("task_logs", "ALTER TABLE argus_functional_case_skill_task ADD COLUMN task_logs TEXT NULL COMMENT '任务日志'"),
         ]:
-            result = await session.execute(text(f"SHOW COLUMNS FROM {'pity_functional_case_skill_doc' if column_name == 'description' else 'pity_functional_case_skill_task'} LIKE '{column_name}'"))
+            result = await session.execute(text(f"SHOW COLUMNS FROM {'argus_functional_case_skill_doc' if column_name == 'description' else 'argus_functional_case_skill_task'} LIKE '{column_name}'"))
             if result.first() is None:
                 await session.execute(text(sql))
 
         for alter_sql in [
-            "ALTER TABLE pity_functional_case_skill_doc MODIFY COLUMN content LONGTEXT NOT NULL COMMENT 'Markdown内容'",
-            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN requirement_text LONGTEXT NULL COMMENT '需求文本'",
-            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN instruction_text LONGTEXT NULL COMMENT '额外提示'",
-            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN selected_doc_ids LONGTEXT NULL COMMENT '选中文档ID'",
-            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN input_payload LONGTEXT NULL COMMENT '任务输入'",
-            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN task_logs LONGTEXT NULL COMMENT '任务日志'",
-            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN result_payload LONGTEXT NULL COMMENT '结果JSON'",
-            "ALTER TABLE pity_functional_case_skill_task MODIFY COLUMN error_message LONGTEXT NULL COMMENT '失败原因'",
+            "ALTER TABLE argus_functional_case_skill_doc MODIFY COLUMN content LONGTEXT NOT NULL COMMENT 'Markdown内容'",
+            "ALTER TABLE argus_functional_case_skill_task MODIFY COLUMN requirement_text LONGTEXT NULL COMMENT '需求文本'",
+            "ALTER TABLE argus_functional_case_skill_task MODIFY COLUMN instruction_text LONGTEXT NULL COMMENT '额外提示'",
+            "ALTER TABLE argus_functional_case_skill_task MODIFY COLUMN selected_doc_ids LONGTEXT NULL COMMENT '选中文档ID'",
+            "ALTER TABLE argus_functional_case_skill_task MODIFY COLUMN input_payload LONGTEXT NULL COMMENT '任务输入'",
+            "ALTER TABLE argus_functional_case_skill_task MODIFY COLUMN task_logs LONGTEXT NULL COMMENT '任务日志'",
+            "ALTER TABLE argus_functional_case_skill_task MODIFY COLUMN result_payload LONGTEXT NULL COMMENT '结果JSON'",
+            "ALTER TABLE argus_functional_case_skill_task MODIFY COLUMN error_message LONGTEXT NULL COMMENT '失败原因'",
         ]:
             try:
                 await session.execute(text(alter_sql))
@@ -1008,9 +1008,9 @@ async def load_skill_docs(session, user_id, doc_ids):
     if not doc_ids:
         return []
     result = await session.execute(
-        select(PityFunctionalCaseSkillDoc).where(
-            PityFunctionalCaseSkillDoc.id.in_(doc_ids),
-            PityFunctionalCaseSkillDoc.deleted_at == 0,
+        select(ArgusFunctionalCaseSkillDoc).where(
+            ArgusFunctionalCaseSkillDoc.id.in_(doc_ids),
+            ArgusFunctionalCaseSkillDoc.deleted_at == 0,
         )
     )
     records = result.scalars().all()
@@ -1131,12 +1131,12 @@ async def append_skill_task_result_operation_log(
             error_message=error_message,
         )
         existed = await session.execute(
-            text("SELECT id FROM pity_operation_log WHERE `key`=:key AND tag=:tag AND title=:title LIMIT 1"),
+            text("SELECT id FROM argus_operation_log WHERE `key`=:key AND tag=:tag AND title=:title LIMIT 1"),
             {"key": task.id, "tag": payload["tag"], "title": payload["title"]},
         )
         if existed.first() is not None:
             return
-        session.add(PityOperationLog(
+        session.add(ArgusOperationLog(
             task.create_user,
             OperationType.EXECUTE,
             payload["title"],
@@ -1151,9 +1151,9 @@ async def execute_skill_task(task_id, task_payload=None, docs=None):
     async with async_session() as session:
         await ensure_skill_task_schema(session)
         result = await session.execute(
-            select(PityFunctionalCaseSkillTask).where(
-                PityFunctionalCaseSkillTask.id == task_id,
-                PityFunctionalCaseSkillTask.deleted_at == 0,
+            select(ArgusFunctionalCaseSkillTask).where(
+                ArgusFunctionalCaseSkillTask.id == task_id,
+                ArgusFunctionalCaseSkillTask.deleted_at == 0,
             )
         )
         task = result.scalars().first()
@@ -1325,9 +1325,9 @@ async def try_finalize_task_from_runtime(task_id, user_id):
     async with async_session() as session:
         await ensure_skill_task_schema(session)
         result = await session.execute(
-            select(PityFunctionalCaseSkillTask).where(
-                PityFunctionalCaseSkillTask.id == task_id,
-                PityFunctionalCaseSkillTask.deleted_at == 0,
+            select(ArgusFunctionalCaseSkillTask).where(
+                ArgusFunctionalCaseSkillTask.id == task_id,
+                ArgusFunctionalCaseSkillTask.deleted_at == 0,
             )
         )
         task = result.scalars().first()
@@ -1408,9 +1408,9 @@ async def update_task_state(task_id, user_id=None, **fields):
     async with async_session() as session:
         await ensure_skill_task_schema(session)
         result = await session.execute(
-            select(PityFunctionalCaseSkillTask).where(
-                PityFunctionalCaseSkillTask.id == task_id,
-                PityFunctionalCaseSkillTask.deleted_at == 0,
+            select(ArgusFunctionalCaseSkillTask).where(
+                ArgusFunctionalCaseSkillTask.id == task_id,
+                ArgusFunctionalCaseSkillTask.deleted_at == 0,
             )
         )
         task = result.scalars().first()
@@ -1434,7 +1434,7 @@ async def list_skill_docs(title: str = "", user_info=Depends(Permission())):
     async with async_session() as session:
         await ensure_skill_task_schema(session)
         result = await session.execute(
-            select(PityFunctionalCaseSkillDoc).where(PityFunctionalCaseSkillDoc.deleted_at == 0)
+            select(ArgusFunctionalCaseSkillDoc).where(ArgusFunctionalCaseSkillDoc.deleted_at == 0)
         )
         docs = result.scalars().all()
         user_ids = list({item.create_user for item in docs})
@@ -1450,7 +1450,7 @@ async def list_skill_docs(title: str = "", user_info=Depends(Permission())):
             row["owner_name"] = user_name_map.get(item.create_user, "")
             data.append(row)
     data.sort(key=lambda item: (0 if item["create_user"] == user_info["id"] else 1, -(item["id"] or 0)))
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.post("/skill-doc/insert")
@@ -1458,15 +1458,15 @@ async def insert_skill_doc(form: FunctionalCaseSkillDocForm, user_info=Depends(P
     async with async_session() as session:
         await ensure_skill_task_schema(session)
         duplicate_result = await session.execute(
-            select(PityFunctionalCaseSkillDoc).where(
-                PityFunctionalCaseSkillDoc.deleted_at == 0,
-                PityFunctionalCaseSkillDoc.create_user == user_info["id"],
-                PityFunctionalCaseSkillDoc.title == form.title,
+            select(ArgusFunctionalCaseSkillDoc).where(
+                ArgusFunctionalCaseSkillDoc.deleted_at == 0,
+                ArgusFunctionalCaseSkillDoc.create_user == user_info["id"],
+                ArgusFunctionalCaseSkillDoc.title == form.title,
             )
         )
         if duplicate_result.scalars().first() is not None:
-            return PityResponse.failed("文档名称已存在，请更换后重试")
-        model = PityFunctionalCaseSkillDoc(
+            return ArgusResponse.failed("文档名称已存在，请更换后重试")
+        model = ArgusFunctionalCaseSkillDoc(
             title=form.title,
             description=form.description,
             doc_type=form.doc_type,
@@ -1476,41 +1476,41 @@ async def insert_skill_doc(form: FunctionalCaseSkillDocForm, user_info=Depends(P
         )
         session.add(model)
         await session.flush()
-        await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
+        await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
         await session.commit()
         await session.refresh(model)
     data = serialize_model(model)
     data["owner_name"] = (user_info.get("name") or user_info.get("username") or "").strip()
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.post("/skill-doc/update")
 async def update_skill_doc(form: FunctionalCaseSkillDocForm, user_info=Depends(Permission())):
     if not form.id:
-        return PityResponse.failed("id不能为空")
+        return ArgusResponse.failed("id不能为空")
     async with async_session() as session:
         await ensure_skill_task_schema(session)
         result = await session.execute(
-            select(PityFunctionalCaseSkillDoc).where(
-                PityFunctionalCaseSkillDoc.id == form.id,
-                PityFunctionalCaseSkillDoc.deleted_at == 0,
+            select(ArgusFunctionalCaseSkillDoc).where(
+                ArgusFunctionalCaseSkillDoc.id == form.id,
+                ArgusFunctionalCaseSkillDoc.deleted_at == 0,
             )
         )
         model = result.scalars().first()
         if model is None:
-            return PityResponse.failed("文档不存在")
+            return ArgusResponse.failed("文档不存在")
         if model.create_user != user_info["id"]:
-            return PityResponse.failed("只能编辑自己的文档")
+            return ArgusResponse.failed("只能编辑自己的文档")
         duplicate_result = await session.execute(
-            select(PityFunctionalCaseSkillDoc).where(
-                PityFunctionalCaseSkillDoc.deleted_at == 0,
-                PityFunctionalCaseSkillDoc.create_user == user_info["id"],
-                PityFunctionalCaseSkillDoc.title == form.title,
-                PityFunctionalCaseSkillDoc.id != form.id,
+            select(ArgusFunctionalCaseSkillDoc).where(
+                ArgusFunctionalCaseSkillDoc.deleted_at == 0,
+                ArgusFunctionalCaseSkillDoc.create_user == user_info["id"],
+                ArgusFunctionalCaseSkillDoc.title == form.title,
+                ArgusFunctionalCaseSkillDoc.id != form.id,
             )
         )
         if duplicate_result.scalars().first() is not None:
-            return PityResponse.failed("文档名称已存在，请更换后重试")
+            return ArgusResponse.failed("文档名称已存在，请更换后重试")
         old = deepcopy(model)
         model.title = form.title
         model.description = form.description
@@ -1520,7 +1520,7 @@ async def update_skill_doc(form: FunctionalCaseSkillDocForm, user_info=Depends(P
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
         await session.flush()
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE,
@@ -1531,7 +1531,7 @@ async def update_skill_doc(form: FunctionalCaseSkillDocForm, user_info=Depends(P
         )
         await session.commit()
         await session.refresh(model)
-    return PityResponse.success(serialize_model(model))
+    return ArgusResponse.success(serialize_model(model))
 
 
 @router.get("/skill-doc/delete")
@@ -1539,24 +1539,24 @@ async def delete_skill_doc(id: int, user_info=Depends(Permission())):
     async with async_session() as session:
         await ensure_skill_task_schema(session)
         result = await session.execute(
-            select(PityFunctionalCaseSkillDoc).where(
-                PityFunctionalCaseSkillDoc.id == id,
-                PityFunctionalCaseSkillDoc.deleted_at == 0,
+            select(ArgusFunctionalCaseSkillDoc).where(
+                ArgusFunctionalCaseSkillDoc.id == id,
+                ArgusFunctionalCaseSkillDoc.deleted_at == 0,
             )
         )
         model = result.scalars().first()
         if model is None:
-            return PityResponse.failed("文档不存在")
+            return ArgusResponse.failed("文档不存在")
         if model.create_user != user_info["id"]:
-            return PityResponse.failed("只能删除自己的文档")
+            return ArgusResponse.failed("只能删除自己的文档")
         old = deepcopy(model)
         model.deleted_at = int(datetime.now().timestamp())
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
         await session.flush()
-        await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, old, key=model.id)
+        await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, old, key=model.id)
         await session.commit()
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/skill-task/create")
@@ -1586,7 +1586,7 @@ async def create_skill_task(form: FunctionalCaseSkillTaskForm, user_info=Depends
         or has_requirement_items(requirement_items)
         or all_doc_ids
     ):
-        return PityResponse.failed("请至少提供需求说明、需求图片、设计链接、规则文档或生成补充说明")
+        return ArgusResponse.failed("请至少提供需求说明、需求图片、设计链接、规则文档或生成补充说明")
     execution_payload = {
         "project_id": form.project_id,
         "case_file_id": int(form.case_file_id or 0),
@@ -1608,7 +1608,7 @@ async def create_skill_task(form: FunctionalCaseSkillTaskForm, user_info=Depends
         await ensure_skill_task_schema(session)
         docs = await load_skill_docs(session, user_info["id"], all_doc_ids)
         execution_payload["visible_doc_count"] = len(docs)
-        task = PityFunctionalCaseSkillTask(
+        task = ArgusFunctionalCaseSkillTask(
             project_id=form.project_id,
             case_file_id=int(form.case_file_id or 0),
             title=form.title,
@@ -1672,8 +1672,8 @@ async def create_skill_task(form: FunctionalCaseSkillTaskForm, user_info=Depends
             int(platform_task.id or 0),
             "RabbitMQ 入队失败，请检查消息队列连接后重试",
         )
-        return PityResponse.failed("任务创建成功但消息队列入队失败，请检查 RabbitMQ 后重试")
-    return PityResponse.success({
+        return ArgusResponse.failed("任务创建成功但消息队列入队失败，请检查 RabbitMQ 后重试")
+    return ArgusResponse.success({
         "task_id": task.id,
         "platform_task_id": int(platform_task.id or 0),
         "status": task.status,
@@ -1687,56 +1687,56 @@ async def query_skill_task_status(id: int, user_info=Depends(Permission())):
     async with async_session() as session:
         result = await session.execute(
             select(
-                PityFunctionalCaseSkillTask.id,
-                PityFunctionalCaseSkillTask.project_id,
-                PityFunctionalCaseSkillTask.case_file_id,
-                PityFunctionalCaseSkillTask.status,
-                PityFunctionalCaseSkillTask.stage,
-                PityFunctionalCaseSkillTask.stage_text,
-                PityFunctionalCaseSkillTask.progress,
-                PityFunctionalCaseSkillTask.review_provider,
-                PityFunctionalCaseSkillTask.review_rounds,
-                PityFunctionalCaseSkillTask.result_case_count,
-                PityFunctionalCaseSkillTask.error_message,
-                PityFunctionalCaseSkillTask.create_user,
+                ArgusFunctionalCaseSkillTask.id,
+                ArgusFunctionalCaseSkillTask.project_id,
+                ArgusFunctionalCaseSkillTask.case_file_id,
+                ArgusFunctionalCaseSkillTask.status,
+                ArgusFunctionalCaseSkillTask.stage,
+                ArgusFunctionalCaseSkillTask.stage_text,
+                ArgusFunctionalCaseSkillTask.progress,
+                ArgusFunctionalCaseSkillTask.review_provider,
+                ArgusFunctionalCaseSkillTask.review_rounds,
+                ArgusFunctionalCaseSkillTask.result_case_count,
+                ArgusFunctionalCaseSkillTask.error_message,
+                ArgusFunctionalCaseSkillTask.create_user,
             ).where(
-                PityFunctionalCaseSkillTask.id == id,
-                PityFunctionalCaseSkillTask.deleted_at == 0,
+                ArgusFunctionalCaseSkillTask.id == id,
+                ArgusFunctionalCaseSkillTask.deleted_at == 0,
             )
         )
         task = result.mappings().first()
         if task is None:
-            return PityResponse.failed("任务不存在")
+            return ArgusResponse.failed("任务不存在")
         if int(task.get("create_user") or 0) != int(user_info["id"]):
-            return PityResponse.failed("只能查看自己的任务")
+            return ArgusResponse.failed("只能查看自己的任务")
         normalized_status = str(task.get("status") or "").strip().lower()
         normalized_stage = str(task.get("stage") or "").strip().lower()
         if normalized_status not in {"success", "failed", "cancelled"} and normalized_stage not in {"success", "failed", "cancelled"}:
-            return PityResponse.success(build_task_result(task))
+            return ArgusResponse.success(build_task_result(task))
         detail_result = await session.execute(
             select(
-                PityFunctionalCaseSkillTask.id,
-                PityFunctionalCaseSkillTask.project_id,
-                PityFunctionalCaseSkillTask.case_file_id,
-                PityFunctionalCaseSkillTask.status,
-                PityFunctionalCaseSkillTask.stage,
-                PityFunctionalCaseSkillTask.stage_text,
-                PityFunctionalCaseSkillTask.progress,
-                PityFunctionalCaseSkillTask.review_provider,
-                PityFunctionalCaseSkillTask.review_rounds,
-                PityFunctionalCaseSkillTask.task_logs,
-                PityFunctionalCaseSkillTask.result_payload,
-                PityFunctionalCaseSkillTask.result_md_path,
-                PityFunctionalCaseSkillTask.result_xmind_path,
-                PityFunctionalCaseSkillTask.result_case_count,
-                PityFunctionalCaseSkillTask.error_message,
+                ArgusFunctionalCaseSkillTask.id,
+                ArgusFunctionalCaseSkillTask.project_id,
+                ArgusFunctionalCaseSkillTask.case_file_id,
+                ArgusFunctionalCaseSkillTask.status,
+                ArgusFunctionalCaseSkillTask.stage,
+                ArgusFunctionalCaseSkillTask.stage_text,
+                ArgusFunctionalCaseSkillTask.progress,
+                ArgusFunctionalCaseSkillTask.review_provider,
+                ArgusFunctionalCaseSkillTask.review_rounds,
+                ArgusFunctionalCaseSkillTask.task_logs,
+                ArgusFunctionalCaseSkillTask.result_payload,
+                ArgusFunctionalCaseSkillTask.result_md_path,
+                ArgusFunctionalCaseSkillTask.result_xmind_path,
+                ArgusFunctionalCaseSkillTask.result_case_count,
+                ArgusFunctionalCaseSkillTask.error_message,
             ).where(
-                PityFunctionalCaseSkillTask.id == id,
-                PityFunctionalCaseSkillTask.deleted_at == 0,
+                ArgusFunctionalCaseSkillTask.id == id,
+                ArgusFunctionalCaseSkillTask.deleted_at == 0,
             )
         )
         task = detail_result.mappings().first() or task
-    return PityResponse.success(build_task_result(task))
+    return ArgusResponse.success(build_task_result(task))
 
 
 @router.post("/skill-task/cancel")
@@ -1748,21 +1748,21 @@ async def cancel_skill_task(request: Request, id: int = 0, user_info=Depends(Per
         payload = {}
     task_id = int(id or payload.get("id") or payload.get("task_id") or 0)
     if task_id <= 0:
-        return PityResponse.failed("id不能为空")
+        return ArgusResponse.failed("id不能为空")
     async with async_session() as session:
         result = await session.execute(
-            select(PityFunctionalCaseSkillTask).where(
-                PityFunctionalCaseSkillTask.id == task_id,
-                PityFunctionalCaseSkillTask.deleted_at == 0,
+            select(ArgusFunctionalCaseSkillTask).where(
+                ArgusFunctionalCaseSkillTask.id == task_id,
+                ArgusFunctionalCaseSkillTask.deleted_at == 0,
             )
         )
         task = result.scalars().first()
         if task is None:
-            return PityResponse.failed("任务不存在")
+            return ArgusResponse.failed("任务不存在")
         if int(task.create_user or 0) != int(user_info["id"]):
-            return PityResponse.failed("只能停止自己的任务")
+            return ArgusResponse.failed("只能停止自己的任务")
         if str(task.status or "").lower() in {"success", "failed", "cancelled"}:
-            return PityResponse.success(build_task_result(task))
+            return ArgusResponse.success(build_task_result(task))
     await update_task_state(
         task_id,
         user_info["id"],
@@ -1776,7 +1776,7 @@ async def cancel_skill_task(request: Request, id: int = 0, user_info=Depends(Per
     try:
         async with async_session() as session:
             rows = await session.execute(text(
-                "SELECT id FROM pity_platform_task "
+                "SELECT id FROM argus_platform_task "
                 "WHERE deleted_at=0 AND task_type='ai_functional_case' "
                 "AND biz_type='functional_case_skill_task' AND biz_id=:biz_id "
                 "ORDER BY id DESC LIMIT 5"
@@ -1795,10 +1795,10 @@ async def cancel_skill_task(request: Request, id: int = 0, user_info=Depends(Per
         logger.warning(f"cancel platform task skipped, skill_task_id={task_id}, error={exc}")
     async with async_session() as session:
         result = await session.execute(
-            select(PityFunctionalCaseSkillTask).where(
-                PityFunctionalCaseSkillTask.id == task_id,
-                PityFunctionalCaseSkillTask.deleted_at == 0,
+            select(ArgusFunctionalCaseSkillTask).where(
+                ArgusFunctionalCaseSkillTask.id == task_id,
+                ArgusFunctionalCaseSkillTask.deleted_at == 0,
             )
         )
         task = result.scalars().first()
-    return PityResponse.success(build_task_result(task))
+    return ArgusResponse.success(build_task_result(task))

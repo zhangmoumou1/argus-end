@@ -40,7 +40,7 @@ class RpcService(object):
     @staticmethod
     async def listen(service: str, port: int, register, instance, pb):
         """
-        启动pity rpc服务
+        启动argus rpc服务
         :param service:
         :param instance:
         :param port:

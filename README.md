@@ -1,11 +1,11 @@
-[English](https://github.com/wuranxu/pity/blob/main/README_EN.md)
+[English](https://github.com/wuranxu/argus/blob/main/README_EN.md)
 
 ![png](https://img.shields.io/badge/Python-3.8+-green)
 ![png](https://img.shields.io/badge/React-17+-blue)
 ![png](https://img.shields.io/badge/FastApi-green)
 ![png](https://img.shields.io/badge/contributors-3-green)
 
-> ~~pity正在微服务化中，近期功能迭代暂缓。~~
+> ~~argus正在微服务化中，近期功能迭代暂缓。~~
 > 
 > 由于微服务个人来做能力实在有限，不走弯路了，继续开发功能...
 
@@ -24,9 +24,9 @@
 
 ### ⚽ 前端地址
 
-  [🎁 快点我](https://github.com/wuranxu/pityWeb)
+  [🎁 快点我](https://github.com/wuranxu/argusWeb)
 
-![](https://static.pity.fun/picture/20220807220041.png)
+![](https://static.argus.fun/picture/20220807220041.png)
 
 
 ## ☕ 说明
@@ -34,7 +34,7 @@
 这是一个具备完整`开发手册`(开发手册，手把手教那种)，严格按照`写一块内容`，`补一篇文章`的形式创作而成，其中也经历了从`Flask`到`FastApi`
 的快速过渡。也许代码质量没有很高，但是对于新人来说，跟着一步一步，不但可以完成从`接口自动化框架`到`接口自动化平台`的转变，还能从中看到作者不断优化的过程。
 
-如果你也想从0到1开始打造一个测试平台，那`pity`将是你不二的选择。话不多说，赶快开始体验吧！靓仔靓女们~
+如果你也想从0到1开始打造一个测试平台，那`argus`将是你不二的选择。话不多说，赶快开始体验吧！靓仔靓女们~
 
 <details open="open">
 <summary>火热开发中</summary>
@@ -48,7 +48,7 @@
 </details>
 
 
-[在线体验 🍍](https://pity.fun/)
+[在线体验 🍍](https://argus.fun/)
 
 <details open="open">
 <summary>🌙 已有功能</summary>
@@ -92,40 +92,40 @@
 
 #### 🍦 工作台
 
-![](https://static.pity.fun/picture/2022-2-28/1646063228180-image.png)
+![](https://static.argus.fun/picture/2022-2-28/1646063228180-image.png)
 
 #### 测试计划
 
-![](https://static.pity.fun/picture/2022-2-25/1645803999678-image.png)
+![](https://static.argus.fun/picture/2022-2-25/1645803999678-image.png)
 
 #### 测试报告
 
-![](https://static.pity.fun/picture/2022-2-25/1645804075353-image.png)
+![](https://static.argus.fun/picture/2022-2-25/1645804075353-image.png)
 
 #### 测试用例
 
-![](https://static.pity.fun/picture/2022-2-25/1645804276470-image.png)
+![](https://static.argus.fun/picture/2022-2-25/1645804276470-image.png)
 
 #### 钉钉通知
 
-![](https://static.pity.fun/picture/20220813173821.png)
+![](https://static.argus.fun/picture/20220813173821.png)
 
 
 #### SQL客户端
 
-![](https://static.pity.fun/picture/2022-2-25/1645804151559-image.png)
+![](https://static.argus.fun/picture/2022-2-25/1645804151559-image.png)
 
 #### 项目管理
 
-![项目管理](https://static.pity.fun/picture/2022-2-26/1645854332681-image.png)
+![项目管理](https://static.argus.fun/picture/2022-2-26/1645854332681-image.png)
 
 </details>
 
 ## ✉ 使用文档
 
-[使用文档(github)](https://wuranxu.github.io/pityDoc/)
+[使用文档(github)](https://wuranxu.github.io/argusDoc/)
 
-[备用地址(gitee)](https://woodywrx.gitee.io/pityDoc/)
+[备用地址(gitee)](https://woodywrx.gitee.io/argusDoc/)
 
 ## 😊 开发参考文章
 
@@ -133,19 +133,19 @@
 
 [开发文档-掘金](https://juejin.cn/column/6977933898952998926)
 
-### 😢 关于Pity平台
+### 😢 关于Argus平台
 
-pity是一款专注于api自动化的工具，采用`Python`+`FastApi`+`React`开发，目前还不能作为生产级别的工具，作者正在努力之中。
+argus是一款专注于api自动化的工具，采用`Python`+`FastApi`+`React`开发，目前还不能作为生产级别的工具，作者正在努力之中。
 
-这个项目叫pity，一个从0开始写的自动化测试平台(基于FastApi)，旨在总结自己最近几年的工作经验，也顺便帮助大家进步。目前还在火热更新中，基本上每周都会更新几篇吧，前期以教学+编码为主，后期以实现功能为主。希望大家能够喜欢！~
+这个项目叫argus，一个从0开始写的自动化测试平台(基于FastApi)，旨在总结自己最近几年的工作经验，也顺便帮助大家进步。目前还在火热更新中，基本上每周都会更新几篇吧，前期以教学+编码为主，后期以实现功能为主。希望大家能够喜欢！~
 
 项目起源是本人很期待的某家公司🐧拒绝了我，觉得特别遗憾吧😅。加上这一年`浑浑噩噩`的，也没有什么产出，做的东西不如18，19年多。所以打算把自己18-19的项目重写出来，给大家一些参考。
 
 ### Docker部署
 
 1. 安装Docker Desktop
-2. 打开终端并进入pity目录
-3. 执行以下命令，安静等待pity启动即可（不需要额外安装mysql redis等，一键启动直接起飞）
+2. 打开终端并进入argus目录
+3. 执行以下命令，安静等待argus启动即可（不需要额外安装mysql redis等，一键启动直接起飞）
 
   **docker镜像由卫衣哥（QYZHG倾情制作👏👏👏）**
 
@@ -157,7 +157,7 @@ docker-compose -f .\ops\docker-compose.yaml up
 
 ```bash
 # Docker 部署时请确保宿主机目录已挂载到容器内
-# statics/knowledge -> /pity/statics/knowledge
+# statics/knowledge -> /argus/statics/knowledge
 ```
 
 5. 如需 Nginx 反向代理和静态资源直出，可参考 `ops/nginx.conf`
@@ -167,8 +167,8 @@ docker-compose -f .\ops\docker-compose.yaml up
 1. 拉取代码
 
 ```bash
-$ git clone https://github.com/wuranxu/pity
-$ cd pity
+$ git clone https://github.com/wuranxu/argus
+$ cd argus
 ```
 
 2. 安装依赖
@@ -189,7 +189,7 @@ $ pip install -r requirements.txt
 6. 启动服务
 
 ```bash
-$ python pity.py
+$ python argus.py
 ```
 
 7. 注册用户
@@ -198,9 +198,9 @@ $ python pity.py
 
 点击注册按钮，第一个注册的用户会成为`超级管理员`，拥有一切权限。
 
-![](https://static.pity.fun/picture%2F%E5%BE%AE%E4%BF%A1%E5%9B%BE%E7%89%87_20220504235808.png)
+![](https://static.argus.fun/picture%2F%E5%BE%AE%E4%BF%A1%E5%9B%BE%E7%89%87_20220504235808.png)
 
-登录后就可以开启pity之旅啦！
+登录后就可以开启argus之旅啦！
 
 ### 📞 作者介绍
 
@@ -210,7 +210,7 @@ $ python pity.py
 
     个人技术公众号: `米洛的测开日记`，欢迎大家关注我，掌握最新测试开发知识。
 
-![](https://static.pity.fun/picture/2022-1-1/1641020334827-qrcode_for_gh_f52fb2135f68_430.jpg)
+![](https://static.argus.fun/picture/2022-1-1/1641020334827-qrcode_for_gh_f52fb2135f68_430.jpg)
 
 ### ❤️ 平台初心
 
@@ -264,10 +264,10 @@ $ python pity.py
 
 如果您觉得这个项目对你`有所帮助`，可以请我吃根辣条哦~或者帮忙点个star，让我创作更有动力！！！谢谢大家啦！
 
-![](http://oss.pity.fun/picture/%E5%BE%AE%E4%BF%A1%E5%9B%BE%E7%89%87_20220513224046.jpg
+![](http://oss.argus.fun/picture/%E5%BE%AE%E4%BF%A1%E5%9B%BE%E7%89%87_20220513224046.jpg
 )
 
-![](http://oss.pity.fun/picture/%E5%BE%AE%E4%BF%A1%E5%9B%BE%E7%89%87_20220513224054.jpg)
+![](http://oss.argus.fun/picture/%E5%BE%AE%E4%BF%A1%E5%9B%BE%E7%89%87_20220513224054.jpg)
 
 ### 🏅️ 金牌赞助商（排名不分先后）
 
@@ -288,4 +288,4 @@ $ python pity.py
 
 二维码会经常过期，可以加我个人微信: `wuranxu`，我拉你到群聊。
 
-![](https://static.pity.fun/picture/2022-1-2/1641097484952-ddff5bf23bdccaaf23fa227aa2e9957.jpg)
+![](https://static.argus.fun/picture/2022-1-2/1641097484952-ddff5bf23bdccaaf23fa227aa2e9957.jpg)

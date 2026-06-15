@@ -32,7 +32,7 @@ class DingTalk(Notification):
             "msgtype": "actionCard",
             "actionCard": {
                 "title": subject,
-                "text": "![screenshot](https://static.pity.fun/picture/走势监测.png)\n%s" % content,
+                "text": "![screenshot](https://static.argus.fun/picture/走势监测.png)\n%s" % content,
                 "singleTitle": '👉 查看报告',
                 "singleURL": f"""dingtalk://dingtalkclient/page/link?url={urllib.parse.quote(kwargs.get("link", ""))}&pc_slide=false"""
             },

@@ -10,7 +10,7 @@ from config import Config
 
 
 class QiniuOss(OssFile):
-    _base_path = "pity"
+    _base_path = "argus"
 
     def __init__(self, access_key_id: str, access_key_secret: str, bucket: str):
         self.auth = Auth(access_key_id, access_key_secret)

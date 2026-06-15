@@ -9,7 +9,7 @@ from app.models import async_session
 
 
 MOCK_CONFIG_TABLE_SQL = (
-    "CREATE TABLE IF NOT EXISTS pity_mock_config ("
+    "CREATE TABLE IF NOT EXISTS argus_mock_config ("
     "id INT PRIMARY KEY AUTO_INCREMENT,"
     "name VARCHAR(128) NOT NULL,"
     "method VARCHAR(16) NOT NULL DEFAULT 'ANY',"
@@ -99,7 +99,7 @@ async def list_mock_rules_for_proxy():
     await ensure_mock_config_schema()
     async with async_session() as session:
         result = await session.execute(text(
-            "SELECT * FROM pity_mock_config "
+            "SELECT * FROM argus_mock_config "
             "WHERE deleted_at = 0 AND enabled = 1 "
             "ORDER BY priority DESC, id DESC"
         ))

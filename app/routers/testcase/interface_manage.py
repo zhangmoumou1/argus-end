@@ -9,18 +9,18 @@ import requests
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, text, func
 
-from app import pity
-from app.crud.operation.PityOperationDao import PityOperationDao
+from app import argus
+from app.crud.operation.ArgusOperationDao import ArgusOperationDao
 from app.enums.OperationEnum import OperationType
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.core.configuration import SystemConfiguration
 from app.models import async_session
-from app.models.interface_manage import PityApiService, PityApiEndpoint, PityApiEndpointVersion, PityApiEndpointSample
+from app.models.interface_manage import ArgusApiService, ArgusApiEndpoint, ArgusApiEndpointVersion, ArgusApiEndpointSample
 from app.core.interface_sample import ensure_interface_sample_schema, get_endpoint_sample as load_endpoint_sample, save_endpoint_sample
 from app.routers import Permission
 from app.utils.json_compare import JsonCompare
 from app.models.test_case import TestCase
-from app.models.testcase_directory import PityTestcaseDirectory
+from app.models.testcase_directory import ArgusTestcaseDirectory
 from app.models.user import User
 from config import Config
 
@@ -44,7 +44,7 @@ def endpoint_key(method: str, path: str):
 
 
 def serialize_model(model):
-    return PityResponse.model_to_dict(model)
+    return ArgusResponse.model_to_dict(model)
 
 
 def safe_json_dumps(value):
@@ -493,7 +493,7 @@ def resolve_local_openapi_payload(source_url: str):
     if host not in {"localhost", "127.0.0.1", "0.0.0.0"}:
         return None
     if path in {"/openapi.json", "/docs", "/redoc", "/swagger-ui.html", "/swagger-ui/index.html"}:
-        payload = pity.openapi()
+        payload = argus.openapi()
         if isinstance(payload, dict) and (payload.get("openapi") or payload.get("swagger")):
             return payload
     return None
@@ -568,7 +568,7 @@ async def ensure_interface_schema(session):
         if _INTERFACE_SCHEMA_READY:
             return
         await session.execute(text(
-        "CREATE TABLE IF NOT EXISTS pity_api_service ("
+        "CREATE TABLE IF NOT EXISTS argus_api_service ("
         "id INT PRIMARY KEY AUTO_INCREMENT,"
         "project_id INT NOT NULL DEFAULT 0,"
         "name VARCHAR(128) NOT NULL,"
@@ -590,7 +590,7 @@ async def ensure_interface_schema(session):
         ")"
     ))
         await session.execute(text(
-        "CREATE TABLE IF NOT EXISTS pity_api_endpoint ("
+        "CREATE TABLE IF NOT EXISTS argus_api_endpoint ("
         "id INT PRIMARY KEY AUTO_INCREMENT,"
         "service_id INT NOT NULL DEFAULT 0,"
         "name VARCHAR(255) NOT NULL,"
@@ -613,7 +613,7 @@ async def ensure_interface_schema(session):
         ")"
     ))
         await session.execute(text(
-        "CREATE TABLE IF NOT EXISTS pity_api_endpoint_version ("
+        "CREATE TABLE IF NOT EXISTS argus_api_endpoint_version ("
         "id INT PRIMARY KEY AUTO_INCREMENT,"
         "endpoint_id INT NOT NULL DEFAULT 0,"
         "version_no VARCHAR(32) NOT NULL DEFAULT 'v1',"
@@ -635,26 +635,26 @@ async def ensure_interface_schema(session):
     ))
         await ensure_interface_sample_schema(session)
         for column_sql in [
-        "ALTER TABLE pity_api_endpoint ADD COLUMN module_name VARCHAR(128) NOT NULL DEFAULT '默认模块' COMMENT '功能模块'",
-        "ALTER TABLE pity_api_endpoint_version ADD COLUMN module_name VARCHAR(128) NOT NULL DEFAULT '默认模块' COMMENT '功能模块'",
-        "ALTER TABLE pity_api_endpoint ADD COLUMN endpoint_status VARCHAR(16) NOT NULL DEFAULT 'available' COMMENT '接口状态'",
-        "ALTER TABLE pity_api_endpoint_version ADD COLUMN endpoint_status VARCHAR(16) NOT NULL DEFAULT 'available' COMMENT '接口状态'",
-        "ALTER TABLE pity_api_endpoint ADD COLUMN request_headers LONGTEXT NULL COMMENT '请求头'",
-        "ALTER TABLE pity_api_endpoint_version ADD COLUMN request_headers LONGTEXT NULL COMMENT '请求头'",
-        "ALTER TABLE pity_api_service ADD COLUMN owner TEXT NULL COMMENT '负责人'",
-        "ALTER TABLE pity_api_service ADD COLUMN developer VARCHAR(128) NULL COMMENT '开发人员'",
-        "ALTER TABLE pity_api_service ADD COLUMN tester VARCHAR(128) NULL COMMENT '测试人员'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_service_id INT NOT NULL DEFAULT 0 COMMENT '绑定服务ID'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_endpoint_id INT NOT NULL DEFAULT 0 COMMENT '绑定接口ID'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_version_id INT NOT NULL DEFAULT 0 COMMENT '绑定接口版本ID'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_version_no VARCHAR(32) NULL COMMENT '绑定接口版本号'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_bind_mode VARCHAR(16) NOT NULL DEFAULT 'pinned' COMMENT '绑定模式'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_pending_update INT NOT NULL DEFAULT 0 COMMENT '是否待更新'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_review_status VARCHAR(16) NULL COMMENT '接口版本审查结论'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_review_user INT NOT NULL DEFAULT 0 COMMENT '接口版本审查人'",
-        "ALTER TABLE pity_testcase ADD COLUMN api_review_at VARCHAR(32) NULL COMMENT '接口版本审查时间'",
-        "ALTER TABLE pity_api_endpoint ADD INDEX idx_service_deleted_module_status_updated(service_id, deleted_at, module_name, endpoint_status, updated_at)",
-        "ALTER TABLE pity_api_endpoint_sample ADD INDEX idx_endpoint_deleted(endpoint_id, deleted_at)",
+        "ALTER TABLE argus_api_endpoint ADD COLUMN module_name VARCHAR(128) NOT NULL DEFAULT '默认模块' COMMENT '功能模块'",
+        "ALTER TABLE argus_api_endpoint_version ADD COLUMN module_name VARCHAR(128) NOT NULL DEFAULT '默认模块' COMMENT '功能模块'",
+        "ALTER TABLE argus_api_endpoint ADD COLUMN endpoint_status VARCHAR(16) NOT NULL DEFAULT 'available' COMMENT '接口状态'",
+        "ALTER TABLE argus_api_endpoint_version ADD COLUMN endpoint_status VARCHAR(16) NOT NULL DEFAULT 'available' COMMENT '接口状态'",
+        "ALTER TABLE argus_api_endpoint ADD COLUMN request_headers LONGTEXT NULL COMMENT '请求头'",
+        "ALTER TABLE argus_api_endpoint_version ADD COLUMN request_headers LONGTEXT NULL COMMENT '请求头'",
+        "ALTER TABLE argus_api_service ADD COLUMN owner TEXT NULL COMMENT '负责人'",
+        "ALTER TABLE argus_api_service ADD COLUMN developer VARCHAR(128) NULL COMMENT '开发人员'",
+        "ALTER TABLE argus_api_service ADD COLUMN tester VARCHAR(128) NULL COMMENT '测试人员'",
+        "ALTER TABLE argus_testcase ADD COLUMN api_service_id INT NOT NULL DEFAULT 0 COMMENT '绑定服务ID'",
+        "ALTER TABLE argus_testcase ADD COLUMN api_endpoint_id INT NOT NULL DEFAULT 0 COMMENT '绑定接口ID'",
+        "ALTER TABLE argus_testcase ADD COLUMN api_version_id INT NOT NULL DEFAULT 0 COMMENT '绑定接口版本ID'",
+        "ALTER TABLE argus_testcase ADD COLUMN api_version_no VARCHAR(32) NULL COMMENT '绑定接口版本号'",
+        "ALTER TABLE argus_testcase ADD COLUMN api_bind_mode VARCHAR(16) NOT NULL DEFAULT 'pinned' COMMENT '绑定模式'",
+        "ALTER TABLE argus_testcase ADD COLUMN api_pending_update INT NOT NULL DEFAULT 0 COMMENT '是否待更新'",
+        "ALTER TABLE argus_testcase ADD COLUMN api_review_status VARCHAR(16) NULL COMMENT '接口版本审查结论'",
+        "ALTER TABLE argus_testcase ADD COLUMN api_review_user INT NOT NULL DEFAULT 0 COMMENT '接口版本审查人'",
+        "ALTER TABLE argus_testcase ADD COLUMN api_review_at VARCHAR(32) NULL COMMENT '接口版本审查时间'",
+        "ALTER TABLE argus_api_endpoint ADD INDEX idx_service_deleted_module_status_updated(service_id, deleted_at, module_name, endpoint_status, updated_at)",
+        "ALTER TABLE argus_api_endpoint_sample ADD INDEX idx_endpoint_deleted(endpoint_id, deleted_at)",
     ]:
             try:
                 await session.execute(text(column_sql))
@@ -664,14 +664,14 @@ async def ensure_interface_schema(session):
         _INTERFACE_SCHEMA_READY = True
 
 
-async def create_version(session, endpoint: PityApiEndpoint, user_id: int):
-    version_count_sql = select(func.count(PityApiEndpointVersion.id)).where(
-        PityApiEndpointVersion.endpoint_id == endpoint.id,
-        PityApiEndpointVersion.deleted_at == 0,
+async def create_version(session, endpoint: ArgusApiEndpoint, user_id: int):
+    version_count_sql = select(func.count(ArgusApiEndpointVersion.id)).where(
+        ArgusApiEndpointVersion.endpoint_id == endpoint.id,
+        ArgusApiEndpointVersion.deleted_at == 0,
     )
     version_count = (await session.execute(version_count_sql)).scalar() or 0
     version_no = f"v{int(version_count) + 1}"
-    model = PityApiEndpointVersion(
+    model = ArgusApiEndpointVersion(
         endpoint_id=endpoint.id,
         version_no=version_no,
         name=endpoint.name,
@@ -693,12 +693,12 @@ async def create_version(session, endpoint: PityApiEndpoint, user_id: int):
     endpoint.update_user = user_id
 
 
-async def upsert_endpoints(session, service: PityApiService, user_id: int, endpoint_items, log_endpoints: bool = False):
+async def upsert_endpoints(session, service: ArgusApiService, user_id: int, endpoint_items, log_endpoints: bool = False):
     result = {"created": 0, "updated": 0, "unchanged": 0}
     existing_sql = await session.execute(
-        select(PityApiEndpoint).where(
-            PityApiEndpoint.service_id == service.id,
-            PityApiEndpoint.deleted_at == 0,
+        select(ArgusApiEndpoint).where(
+            ArgusApiEndpoint.service_id == service.id,
+            ArgusApiEndpoint.deleted_at == 0,
         )
     )
     existing_list = existing_sql.scalars().all()
@@ -718,7 +718,7 @@ async def upsert_endpoints(session, service: PityApiService, user_id: int, endpo
 
         exists = existing_map.get(key)
         if exists is None:
-            endpoint = PityApiEndpoint(
+            endpoint = ArgusApiEndpoint(
                 service_id=service.id,
                 name=name,
                 method=method,
@@ -736,7 +736,7 @@ async def upsert_endpoints(session, service: PityApiService, user_id: int, endpo
             await session.flush()
             await create_version(session, endpoint, user_id)
             if log_endpoints:
-                await PityOperationDao.insert_log(session, user_id, OperationType.INSERT, endpoint, key=endpoint.id)
+                await ArgusOperationDao.insert_log(session, user_id, OperationType.INSERT, endpoint, key=endpoint.id)
             result["created"] += 1
             continue
 
@@ -769,7 +769,7 @@ async def upsert_endpoints(session, service: PityApiService, user_id: int, endpo
             exists.update_user = user_id
             await create_version(session, exists, user_id)
             await session.execute(text(
-                "UPDATE pity_testcase "
+                "UPDATE argus_testcase "
                 "SET api_pending_update = 1, updated_at = NOW(), update_user = :user_id "
                 "WHERE deleted_at = 0 AND api_endpoint_id = :endpoint_id "
                 "AND api_version_id > 0 AND api_version_id <> :current_version_id"
@@ -779,7 +779,7 @@ async def upsert_endpoints(session, service: PityApiService, user_id: int, endpo
                 "current_version_id": exists.current_version_id,
             })
             if log_endpoints:
-                await PityOperationDao.insert_log(
+                await ArgusOperationDao.insert_log(
                     session,
                     user_id,
                     OperationType.UPDATE,
@@ -800,37 +800,37 @@ async def upsert_endpoints(session, service: PityApiService, user_id: int, endpo
 async def list_services(project_id: int = None, keyword: str = "", _=Depends(Permission())):
     async with async_session() as session:
         await ensure_interface_schema(session)
-        filters = [PityApiService.deleted_at == 0]
+        filters = [ArgusApiService.deleted_at == 0]
         if project_id is not None:
-            filters.append(PityApiService.project_id == project_id)
+            filters.append(ArgusApiService.project_id == project_id)
         if keyword:
-            filters.append(PityApiService.name.like(f"%{keyword}%"))
+            filters.append(ArgusApiService.name.like(f"%{keyword}%"))
         result = await session.execute(
-            select(PityApiService).where(*filters).order_by(PityApiService.updated_at.desc(), PityApiService.id.desc())
+            select(ArgusApiService).where(*filters).order_by(ArgusApiService.updated_at.desc(), ArgusApiService.id.desc())
         )
         rows = result.scalars().all()
         data = []
         for item in rows:
-            endpoint_total_sql = select(func.count(PityApiEndpoint.id)).where(
-                PityApiEndpoint.service_id == item.id,
-                PityApiEndpoint.deleted_at == 0,
+            endpoint_total_sql = select(func.count(ArgusApiEndpoint.id)).where(
+                ArgusApiEndpoint.service_id == item.id,
+                ArgusApiEndpoint.deleted_at == 0,
             )
             endpoint_total = (await session.execute(endpoint_total_sql)).scalar() or 0
             pending_sql = (
                 select(
-                    func.count(func.distinct(PityApiEndpoint.id)),
+                    func.count(func.distinct(ArgusApiEndpoint.id)),
                     func.count(TestCase.id),
                 )
-                .select_from(PityApiEndpoint)
+                .select_from(ArgusApiEndpoint)
                 .join(
                     TestCase,
-                    (TestCase.api_endpoint_id == PityApiEndpoint.id)
+                    (TestCase.api_endpoint_id == ArgusApiEndpoint.id)
                     & (TestCase.deleted_at == 0)
                     & (TestCase.api_pending_update == 1),
                 )
                 .where(
-                    PityApiEndpoint.service_id == item.id,
-                    PityApiEndpoint.deleted_at == 0,
+                    ArgusApiEndpoint.service_id == item.id,
+                    ArgusApiEndpoint.deleted_at == 0,
                 )
             )
             pending_endpoint_total, pending_case_total = (await session.execute(pending_sql)).first() or (0, 0)
@@ -840,7 +840,7 @@ async def list_services(project_id: int = None, keyword: str = "", _=Depends(Per
             row["pending_case_total"] = int(pending_case_total or 0)
             row["pending_review"] = 1 if int(pending_case_total or 0) > 0 else 0
             data.append(row)
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.get("/service/pending-assets")
@@ -849,40 +849,40 @@ async def list_pending_assets(project_id: int = None, service_id: int = None, ur
     async with async_session() as session:
         await ensure_interface_schema(session)
         filters = [
-            PityApiService.deleted_at == 0,
-            PityApiEndpoint.deleted_at == 0,
+            ArgusApiService.deleted_at == 0,
+            ArgusApiEndpoint.deleted_at == 0,
             TestCase.deleted_at == 0,
             TestCase.api_pending_update == 1,
-            TestCase.api_endpoint_id == PityApiEndpoint.id,
-            PityApiEndpoint.service_id == PityApiService.id,
+            TestCase.api_endpoint_id == ArgusApiEndpoint.id,
+            ArgusApiEndpoint.service_id == ArgusApiService.id,
         ]
         if project_id is not None:
-            filters.append(PityApiService.project_id == project_id)
+            filters.append(ArgusApiService.project_id == project_id)
         if service_id is not None:
-            filters.append(PityApiService.id == service_id)
+            filters.append(ArgusApiService.id == service_id)
         if url:
-            filters.append(PityApiEndpoint.path.like(f"%{url}%"))
+            filters.append(ArgusApiEndpoint.path.like(f"%{url}%"))
         rows = (
             await session.execute(
                 select(
-                    PityApiService.id.label("service_id"),
-                    PityApiService.name.label("service_name"),
-                    PityApiService.tester.label("tester"),
-                    PityApiEndpoint.id.label("endpoint_id"),
-                    PityApiEndpoint.name.label("endpoint_name"),
-                    PityApiEndpoint.path.label("endpoint_path"),
+                    ArgusApiService.id.label("service_id"),
+                    ArgusApiService.name.label("service_name"),
+                    ArgusApiService.tester.label("tester"),
+                    ArgusApiEndpoint.id.label("endpoint_id"),
+                    ArgusApiEndpoint.name.label("endpoint_name"),
+                    ArgusApiEndpoint.path.label("endpoint_path"),
                     func.count(TestCase.id).label("pending_case_total"),
                 )
                 .where(*filters)
                 .group_by(
-                    PityApiService.id,
-                    PityApiService.name,
-                    PityApiService.tester,
-                    PityApiEndpoint.id,
-                    PityApiEndpoint.name,
-                    PityApiEndpoint.path,
+                    ArgusApiService.id,
+                    ArgusApiService.name,
+                    ArgusApiService.tester,
+                    ArgusApiEndpoint.id,
+                    ArgusApiEndpoint.name,
+                    ArgusApiEndpoint.path,
                 )
-                .order_by(PityApiService.name.asc(), PityApiEndpoint.path.asc(), PityApiEndpoint.id.desc())
+                .order_by(ArgusApiService.name.asc(), ArgusApiEndpoint.path.asc(), ArgusApiEndpoint.id.desc())
             )
         ).all()
         data = []
@@ -899,14 +899,14 @@ async def list_pending_assets(project_id: int = None, service_id: int = None, ur
                 "tester": tester_ids,
                 "pending_case_total": int(item.pending_case_total or 0),
             })
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.post("/service/insert")
 async def insert_service(form: dict, user_info=Depends(Permission())):
     async with async_session() as session:
         await ensure_interface_schema(session)
-        model = PityApiService(
+        model = ArgusApiService(
             project_id=int(form.get("project_id") or 0),
             name=str(form.get("name") or "").strip(),
             base_url=str(form.get("base_url") or "").strip(),
@@ -918,35 +918,35 @@ async def insert_service(form: dict, user_info=Depends(Permission())):
             user=user_info["id"],
         )
         if not model.name:
-            return PityResponse.failed("服务名称不能为空")
+            return ArgusResponse.failed("服务名称不能为空")
         source_type = (model.source_type or "manual").lower()
         model.sync_enabled = 0 if source_type == "manual" else int(form.get("sync_enabled") or 0)
         model.sync_cron = DEFAULT_SYNC_CRON if model.sync_enabled and not form.get("sync_cron") else str(form.get("sync_cron") or "").strip() or None
         session.add(model)
         await session.flush()
-        await PityOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
+        await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.INSERT, model, key=model.id)
         await session.commit()
         await session.refresh(model)
-    return PityResponse.success(serialize_model(model))
+    return ArgusResponse.success(serialize_model(model))
 
 
 @router.post("/service/update")
 async def update_service(form: dict, user_info=Depends(Permission())):
     service_id = int(form.get("id") or 0)
     if not service_id:
-        return PityResponse.failed("id不能为空")
+        return ArgusResponse.failed("id不能为空")
     async with async_session() as session:
         await ensure_interface_schema(session)
         result = await session.execute(
-            select(PityApiService).where(PityApiService.id == service_id, PityApiService.deleted_at == 0)
+            select(ArgusApiService).where(ArgusApiService.id == service_id, ArgusApiService.deleted_at == 0)
         )
         model = result.scalars().first()
         if model is None:
-            return PityResponse.failed("服务不存在")
+            return ArgusResponse.failed("服务不存在")
         old = deepcopy(model)
         name = str(form.get("name") or model.name).strip()
         if not name:
-            return PityResponse.failed("服务名称不能为空")
+            return ArgusResponse.failed("服务名称不能为空")
         if form.get("project_id") is not None:
             model.project_id = int(form.get("project_id") or 0)
         model.name = name
@@ -967,7 +967,7 @@ async def update_service(form: dict, user_info=Depends(Permission())):
         model.update_user = user_info["id"]
         model.updated_at = datetime.now()
         await session.flush()
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE,
@@ -978,7 +978,7 @@ async def update_service(form: dict, user_info=Depends(Permission())):
         )
         await session.commit()
         await session.refresh(model)
-    return PityResponse.success(serialize_model(model))
+    return ArgusResponse.success(serialize_model(model))
 
 
 @router.get("/service/delete")
@@ -986,25 +986,25 @@ async def delete_service(id: int, user_info=Depends(Permission())):
     async with async_session() as session:
         await ensure_interface_schema(session)
         result = await session.execute(
-            select(PityApiService).where(PityApiService.id == id, PityApiService.deleted_at == 0)
+            select(ArgusApiService).where(ArgusApiService.id == id, ArgusApiService.deleted_at == 0)
         )
         service = result.scalars().first()
         if service is None:
-            return PityResponse.failed("服务不存在")
+            return ArgusResponse.failed("服务不存在")
         now_deleted = int(datetime.now().timestamp())
         service.deleted_at = now_deleted
         service.update_user = user_info["id"]
         service.updated_at = datetime.now()
-        await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, service, key=service.id)
+        await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, service, key=service.id)
         endpoints = (await session.execute(
-            select(PityApiEndpoint).where(PityApiEndpoint.service_id == id, PityApiEndpoint.deleted_at == 0)
+            select(ArgusApiEndpoint).where(ArgusApiEndpoint.service_id == id, ArgusApiEndpoint.deleted_at == 0)
         )).scalars().all()
         for endpoint in endpoints:
             endpoint.deleted_at = now_deleted
             endpoint.update_user = user_info["id"]
             endpoint.updated_at = datetime.now()
         await session.commit()
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.get("/endpoint/list")
@@ -1012,30 +1012,30 @@ async def list_endpoints(service_id: int, keyword: str = "", module_name: str = 
     async with async_session() as session:
         await ensure_interface_schema(session)
         filters = [
-            PityApiEndpoint.service_id == service_id,
-            PityApiEndpoint.deleted_at == 0,
+            ArgusApiEndpoint.service_id == service_id,
+            ArgusApiEndpoint.deleted_at == 0,
         ]
         if keyword:
-            filters.append(PityApiEndpoint.name.like(f"%{keyword}%"))
+            filters.append(ArgusApiEndpoint.name.like(f"%{keyword}%"))
         if module_name:
-            filters.append(PityApiEndpoint.module_name == module_name)
+            filters.append(ArgusApiEndpoint.module_name == module_name)
         if url:
-            filters.append(PityApiEndpoint.path.like(f"%{url}%"))
+            filters.append(ArgusApiEndpoint.path.like(f"%{url}%"))
         if endpoint_status:
-            filters.append(PityApiEndpoint.endpoint_status == endpoint_status)
+            filters.append(ArgusApiEndpoint.endpoint_status == endpoint_status)
         result = await session.execute(
             select(
-                PityApiEndpoint.id,
-                PityApiEndpoint.name,
-                PityApiEndpoint.method,
-                PityApiEndpoint.module_name,
-                PityApiEndpoint.endpoint_status,
-                PityApiEndpoint.path,
-                PityApiEndpoint.current_version_no,
-                PityApiEndpoint.updated_at,
+                ArgusApiEndpoint.id,
+                ArgusApiEndpoint.name,
+                ArgusApiEndpoint.method,
+                ArgusApiEndpoint.module_name,
+                ArgusApiEndpoint.endpoint_status,
+                ArgusApiEndpoint.path,
+                ArgusApiEndpoint.current_version_no,
+                ArgusApiEndpoint.updated_at,
             )
             .where(*filters)
-            .order_by(PityApiEndpoint.module_name.asc(), PityApiEndpoint.updated_at.desc(), PityApiEndpoint.id.desc())
+            .order_by(ArgusApiEndpoint.module_name.asc(), ArgusApiEndpoint.updated_at.desc(), ArgusApiEndpoint.id.desc())
         )
         rows = result.all()
         endpoint_ids = [item.id for item in rows]
@@ -1044,13 +1044,13 @@ async def list_endpoints(service_id: int, keyword: str = "", module_name: str = 
         if endpoint_ids:
             sample_rows = (await session.execute(
                 select(
-                    PityApiEndpointSample.endpoint_id,
-                    PityApiEndpointSample.recorded_at,
-                    PityApiEndpointSample.status_code,
-                    PityApiEndpointSample.sample_source,
+                    ArgusApiEndpointSample.endpoint_id,
+                    ArgusApiEndpointSample.recorded_at,
+                    ArgusApiEndpointSample.status_code,
+                    ArgusApiEndpointSample.sample_source,
                 ).where(
-                    PityApiEndpointSample.endpoint_id.in_(endpoint_ids),
-                    PityApiEndpointSample.deleted_at == 0,
+                    ArgusApiEndpointSample.endpoint_id.in_(endpoint_ids),
+                    ArgusApiEndpointSample.deleted_at == 0,
                 )
             )).all()
             sample_map = {item.endpoint_id: item for item in sample_rows}
@@ -1098,13 +1098,13 @@ async def list_endpoints(service_id: int, keyword: str = "", module_name: str = 
                 "sample_source": sample.sample_source if sample else None,
             })
         module_result = await session.execute(
-            select(PityApiEndpoint.module_name).where(
-                PityApiEndpoint.service_id == service_id,
-                PityApiEndpoint.deleted_at == 0,
+            select(ArgusApiEndpoint.module_name).where(
+                ArgusApiEndpoint.service_id == service_id,
+                ArgusApiEndpoint.deleted_at == 0,
             ).distinct()
         )
         modules = [str(item[0] or "默认模块") for item in module_result.all()]
-    return PityResponse.success({"list": data, "modules": sorted(list(set(modules)))})
+    return ArgusResponse.success({"list": data, "modules": sorted(list(set(modules)))})
 
 
 @router.get("/endpoint/lineage")
@@ -1112,17 +1112,17 @@ async def get_endpoint_lineage(endpoint_id: int, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_interface_schema(session)
         endpoint = (await session.execute(
-            select(PityApiEndpoint).where(
-                PityApiEndpoint.id == endpoint_id,
-                PityApiEndpoint.deleted_at == 0,
+            select(ArgusApiEndpoint).where(
+                ArgusApiEndpoint.id == endpoint_id,
+                ArgusApiEndpoint.deleted_at == 0,
             )
         )).scalars().first()
         if endpoint is None:
-            return PityResponse.failed("接口不存在")
+            return ArgusResponse.failed("接口不存在")
         service = (await session.execute(
-            select(PityApiService).where(
-                PityApiService.id == endpoint.service_id,
-                PityApiService.deleted_at == 0,
+            select(ArgusApiService).where(
+                ArgusApiService.id == endpoint.service_id,
+                ArgusApiService.deleted_at == 0,
             )
         )).scalars().first()
         case_rows = (await session.execute(
@@ -1137,18 +1137,18 @@ async def get_endpoint_lineage(endpoint_id: int, _=Depends(Permission())):
         directory_map = {}
         if directory_ids:
             directory_rows = (await session.execute(
-                select(PityTestcaseDirectory).where(
-                    PityTestcaseDirectory.id.in_(directory_ids),
-                    PityTestcaseDirectory.deleted_at == 0,
+                select(ArgusTestcaseDirectory).where(
+                    ArgusTestcaseDirectory.id.in_(directory_ids),
+                    ArgusTestcaseDirectory.deleted_at == 0,
                 )
             )).scalars().all()
             directory_lookup = {item.id: item for item in directory_rows}
             parent_ids = list({item.parent for item in directory_rows if item.parent})
             while parent_ids:
                 parent_rows = (await session.execute(
-                    select(PityTestcaseDirectory).where(
-                        PityTestcaseDirectory.id.in_(parent_ids),
-                        PityTestcaseDirectory.deleted_at == 0,
+                    select(ArgusTestcaseDirectory).where(
+                        ArgusTestcaseDirectory.id.in_(parent_ids),
+                        ArgusTestcaseDirectory.deleted_at == 0,
                     )
                 )).scalars().all()
                 next_parent_ids = []
@@ -1187,7 +1187,7 @@ async def get_endpoint_lineage(endpoint_id: int, _=Depends(Permission())):
                 "status": item.status,
                 "updated_at": item.updated_at,
             })
-        return PityResponse.success({
+        return ArgusResponse.success({
             "endpoint": {
                 "id": endpoint.id,
                 "name": endpoint.name,
@@ -1208,14 +1208,14 @@ async def list_endpoint_versions(endpoint_id: int, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_interface_schema(session)
         result = await session.execute(
-            select(PityApiEndpointVersion).where(
-                PityApiEndpointVersion.endpoint_id == endpoint_id,
-                PityApiEndpointVersion.deleted_at == 0,
-            ).order_by(PityApiEndpointVersion.id.desc())
+            select(ArgusApiEndpointVersion).where(
+                ArgusApiEndpointVersion.endpoint_id == endpoint_id,
+                ArgusApiEndpointVersion.deleted_at == 0,
+            ).order_by(ArgusApiEndpointVersion.id.desc())
         )
         rows = result.scalars().all()
         data = [serialize_model(item) for item in rows]
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.get("/endpoint/version/detail")
@@ -1223,16 +1223,16 @@ async def get_endpoint_version_detail(version_id: int, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_interface_schema(session)
         record = (await session.execute(
-            select(PityApiEndpointVersion).where(
-                PityApiEndpointVersion.id == version_id,
-                PityApiEndpointVersion.deleted_at == 0,
+            select(ArgusApiEndpointVersion).where(
+                ArgusApiEndpointVersion.id == version_id,
+                ArgusApiEndpointVersion.deleted_at == 0,
             )
         )).scalars().first()
         if record is None:
-            return PityResponse.failed("版本不存在")
+            return ArgusResponse.failed("版本不存在")
         data = serialize_model(record)
         data["request_params_struct"] = simplify_request_params(record.request_params)
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.get("/endpoint/source/query")
@@ -1240,29 +1240,29 @@ async def query_endpoint_source(endpoint_id: int, version_id: int = 0, _=Depends
     async with async_session() as session:
         await ensure_interface_schema(session)
         endpoint = (await session.execute(
-            select(PityApiEndpoint).where(
-                PityApiEndpoint.id == endpoint_id,
-                PityApiEndpoint.deleted_at == 0,
+            select(ArgusApiEndpoint).where(
+                ArgusApiEndpoint.id == endpoint_id,
+                ArgusApiEndpoint.deleted_at == 0,
             )
         )).scalars().first()
         if endpoint is None:
-            return PityResponse.failed("接口不存在")
+            return ArgusResponse.failed("接口不存在")
         service = (await session.execute(
-            select(PityApiService).where(
-                PityApiService.id == endpoint.service_id,
-                PityApiService.deleted_at == 0,
+            select(ArgusApiService).where(
+                ArgusApiService.id == endpoint.service_id,
+                ArgusApiService.deleted_at == 0,
             )
         )).scalars().first()
         if service is None:
-            return PityResponse.failed("接口所属服务不存在")
+            return ArgusResponse.failed("接口所属服务不存在")
 
         record_version = None
         target_version_id = int(version_id or 0) or int(endpoint.current_version_id or 0)
         if target_version_id > 0:
             record_version = (await session.execute(
-                select(PityApiEndpointVersion).where(
-                    PityApiEndpointVersion.id == target_version_id,
-                    PityApiEndpointVersion.deleted_at == 0,
+                select(ArgusApiEndpointVersion).where(
+                    ArgusApiEndpointVersion.id == target_version_id,
+                    ArgusApiEndpointVersion.deleted_at == 0,
                 )
             )).scalars().first()
         if record_version is None:
@@ -1292,7 +1292,7 @@ async def query_endpoint_source(endpoint_id: int, version_id: int = 0, _=Depends
         if merged_query:
             request_url = normalize_url_for_fill(request_url, "", merged_query)
 
-        return PityResponse.success({
+        return ArgusResponse.success({
             "endpoint_id": endpoint.id,
             "version_id": int(getattr(record_version, "id", 0) or 0),
             "version_no": str(getattr(record_version, "version_no", "") or endpoint.current_version_no or ""),
@@ -1314,44 +1314,44 @@ async def get_endpoint_sample(endpoint_id: int, _=Depends(Permission())):
     async with async_session() as session:
         await ensure_interface_schema(session)
         record = (await session.execute(
-            select(PityApiEndpointSample).where(
-                PityApiEndpointSample.endpoint_id == endpoint_id,
-                PityApiEndpointSample.deleted_at == 0,
+            select(ArgusApiEndpointSample).where(
+                ArgusApiEndpointSample.endpoint_id == endpoint_id,
+                ArgusApiEndpointSample.deleted_at == 0,
             )
         )).scalars().first()
         if record is None:
-            return PityResponse.success(None)
+            return ArgusResponse.success(None)
         data = serialize_model(record)
-    return PityResponse.success(data)
+    return ArgusResponse.success(data)
 
 
 @router.post("/endpoint/sample/associate")
 async def associate_endpoint_sample(form: dict, user_info=Depends(Permission())):
     endpoint_id = int(form.get("endpoint_id") or 0)
     if not endpoint_id:
-        return PityResponse.failed("endpoint_id不能为空")
+        return ArgusResponse.failed("endpoint_id不能为空")
     async with async_session() as session:
         await ensure_interface_schema(session)
         endpoint = (
             await session.execute(
-                select(PityApiEndpoint).where(
-                    PityApiEndpoint.id == endpoint_id,
-                    PityApiEndpoint.deleted_at == 0,
+                select(ArgusApiEndpoint).where(
+                    ArgusApiEndpoint.id == endpoint_id,
+                    ArgusApiEndpoint.deleted_at == 0,
                 )
             )
         ).scalars().first()
         if endpoint is None:
-            return PityResponse.failed("接口不存在")
+            return ArgusResponse.failed("接口不存在")
         service = (
             await session.execute(
-                select(PityApiService).where(
-                    PityApiService.id == endpoint.service_id,
-                    PityApiService.deleted_at == 0,
+                select(ArgusApiService).where(
+                    ArgusApiService.id == endpoint.service_id,
+                    ArgusApiService.deleted_at == 0,
                 )
             )
         ).scalars().first()
         if service is None:
-            return PityResponse.failed("接口所属服务不存在")
+            return ArgusResponse.failed("接口所属服务不存在")
         sample = await load_endpoint_sample(session, endpoint_id)
         request_data = {
             "url": str(form.get("url") or endpoint.full_url or ""),
@@ -1375,7 +1375,7 @@ async def associate_endpoint_sample(form: dict, user_info=Depends(Permission()))
         )
         record = await load_endpoint_sample(session, endpoint_id)
         if record is not None:
-            await PityOperationDao.insert_log(
+            await ArgusOperationDao.insert_log(
                 session,
                 user_info["id"],
                 OperationType.UPDATE if sample else OperationType.INSERT,
@@ -1385,36 +1385,36 @@ async def associate_endpoint_sample(form: dict, user_info=Depends(Permission()))
                 changed=["sample_source", "request_url", "request_headers", "request_body", "response_headers", "response_body", "status_code", "recorded_at"],
             )
         await session.commit()
-    return PityResponse.success(serialize_model(record) if record else None)
+    return ArgusResponse.success(serialize_model(record) if record else None)
 
 
 @router.post("/endpoint/sample/manual-input")
 async def manual_input_endpoint_sample(form: dict, user_info=Depends(Permission())):
     endpoint_id = int(form.get("endpoint_id") or 0)
     if not endpoint_id:
-        return PityResponse.failed("endpoint_id不能为空")
+        return ArgusResponse.failed("endpoint_id不能为空")
     async with async_session() as session:
         await ensure_interface_schema(session)
         endpoint = (
             await session.execute(
-                select(PityApiEndpoint).where(
-                    PityApiEndpoint.id == endpoint_id,
-                    PityApiEndpoint.deleted_at == 0,
+                select(ArgusApiEndpoint).where(
+                    ArgusApiEndpoint.id == endpoint_id,
+                    ArgusApiEndpoint.deleted_at == 0,
                 )
             )
         ).scalars().first()
         if endpoint is None:
-            return PityResponse.failed("接口不存在")
+            return ArgusResponse.failed("接口不存在")
         service = (
             await session.execute(
-                select(PityApiService).where(
-                    PityApiService.id == endpoint.service_id,
-                    PityApiService.deleted_at == 0,
+                select(ArgusApiService).where(
+                    ArgusApiService.id == endpoint.service_id,
+                    ArgusApiService.deleted_at == 0,
                 )
             )
         ).scalars().first()
         if service is None:
-            return PityResponse.failed("接口所属服务不存在")
+            return ArgusResponse.failed("接口所属服务不存在")
         sample = await load_endpoint_sample(session, endpoint_id)
         request_data = {
             "url": str(form.get("request_url") or endpoint.full_url or endpoint.path or ""),
@@ -1441,7 +1441,7 @@ async def manual_input_endpoint_sample(form: dict, user_info=Depends(Permission(
             record.request_query = safe_json_dumps(form.get("request_query") or {})
         old_sample = deepcopy(sample) if sample else None
         await session.flush()
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE if sample else OperationType.INSERT,
@@ -1452,27 +1452,27 @@ async def manual_input_endpoint_sample(form: dict, user_info=Depends(Permission(
         )
         await session.commit()
         record = await load_endpoint_sample(session, endpoint_id)
-    return PityResponse.success(serialize_model(record) if record else None)
+    return ArgusResponse.success(serialize_model(record) if record else None)
 
 
 @router.post("/endpoint/sample/clear")
 async def clear_endpoint_sample(form: dict, user_info=Depends(Permission())):
     endpoint_id = int(form.get("endpoint_id") or 0)
     if not endpoint_id:
-        return PityResponse.failed("endpoint_id不能为空")
+        return ArgusResponse.failed("endpoint_id不能为空")
     async with async_session() as session:
         await ensure_interface_schema(session)
         record = await load_endpoint_sample(session, endpoint_id)
         if record is None:
-            return PityResponse.success(True)
+            return ArgusResponse.success(True)
         old = deepcopy(record)
         record.deleted_at = int(time.time())
         record.update_user = user_info["id"]
         record.updated_at = datetime.now()
         await session.flush()
-        await PityOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, old, key=record.id)
+        await ArgusOperationDao.insert_log(session, user_info["id"], OperationType.DELETE, old, key=record.id)
         await session.commit()
-    return PityResponse.success(True)
+    return ArgusResponse.success(True)
 
 
 @router.get("/endpoint/version/compare")
@@ -1480,19 +1480,19 @@ async def compare_endpoint_version(left_version_id: int, right_version_id: int, 
     async with async_session() as session:
         await ensure_interface_schema(session)
         left = (await session.execute(
-            select(PityApiEndpointVersion).where(
-                PityApiEndpointVersion.id == left_version_id,
-                PityApiEndpointVersion.deleted_at == 0,
+            select(ArgusApiEndpointVersion).where(
+                ArgusApiEndpointVersion.id == left_version_id,
+                ArgusApiEndpointVersion.deleted_at == 0,
             )
         )).scalars().first()
         right = (await session.execute(
-            select(PityApiEndpointVersion).where(
-                PityApiEndpointVersion.id == right_version_id,
-                PityApiEndpointVersion.deleted_at == 0,
+            select(ArgusApiEndpointVersion).where(
+                ArgusApiEndpointVersion.id == right_version_id,
+                ArgusApiEndpointVersion.deleted_at == 0,
             )
         )).scalars().first()
         if left is None or right is None:
-            return PityResponse.failed("版本不存在")
+            return ArgusResponse.failed("版本不存在")
 
         comparer = JsonCompare()
         fields = [
@@ -1518,7 +1518,7 @@ async def compare_endpoint_version(left_version_id: int, right_version_id: int, 
             if compare_rows:
                 changed_fields.append(field_name)
                 change_points[field_name] = extract_change_points(compare_rows)
-    return PityResponse.success({
+    return ArgusResponse.success({
         "left_version_id": left_version_id,
         "right_version_id": right_version_id,
         "changed_fields": changed_fields,
@@ -1533,11 +1533,11 @@ async def compare_endpoint_version(left_version_id: int, right_version_id: int, 
 async def import_swagger(form: dict, user_info=Depends(Permission())):
     service_id = int(form.get("service_id") or 0)
     if not service_id:
-        return PityResponse.failed("service_id不能为空")
+        return ArgusResponse.failed("service_id不能为空")
     source_url = str(form.get("source_url") or "").strip()
     source_text = str(form.get("source_text") or "").strip()
     if not source_url and not source_text:
-        return PityResponse.failed("请提供 source_url 或 source_text")
+        return ArgusResponse.failed("请提供 source_url 或 source_text")
 
     try:
         if source_text:
@@ -1545,17 +1545,17 @@ async def import_swagger(form: dict, user_info=Depends(Permission())):
         else:
             payload = resolve_swagger_payload(source_url)
     except Exception as exc:
-        return PityResponse.failed(f"Swagger解析失败: {exc}")
+        return ArgusResponse.failed(f"Swagger解析失败: {exc}")
 
     endpoint_items = parse_swagger_payload(payload)
     resolved_base_url = resolve_swagger_base_url(payload, source_url)
     async with async_session() as session:
         await ensure_interface_schema(session)
         service = (await session.execute(
-            select(PityApiService).where(PityApiService.id == service_id, PityApiService.deleted_at == 0)
+            select(ArgusApiService).where(ArgusApiService.id == service_id, ArgusApiService.deleted_at == 0)
         )).scalars().first()
         if service is None:
-            return PityResponse.failed("服务不存在")
+            return ArgusResponse.failed("服务不存在")
         old = deepcopy(service)
         service.source_type = "swagger"
         service.source_config = safe_json_dumps({"source_url": source_url})
@@ -1566,7 +1566,7 @@ async def import_swagger(form: dict, user_info=Depends(Permission())):
         service.update_user = user_info["id"]
         service.updated_at = datetime.now()
         summary = await upsert_endpoints(session, service, user_info["id"], endpoint_items)
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE,
@@ -1576,14 +1576,14 @@ async def import_swagger(form: dict, user_info=Depends(Permission())):
             changed=["source_type", "source_config", "last_sync_status", "last_sync_at"],
         )
         await session.commit()
-    return PityResponse.success({"count": len(endpoint_items), **summary})
+    return ArgusResponse.success({"count": len(endpoint_items), **summary})
 
 
 @router.post("/import/yapi")
 async def import_yapi(form: dict, user_info=Depends(Permission())):
     service_id = int(form.get("service_id") or 0)
     if not service_id:
-        return PityResponse.failed("service_id不能为空")
+        return ArgusResponse.failed("service_id不能为空")
     source_url = str(form.get("source_url") or "").strip()
     source_text = str(form.get("source_text") or "").strip()
     token = ""
@@ -1594,9 +1594,9 @@ async def import_yapi(form: dict, user_info=Depends(Permission())):
         token = ""
 
     if not source_text and not source_url:
-        return PityResponse.failed("请提供 source_url 或 source_text")
+        return ArgusResponse.failed("请提供 source_url 或 source_text")
     if not source_text and not token:
-        return PityResponse.failed("系统设置未配置YAPI Token，请先到后台管理-系统设置配置")
+        return ArgusResponse.failed("系统设置未配置YAPI Token，请先到后台管理-系统设置配置")
 
     try:
         if source_text:
@@ -1609,16 +1609,16 @@ async def import_yapi(form: dict, user_info=Depends(Permission())):
             response.raise_for_status()
             payload = response.json()
     except Exception as exc:
-        return PityResponse.failed(f"YAPI解析失败: {exc}")
+        return ArgusResponse.failed(f"YAPI解析失败: {exc}")
 
     endpoint_items = parse_yapi_payload(payload)
     async with async_session() as session:
         await ensure_interface_schema(session)
         service = (await session.execute(
-            select(PityApiService).where(PityApiService.id == service_id, PityApiService.deleted_at == 0)
+            select(ArgusApiService).where(ArgusApiService.id == service_id, ArgusApiService.deleted_at == 0)
         )).scalars().first()
         if service is None:
-            return PityResponse.failed("服务不存在")
+            return ArgusResponse.failed("服务不存在")
         old = deepcopy(service)
         service.source_type = "yapi"
         service.source_config = safe_json_dumps({"source_url": source_url})
@@ -1627,7 +1627,7 @@ async def import_yapi(form: dict, user_info=Depends(Permission())):
         service.update_user = user_info["id"]
         service.updated_at = datetime.now()
         summary = await upsert_endpoints(session, service, user_info["id"], endpoint_items)
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE,
@@ -1637,21 +1637,21 @@ async def import_yapi(form: dict, user_info=Depends(Permission())):
             changed=["source_type", "source_config", "last_sync_status", "last_sync_at"],
         )
         await session.commit()
-    return PityResponse.success({"count": len(endpoint_items), **summary})
+    return ArgusResponse.success({"count": len(endpoint_items), **summary})
 
 
 @router.post("/service/sync")
 async def sync_service(form: dict, user_info=Depends(Permission())):
     service_id = int(form.get("service_id") or 0)
     if not service_id:
-        return PityResponse.failed("service_id不能为空")
+        return ArgusResponse.failed("service_id不能为空")
     async with async_session() as session:
         await ensure_interface_schema(session)
         service = (await session.execute(
-            select(PityApiService).where(PityApiService.id == service_id, PityApiService.deleted_at == 0)
+            select(ArgusApiService).where(ArgusApiService.id == service_id, ArgusApiService.deleted_at == 0)
         )).scalars().first()
     if service is None:
-        return PityResponse.failed("服务不存在")
+        return ArgusResponse.failed("服务不存在")
 
     source_type = (service.source_type or "manual").lower()
     config_data = safe_json_loads(service.source_config)
@@ -1665,28 +1665,28 @@ async def sync_service(form: dict, user_info=Depends(Permission())):
             "service_id": service_id,
             "source_url": config_data.get("source_url") or "",
         }, user_info)
-    return PityResponse.failed("该服务不是可同步来源，请先配置swagger或yapi")
+    return ArgusResponse.failed("该服务不是可同步来源，请先配置swagger或yapi")
 
 
 @router.post("/endpoint/deprecate")
 async def deprecate_endpoint(form: dict, user_info=Depends(Permission())):
     endpoint_id = int(form.get("endpoint_id") or 0)
     if not endpoint_id:
-        return PityResponse.failed("endpoint_id不能为空")
+        return ArgusResponse.failed("endpoint_id不能为空")
     async with async_session() as session:
         await ensure_interface_schema(session)
         endpoint = (await session.execute(
-            select(PityApiEndpoint).where(PityApiEndpoint.id == endpoint_id, PityApiEndpoint.deleted_at == 0)
+            select(ArgusApiEndpoint).where(ArgusApiEndpoint.id == endpoint_id, ArgusApiEndpoint.deleted_at == 0)
         )).scalars().first()
         if endpoint is None:
-            return PityResponse.failed("接口不存在")
+            return ArgusResponse.failed("接口不存在")
         old = deepcopy(endpoint)
         endpoint.endpoint_status = "deprecated"
         endpoint.update_user = user_info["id"]
         endpoint.updated_at = datetime.now()
         await create_version(session, endpoint, user_info["id"])
         await session.flush()
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE,
@@ -1696,7 +1696,7 @@ async def deprecate_endpoint(form: dict, user_info=Depends(Permission())):
             changed=["endpoint_status", "current_version_no"],
         )
         await session.commit()
-    return PityResponse.success()
+    return ArgusResponse.success()
 
 
 @router.post("/endpoint/review")
@@ -1704,9 +1704,9 @@ async def review_endpoint_case(form: dict, user_info=Depends(Permission())):
     case_id = int(form.get("case_id") or 0)
     review_status = str(form.get("review_status") or "").strip()
     if not case_id:
-        return PityResponse.failed("case_id不能为空")
+        return ArgusResponse.failed("case_id不能为空")
     if review_status not in {"no_impact", "reviewed"}:
-        return PityResponse.failed("review_status不合法")
+        return ArgusResponse.failed("review_status不合法")
     async with async_session() as session:
         await ensure_interface_schema(session)
         record = (
@@ -1718,14 +1718,14 @@ async def review_endpoint_case(form: dict, user_info=Depends(Permission())):
             )
         ).scalars().first()
         if record is None:
-            return PityResponse.failed("接口用例不存在")
+            return ArgusResponse.failed("接口用例不存在")
         endpoint = None
         if int(getattr(record, "api_endpoint_id", 0) or 0) > 0:
             endpoint = (
                 await session.execute(
-                    select(PityApiEndpoint).where(
-                        PityApiEndpoint.id == record.api_endpoint_id,
-                        PityApiEndpoint.deleted_at == 0,
+                    select(ArgusApiEndpoint).where(
+                        ArgusApiEndpoint.id == record.api_endpoint_id,
+                        ArgusApiEndpoint.deleted_at == 0,
                     )
                 )
             ).scalars().first()
@@ -1740,7 +1740,7 @@ async def review_endpoint_case(form: dict, user_info=Depends(Permission())):
         record.update_user = user_info["id"]
         record.updated_at = datetime.now()
         await session.flush()
-        await PityOperationDao.insert_log(
+        await ArgusOperationDao.insert_log(
             session,
             user_info["id"],
             OperationType.UPDATE,
@@ -1750,6 +1750,6 @@ async def review_endpoint_case(form: dict, user_info=Depends(Permission())):
             changed=["api_pending_update", "api_review_status", "api_review_user", "api_review_at"],
         )
         await session.commit()
-    return PityResponse.success({"case_id": case_id, "review_status": review_status})
+    return ArgusResponse.success({"case_id": case_id, "review_status": review_status})
 
 

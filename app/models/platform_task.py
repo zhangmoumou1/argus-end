@@ -1,11 +1,11 @@
 from sqlalchemy import BIGINT, Column, DateTime, Index, INT, String, Text
 from sqlalchemy.dialects.mysql import LONGTEXT
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityPlatformTask(PityBase):
-    __tablename__ = "pity_platform_task"
+class ArgusPlatformTask(ArgusBase):
+    __tablename__ = "argus_platform_task"
 
     task_type = Column(String(64), nullable=False, default="", comment="任务类型")
     biz_id = Column(BIGINT, nullable=False, default=0, comment="业务ID")
@@ -59,8 +59,8 @@ class PityPlatformTask(PityBase):
         self.payload = payload
 
 
-class PityPlatformAuditLog(PityBase):
-    __tablename__ = "pity_platform_audit_log"
+class ArgusPlatformAuditLog(ArgusBase):
+    __tablename__ = "argus_platform_audit_log"
 
     event_type = Column(String(64), nullable=False, default="", comment="事件类型")
     module = Column(String(64), nullable=False, default="", comment="模块")

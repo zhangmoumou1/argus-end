@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from fastapi import Depends
 
 from app.crud.statistics.dashboard import DashboardDao
-from app.handler.fatcory import PityResponse
+from app.handler.fatcory import ArgusResponse
 from app.routers import Permission
 from app.routers.workspace.workspace import router
 
@@ -94,7 +94,7 @@ async def query_statistics(
         else:
             start, end, period_key = _get_period_range(period)
         if start > end:
-            return PityResponse.failed("开始时间不能大于结束时间")
+            return ArgusResponse.failed("开始时间不能大于结束时间")
         data = await DashboardDao.get_case_dashboard(start, end)
         previous_start, previous_end = _get_previous_period_range(start, end)
         previous_data = await DashboardDao.get_case_dashboard(previous_start, previous_end)
@@ -107,6 +107,6 @@ async def query_statistics(
             data.get("overview", {}),
             previous_data.get("overview", {}),
         )
-        return PityResponse.success(data)
+        return ArgusResponse.success(data)
     except ValueError as exc:
-        return PityResponse.failed(str(exc))
+        return ArgusResponse.failed(str(exc))

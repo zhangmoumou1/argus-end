@@ -1,6 +1,6 @@
 from pydantic.v1 import validator, BaseModel
 
-from app.schema.base import PityModel
+from app.schema.base import ArgusModel
 
 
 class DatabaseForm(BaseModel):
@@ -16,5 +16,5 @@ class DatabaseForm(BaseModel):
 
     @validator("name", "host", "port", "username", "password", "database", "sql_type", "env")
     def data_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 

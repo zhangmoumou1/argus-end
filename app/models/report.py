@@ -6,8 +6,8 @@ from sqlalchemy.dialects.mysql import SMALLINT
 from app.models import Base
 
 
-class PityReport(Base):
-    __tablename__ = 'pity_report'
+class ArgusReport(Base):
+    __tablename__ = 'argus_report'
     id = Column(INT, primary_key=True)
     # 执行人 0则为CPU
     executor = Column(INT, index=True)

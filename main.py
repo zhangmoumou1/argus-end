@@ -1,6 +1,7 @@
 import asyncio
 import json
 from mimetypes import guess_type
+from pathlib import Path
 from os.path import isfile
 
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -10,13 +11,13 @@ from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from app import pity, init_logging
+from app import argus, init_logging
 from app.core.platform_worker import platform_task_worker
 from app.core.platform_mq import rabbit_connection
 from app.core.msg.wss_msg import WebSocketMessage
 from app.core.ws_connection_manager import ws_manage
 from app.crud import create_table
-from app.crud.notification.NotificationDao import PityNotificationDao
+from app.crud.notification.NotificationDao import ArgusNotificationDao
 from app.enums.MessageEnum import MessageStateEnum, MessageTypeEnum
 from app.middleware.RedisManager import RedisHelper
 from app.middleware.oss import OssClient, get_default_bucket_name
@@ -40,16 +41,18 @@ from app.routers.testcase.mock_config import router as mock_config_router
 from app.routers.ui_test import router as ui_test_router
 from app.routers.workspace import router as workspace_router
 from app.utils.scheduler import Scheduler
-from config import Config, PITY_ENV, BANNER
-from pity_proxy import start_proxy
+from config import Config, ARGUS_ENV, BANNER
+from argus_proxy import start_proxy
 
 logger = init_logging()
 
-logger.bind(name=None).opt(ansi=True).success(f"pity is running at <red>{PITY_ENV}</red>")
+logger.bind(name=None).opt(ansi=True).success(f"argus is running at <red>{ARGUS_ENV}</red>")
 logger.bind(name=None).success(BANNER)
 
 proxy_task = None
 platform_worker_task = None
+BASE_DIR = Path(__file__).resolve().parent
+STATICS_DIR = BASE_DIR / "statics"
 
 
 def _skip_request_logging(request: Request):
@@ -118,39 +121,40 @@ async def request_info(request: Request):
 
 
 # 注册路由
-pity.include_router(user.router)
-pity.include_router(project.router, dependencies=[Depends(request_info)])
-pity.include_router(http.router, dependencies=[Depends(request_info)])
-pity.include_router(testcase_router, dependencies=[Depends(request_info)])
-pity.include_router(functional_case_router, dependencies=[Depends(request_info)])
-pity.include_router(functional_case_skill_router, dependencies=[Depends(request_info)])
-pity.include_router(interface_manage_router, dependencies=[Depends(request_info)])
-pity.include_router(mock_config_router, dependencies=[Depends(request_info)])
-pity.include_router(config_router, dependencies=[Depends(request_info)])
-pity.include_router(online_router, dependencies=[Depends(request_info)])
-pity.include_router(oss_router, dependencies=[Depends(request_info)])
-pity.include_router(operation_router, dependencies=[Depends(request_info)])
-pity.include_router(platform_task_router, dependencies=[Depends(request_info)])
-pity.include_router(msg_router, dependencies=[Depends(request_info)])
-pity.include_router(workspace_router, dependencies=[Depends(request_info)])
-pity.include_router(performance_router, dependencies=[Depends(request_info)])
-pity.include_router(ui_test_router, dependencies=[Depends(request_info)])
-pity.include_router(share_router)
-pity.include_router(notification_admin_router, dependencies=[Depends(request_info)])
+argus.include_router(user.router)
+argus.include_router(project.router, dependencies=[Depends(request_info)])
+argus.include_router(http.router, dependencies=[Depends(request_info)])
+argus.include_router(testcase_router, dependencies=[Depends(request_info)])
+argus.include_router(functional_case_router, dependencies=[Depends(request_info)])
+argus.include_router(functional_case_skill_router, dependencies=[Depends(request_info)])
+argus.include_router(interface_manage_router, dependencies=[Depends(request_info)])
+argus.include_router(mock_config_router, dependencies=[Depends(request_info)])
+argus.include_router(config_router, dependencies=[Depends(request_info)])
+argus.include_router(online_router, dependencies=[Depends(request_info)])
+argus.include_router(oss_router, dependencies=[Depends(request_info)])
+argus.include_router(operation_router, dependencies=[Depends(request_info)])
+argus.include_router(platform_task_router, dependencies=[Depends(request_info)])
+argus.include_router(msg_router, dependencies=[Depends(request_info)])
+argus.include_router(workspace_router, dependencies=[Depends(request_info)])
+argus.include_router(performance_router, dependencies=[Depends(request_info)])
+argus.include_router(ui_test_router, dependencies=[Depends(request_info)])
+argus.include_router(share_router)
+argus.include_router(notification_admin_router, dependencies=[Depends(request_info)])
 
-pity.mount("/statics", StaticFiles(directory="statics"), name="statics")
+STATICS_DIR.mkdir(parents=True, exist_ok=True)
+argus.mount("/statics", StaticFiles(directory=str(STATICS_DIR)), name="statics")
 
-templates = Jinja2Templates(directory="statics")
+templates = Jinja2Templates(directory=str(STATICS_DIR))
 
 
-@pity.get("/")
+@argus.get("/")
 async def serve_spa(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
-@pity.get("/{filename}")
+@argus.get("/{filename}")
 async def get_site(filename):
-    filename = './statics/' + filename
+    filename = str(STATICS_DIR / filename)
 
     if not isfile(filename):
         return Response(status_code=404)
@@ -162,9 +166,9 @@ async def get_site(filename):
     return Response(content, media_type=content_type)
 
 
-@pity.get("/static/{filename}")
+@argus.get("/static/{filename}")
 async def get_site_static(filename):
-    filename = './statics/static/' + filename
+    filename = str(STATICS_DIR / "static" / filename)
 
     if not isfile(filename):
         return Response(status_code=404)
@@ -176,7 +180,7 @@ async def get_site_static(filename):
     return Response(content, media_type=content_type)
 
 
-@pity.on_event('startup')
+@argus.on_event('startup')
 async def init_redis():
     """
     初始化redis，失败则服务起不来
@@ -193,7 +197,7 @@ async def init_redis():
         raise e
 
 
-@pity.on_event('startup')
+@argus.on_event('startup')
 async def init_rabbitmq():
     if not Config.PLATFORM_TASK_WORKER_ENABLED:
         return
@@ -205,7 +209,7 @@ async def init_rabbitmq():
         logger.bind(name=None).warning(f"rabbitmq connect failed.        🚫 {e}")
 
 
-@pity.on_event('startup')
+@argus.on_event('startup')
 def init_scheduler():
     """
     初始化定时任务
@@ -222,7 +226,7 @@ def init_scheduler():
     logger.bind(name=None).success("scheduler started successfully.        ✔")
 
 
-@pity.on_event('startup')
+@argus.on_event('startup')
 async def init_database():
     """
     初始化数据库，建表
@@ -239,7 +243,7 @@ async def init_database():
         raise
 
 
-@pity.on_event('startup')
+@argus.on_event('startup')
 async def init_record_proxy():
     """
     启动录制代理，避免部署时需要额外手动运行 proxy.py
@@ -252,12 +256,12 @@ async def init_record_proxy():
     logger.bind(name=None).success(f"record proxy startup task created.        ✔ port={Config.PROXY_PORT}")
 
 
-@pity.on_event('shutdown')
+@argus.on_event('shutdown')
 def stop_test():
     pass
 
 
-@pity.on_event('startup')
+@argus.on_event('startup')
 async def ensure_oss_file_columns():
     """对象存储真实连通性检查"""
     try:
@@ -272,7 +276,7 @@ async def ensure_oss_file_columns():
         logger.bind(name=None).warning(f"object storage connect failed.        🚫 {e}")
 
 
-@pity.on_event('startup')
+@argus.on_event('startup')
 async def start_platform_task_worker():
     global platform_worker_task
     if not Config.PLATFORM_TASK_WORKER_ENABLED:
@@ -284,7 +288,7 @@ async def start_platform_task_worker():
     logger.bind(name=None).success("platform task worker startup task created.        ✔")
 
 
-@pity.on_event('shutdown')
+@argus.on_event('shutdown')
 async def stop_platform_task_worker():
     global platform_worker_task
     await platform_task_worker.stop()
@@ -297,7 +301,7 @@ async def stop_platform_task_worker():
         platform_worker_task = None
 
 
-@pity.websocket("/ws/{user_id}")
+@argus.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: int):
     async def send_heartbeat():
         while True:
@@ -316,7 +320,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
         }
 
         # 存储连接后获取消息
-        msg_records = await PityNotificationDao.list_messages(msg_type=MessageTypeEnum.all.value, receiver=user_id,
+        msg_records = await ArgusNotificationDao.list_messages(msg_type=MessageTypeEnum.all.value, receiver=user_id,
                                                               msg_status=MessageStateEnum.unread.value)
         # 如果有未读消息, 则推送给前端对应的count
         if len(msg_records) > 0:

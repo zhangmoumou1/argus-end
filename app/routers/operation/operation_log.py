@@ -4,9 +4,9 @@ from datetime import datetime
 from fastapi import APIRouter, Depends
 from sqlalchemy import desc
 
-from app.crud.operation.PityOperationDao import PityOperationDao
-from app.handler.fatcory import PityResponse
-from app.models.operation_log import PityOperationLog
+from app.crud.operation.ArgusOperationDao import ArgusOperationDao
+from app.handler.fatcory import ArgusResponse
+from app.models.operation_log import ArgusOperationLog
 from app.routers import Permission
 
 router = APIRouter(prefix="/operation")
@@ -36,17 +36,17 @@ async def list_user_operation(start_time: str, end_time: str, user_id: int = Non
         start = parse_datetime_value(start_time, end_of_day=False)
         end = parse_datetime_value(end_time, end_of_day=True)
         query_kwargs = dict(
-            condition=[PityOperationLog.operate_time.between(start, end)],
-            _sort=[desc(PityOperationLog.operate_time)],
+            condition=[ArgusOperationLog.operate_time.between(start, end)],
+            _sort=[desc(ArgusOperationLog.operate_time)],
         )
         if user_id is not None:
             query_kwargs["user_id"] = user_id
         if tag:
             query_kwargs["tag"] = tag
-        records = await PityOperationDao.select_list(**query_kwargs)
-        return PityResponse.records(records)
+        records = await ArgusOperationDao.select_list(**query_kwargs)
+        return ArgusResponse.records(records)
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)
 
 
 # 获取用户操作记录热力图以及参与的项目数量
@@ -55,7 +55,7 @@ async def list_user_activities(user_id: int, start_time: str, end_time: str, _=D
     try:
         start = datetime.strptime(start_time, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
         end = datetime.strptime(end_time, "%Y-%m-%d").replace(hour=23, minute=59, second=59, microsecond=0)
-        records = await PityOperationDao.count_user_activities(user_id, start, end)
+        records = await ArgusOperationDao.count_user_activities(user_id, start, end)
         ans = list()
         date_index = dict()
         for r in records:
@@ -67,6 +67,6 @@ async def list_user_activities(user_id: int, start_time: str, end_time: str, _=D
                 date_index[date_str] = len(ans) - 1
             else:
                 ans[date_index[date_str]]['count'] += 1
-        return PityResponse.success(ans)
+        return ArgusResponse.success(ans)
     except Exception as e:
-        return PityResponse.failed(e)
+        return ArgusResponse.failed(e)

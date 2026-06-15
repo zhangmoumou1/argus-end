@@ -8,89 +8,89 @@ from sqlalchemy import select, asc, or_, func, update
 from app.crud import Mapper
 from app.enums.OperationEnum import OperationType
 from app.models import async_session
-from app.schema.testcase_directory import PityTestcaseDirectoryForm, PityTestcaseDirectoryUpdateForm
-from app.models.testcase_directory import PityTestcaseDirectory
+from app.schema.testcase_directory import ArgusTestcaseDirectoryForm, ArgusTestcaseDirectoryUpdateForm
+from app.models.testcase_directory import ArgusTestcaseDirectory
 from app.utils.logger import Log
 
 
-class PityTestcaseDirectoryDao(Mapper):
-    log = Log("PityTestcaseDirectoryDao")
+class ArgusTestcaseDirectoryDao(Mapper):
+    log = Log("ArgusTestcaseDirectoryDao")
 
     @staticmethod
     async def query_directory(directory_id: int):
         try:
             async with async_session() as session:
-                sql = select(PityTestcaseDirectory).where(PityTestcaseDirectory.id == directory_id,
-                                                          PityTestcaseDirectory.deleted_at == 0)
+                sql = select(ArgusTestcaseDirectory).where(ArgusTestcaseDirectory.id == directory_id,
+                                                          ArgusTestcaseDirectory.deleted_at == 0)
                 result = await session.execute(sql)
                 return result.scalars().first()
         except Exception as e:
-            PityTestcaseDirectoryDao.log.error(f"获取目录详情失败: {str(e)}")
+            ArgusTestcaseDirectoryDao.log.error(f"获取目录详情失败: {str(e)}")
             raise Exception(f"获取目录详情失败: {str(e)}")
 
     @staticmethod
     async def list_directory(project_id: int):
         try:
             async with async_session() as session:
-                sql = select(PityTestcaseDirectory) \
-                    .where(PityTestcaseDirectory.deleted_at == 0,
-                           PityTestcaseDirectory.project_id == project_id) \
-                    .order_by(asc(PityTestcaseDirectory.sort_index), asc(PityTestcaseDirectory.name))
+                sql = select(ArgusTestcaseDirectory) \
+                    .where(ArgusTestcaseDirectory.deleted_at == 0,
+                           ArgusTestcaseDirectory.project_id == project_id) \
+                    .order_by(asc(ArgusTestcaseDirectory.sort_index), asc(ArgusTestcaseDirectory.name))
                 result = await session.execute(sql)
                 return result.scalars().all()
         except Exception as e:
-            PityTestcaseDirectoryDao.log.error(f"获取用例目录失败, error: {e}")
+            ArgusTestcaseDirectoryDao.log.error(f"获取用例目录失败, error: {e}")
             raise Exception(f"获取用例目录失败, error: {e}")
 
     @staticmethod
-    async def insert_directory(form: PityTestcaseDirectoryForm, user: int):
+    async def insert_directory(form: ArgusTestcaseDirectoryForm, user: int):
         try:
             async with async_session() as session:
                 async with session.begin():
-                    sql = select(PityTestcaseDirectory).where(PityTestcaseDirectory.deleted_at == 0,
-                                                              PityTestcaseDirectory.name == form.name,
-                                                              PityTestcaseDirectory.parent == form.parent,
-                                                              PityTestcaseDirectory.project_id == form.project_id)
+                    sql = select(ArgusTestcaseDirectory).where(ArgusTestcaseDirectory.deleted_at == 0,
+                                                              ArgusTestcaseDirectory.name == form.name,
+                                                              ArgusTestcaseDirectory.parent == form.parent,
+                                                              ArgusTestcaseDirectory.project_id == form.project_id)
                     result = await session.execute(sql)
                     if result.scalars().first() is not None:
                         raise Exception("目录已存在")
                     if form.sort_index is None:
-                        max_sql = select(func.max(PityTestcaseDirectory.sort_index)).where(
-                            PityTestcaseDirectory.deleted_at == 0,
-                            PityTestcaseDirectory.project_id == form.project_id,
-                            PityTestcaseDirectory.parent == form.parent,
+                        max_sql = select(func.max(ArgusTestcaseDirectory.sort_index)).where(
+                            ArgusTestcaseDirectory.deleted_at == 0,
+                            ArgusTestcaseDirectory.project_id == form.project_id,
+                            ArgusTestcaseDirectory.parent == form.parent,
                         )
                         max_res = await session.execute(max_sql)
                         form.sort_index = (max_res.scalar() or -1) + 1
                     else:
                         form.sort_index = max(0, int(form.sort_index))
                         await session.execute(
-                            update(PityTestcaseDirectory)
+                            update(ArgusTestcaseDirectory)
                             .where(
-                                PityTestcaseDirectory.deleted_at == 0,
-                                PityTestcaseDirectory.project_id == form.project_id,
-                                PityTestcaseDirectory.parent == form.parent,
-                                PityTestcaseDirectory.sort_index >= form.sort_index,
+                                ArgusTestcaseDirectory.deleted_at == 0,
+                                ArgusTestcaseDirectory.project_id == form.project_id,
+                                ArgusTestcaseDirectory.parent == form.parent,
+                                ArgusTestcaseDirectory.sort_index >= form.sort_index,
                             )
-                            .values(sort_index=PityTestcaseDirectory.sort_index + 1)
+                            .values(sort_index=ArgusTestcaseDirectory.sort_index + 1)
                         )
-                    model = PityTestcaseDirectory(form, user)
+                    model = ArgusTestcaseDirectory(form, user)
                     session.add(model)
                     await session.flush()
-                    await PityTestcaseDirectoryDao.insert_log(session, user, OperationType.INSERT, model, key=model.id)
+                    await ArgusTestcaseDirectoryDao.insert_log(session, user, OperationType.INSERT, model, key=model.id)
         except Exception as e:
-            PityTestcaseDirectoryDao.log.error(f"创建目录失败, error: {e}")
+            ArgusTestcaseDirectoryDao.log.error(f"创建目录失败, error: {e}")
             raise Exception(f"创建目录失败: {e}")
 
     @staticmethod
-    async def update_directory(form: PityTestcaseDirectoryUpdateForm, user: int):
+    async def update_directory(form: ArgusTestcaseDirectoryUpdateForm, user: int):
         try:
             async with async_session() as session:
                 async with session.begin():
-                    sql = select(PityTestcaseDirectory).where(
-                        PityTestcaseDirectory.id == form.id,
-                        PityTestcaseDirectory.deleted_at == 0,
-                        PityTestcaseDirectory.project_id == form.project_id,
+                    sql = select(ArgusTestcaseDirectory).where(
+                        ArgusTestcaseDirectory.id == form.id,
+                        ArgusTestcaseDirectory.deleted_at == 0,
+                        ArgusTestcaseDirectory.project_id == form.project_id,
                     )
                     result = await session.execute(sql)
                     current = result.scalars().first()
@@ -107,34 +107,34 @@ class PityTestcaseDirectoryDao(Mapper):
                         raise Exception("目录不能移动到自身下")
                     if target_parent is not None:
                         parent_map = defaultdict(list)
-                        all_sql = select(PityTestcaseDirectory.id, PityTestcaseDirectory.parent).where(
-                            PityTestcaseDirectory.deleted_at == 0,
-                            PityTestcaseDirectory.project_id == form.project_id,
+                        all_sql = select(ArgusTestcaseDirectory.id, ArgusTestcaseDirectory.parent).where(
+                            ArgusTestcaseDirectory.deleted_at == 0,
+                            ArgusTestcaseDirectory.project_id == form.project_id,
                         )
                         all_res = await session.execute(all_sql)
                         for did, p in all_res.all():
                             parent_map[p].append(did)
                         descendants = []
-                        PityTestcaseDirectoryDao.get_sub_son(parent_map, parent_map.get(current.id), descendants)
+                        ArgusTestcaseDirectoryDao.get_sub_son(parent_map, parent_map.get(current.id), descendants)
                         if target_parent in descendants:
                             raise Exception("目录不能移动到自己的子目录")
 
                     if form.name:
-                        dup_sql = select(PityTestcaseDirectory).where(
-                            PityTestcaseDirectory.deleted_at == 0,
-                            PityTestcaseDirectory.project_id == form.project_id,
-                            PityTestcaseDirectory.parent == target_parent,
-                            PityTestcaseDirectory.name == form.name,
-                            PityTestcaseDirectory.id != form.id,
+                        dup_sql = select(ArgusTestcaseDirectory).where(
+                            ArgusTestcaseDirectory.deleted_at == 0,
+                            ArgusTestcaseDirectory.project_id == form.project_id,
+                            ArgusTestcaseDirectory.parent == target_parent,
+                            ArgusTestcaseDirectory.name == form.name,
+                            ArgusTestcaseDirectory.id != form.id,
                         )
                         dup_res = await session.execute(dup_sql)
                         if dup_res.scalars().first() is not None:
                             raise Exception("同级目录下名称已存在")
 
-                    max_sql = select(func.max(PityTestcaseDirectory.sort_index)).where(
-                        PityTestcaseDirectory.deleted_at == 0,
-                        PityTestcaseDirectory.project_id == form.project_id,
-                        PityTestcaseDirectory.parent == target_parent,
+                    max_sql = select(func.max(ArgusTestcaseDirectory.sort_index)).where(
+                        ArgusTestcaseDirectory.deleted_at == 0,
+                        ArgusTestcaseDirectory.project_id == form.project_id,
+                        ArgusTestcaseDirectory.parent == target_parent,
                     )
                     max_res = await session.execute(max_sql)
                     max_index = max_res.scalar()
@@ -150,50 +150,50 @@ class PityTestcaseDirectoryDao(Mapper):
                     if target_parent == old_parent:
                         if new_index > old_index:
                             await session.execute(
-                                update(PityTestcaseDirectory)
+                                update(ArgusTestcaseDirectory)
                                 .where(
-                                    PityTestcaseDirectory.deleted_at == 0,
-                                    PityTestcaseDirectory.project_id == form.project_id,
-                                    PityTestcaseDirectory.parent == old_parent,
-                                    PityTestcaseDirectory.id != current.id,
-                                    PityTestcaseDirectory.sort_index > old_index,
-                                    PityTestcaseDirectory.sort_index <= new_index,
+                                    ArgusTestcaseDirectory.deleted_at == 0,
+                                    ArgusTestcaseDirectory.project_id == form.project_id,
+                                    ArgusTestcaseDirectory.parent == old_parent,
+                                    ArgusTestcaseDirectory.id != current.id,
+                                    ArgusTestcaseDirectory.sort_index > old_index,
+                                    ArgusTestcaseDirectory.sort_index <= new_index,
                                 )
-                                .values(sort_index=PityTestcaseDirectory.sort_index - 1)
+                                .values(sort_index=ArgusTestcaseDirectory.sort_index - 1)
                             )
                         elif new_index < old_index:
                             await session.execute(
-                                update(PityTestcaseDirectory)
+                                update(ArgusTestcaseDirectory)
                                 .where(
-                                    PityTestcaseDirectory.deleted_at == 0,
-                                    PityTestcaseDirectory.project_id == form.project_id,
-                                    PityTestcaseDirectory.parent == old_parent,
-                                    PityTestcaseDirectory.id != current.id,
-                                    PityTestcaseDirectory.sort_index >= new_index,
-                                    PityTestcaseDirectory.sort_index < old_index,
+                                    ArgusTestcaseDirectory.deleted_at == 0,
+                                    ArgusTestcaseDirectory.project_id == form.project_id,
+                                    ArgusTestcaseDirectory.parent == old_parent,
+                                    ArgusTestcaseDirectory.id != current.id,
+                                    ArgusTestcaseDirectory.sort_index >= new_index,
+                                    ArgusTestcaseDirectory.sort_index < old_index,
                                 )
-                                .values(sort_index=PityTestcaseDirectory.sort_index + 1)
+                                .values(sort_index=ArgusTestcaseDirectory.sort_index + 1)
                             )
                     else:
                         await session.execute(
-                            update(PityTestcaseDirectory)
+                            update(ArgusTestcaseDirectory)
                             .where(
-                                PityTestcaseDirectory.deleted_at == 0,
-                                PityTestcaseDirectory.project_id == form.project_id,
-                                PityTestcaseDirectory.parent == old_parent,
-                                PityTestcaseDirectory.sort_index > old_index,
+                                ArgusTestcaseDirectory.deleted_at == 0,
+                                ArgusTestcaseDirectory.project_id == form.project_id,
+                                ArgusTestcaseDirectory.parent == old_parent,
+                                ArgusTestcaseDirectory.sort_index > old_index,
                             )
-                            .values(sort_index=PityTestcaseDirectory.sort_index - 1)
+                            .values(sort_index=ArgusTestcaseDirectory.sort_index - 1)
                         )
                         await session.execute(
-                            update(PityTestcaseDirectory)
+                            update(ArgusTestcaseDirectory)
                             .where(
-                                PityTestcaseDirectory.deleted_at == 0,
-                                PityTestcaseDirectory.project_id == form.project_id,
-                                PityTestcaseDirectory.parent == target_parent,
-                                PityTestcaseDirectory.sort_index >= new_index,
+                                ArgusTestcaseDirectory.deleted_at == 0,
+                                ArgusTestcaseDirectory.project_id == form.project_id,
+                                ArgusTestcaseDirectory.parent == target_parent,
+                                ArgusTestcaseDirectory.sort_index >= new_index,
                             )
-                            .values(sort_index=PityTestcaseDirectory.sort_index + 1)
+                            .values(sort_index=ArgusTestcaseDirectory.sort_index + 1)
                         )
 
                     if form.name:
@@ -203,7 +203,7 @@ class PityTestcaseDirectoryDao(Mapper):
                     current.update_user = user
                     current.updated_at = datetime.now()
                     await session.flush()
-                    await PityTestcaseDirectoryDao.insert_log(
+                    await ArgusTestcaseDirectoryDao.insert_log(
                         session,
                         user,
                         OperationType.UPDATE,
@@ -213,7 +213,7 @@ class PityTestcaseDirectoryDao(Mapper):
                         changed=["name", "parent", "sort_index"],
                     )
         except Exception as e:
-            PityTestcaseDirectoryDao.log.error(f"更新目录失败, error: {e}")
+            ArgusTestcaseDirectoryDao.log.error(f"更新目录失败, error: {e}")
             raise Exception(f"更新目录失败: {e}")
 
     @staticmethod
@@ -221,8 +221,8 @@ class PityTestcaseDirectoryDao(Mapper):
         try:
             async with async_session() as session:
                 async with session.begin():
-                    sql = select(PityTestcaseDirectory).where(PityTestcaseDirectory.id == id,
-                                                              PityTestcaseDirectory.deleted_at == 0)
+                    sql = select(ArgusTestcaseDirectory).where(ArgusTestcaseDirectory.id == id,
+                                                              ArgusTestcaseDirectory.deleted_at == 0)
                     result = await session.execute(sql)
                     query = result.scalars().first()
                     if query is None:
@@ -230,14 +230,14 @@ class PityTestcaseDirectoryDao(Mapper):
                     query.deleted_at = int(time.time() * 1000)
                     query.update_user = user
                     await session.flush()
-                    await PityTestcaseDirectoryDao.insert_log(session, user, OperationType.DELETE, query, key=id)
+                    await ArgusTestcaseDirectoryDao.insert_log(session, user, OperationType.DELETE, query, key=id)
         except Exception as e:
-            PityTestcaseDirectoryDao.log.error(f"删除目录失败, error: {e}")
+            ArgusTestcaseDirectoryDao.log.error(f"删除目录失败, error: {e}")
             raise Exception(f"删除目录失败: {e}")
 
     @staticmethod
     async def get_directory_tree(project_id: int, case_node=None, move: bool = False) -> (list, dict):
-        res = await PityTestcaseDirectoryDao.list_directory(project_id)
+        res = await ArgusTestcaseDirectoryDao.list_directory(project_id)
         ans = list()
         ans_map = dict()
         case_map = dict()
@@ -256,7 +256,7 @@ class PityTestcaseDirectoryDao(Mapper):
                 parent_map[directory.parent].append(directory.id)
             ans_map[directory.id] = directory
         for r in ans:
-            await PityTestcaseDirectoryDao.get_directory(ans_map, parent_map, r.get('key'), r.get('children'), case_map,
+            await ArgusTestcaseDirectoryDao.get_directory(ans_map, parent_map, r.get('key'), r.get('children'), case_map,
                                                          case_node, move)
             if not move and not r.get('children'):
                 r['disabled'] = True
@@ -287,7 +287,7 @@ class PityTestcaseDirectoryDao(Mapper):
                 sort_index=temp.sort_index,
                 disabled=len(child) == 0 and not move
             ))
-            await PityTestcaseDirectoryDao.get_directory(ans_map, parent_map, temp.id, child, case_map, case_node,
+            await ArgusTestcaseDirectoryDao.get_directory(ans_map, parent_map, temp.id, child, case_map, case_node,
                                                          move=move)
 
     @staticmethod
@@ -295,16 +295,16 @@ class PityTestcaseDirectoryDao(Mapper):
         parent_map = defaultdict(list)
         async with async_session() as session:
             ans = [directory_id]
-            sql = select(PityTestcaseDirectory) \
-                .where(PityTestcaseDirectory.deleted_at == 0,
-                       or_(PityTestcaseDirectory.parent == directory_id, PityTestcaseDirectory.parent != None)) \
-                .order_by(asc(PityTestcaseDirectory.sort_index), asc(PityTestcaseDirectory.name))
+            sql = select(ArgusTestcaseDirectory) \
+                .where(ArgusTestcaseDirectory.deleted_at == 0,
+                       or_(ArgusTestcaseDirectory.parent == directory_id, ArgusTestcaseDirectory.parent != None)) \
+                .order_by(asc(ArgusTestcaseDirectory.sort_index), asc(ArgusTestcaseDirectory.name))
             result = await session.execute(sql)
             data = result.scalars().all()
             for d in data:
                 parent_map[d.parent].append(d.id)
             son = parent_map.get(directory_id)
-            PityTestcaseDirectoryDao.get_sub_son(parent_map, son, ans)
+            ArgusTestcaseDirectoryDao.get_sub_son(parent_map, son, ans)
             return ans
 
     @staticmethod
@@ -316,4 +316,4 @@ class PityTestcaseDirectoryDao(Mapper):
             sons = parent_map.get(s)
             if not sons:
                 continue
-            PityTestcaseDirectoryDao.get_sub_son(parent_map, sons, result)
+            ArgusTestcaseDirectoryDao.get_sub_son(parent_map, sons, result)

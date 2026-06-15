@@ -1,11 +1,11 @@
 from sqlalchemy import INT, Column, String, TEXT, BOOLEAN, UniqueConstraint
 
 from app.enums.GconfigEnum import GConfigVariableType
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class GConfig(PityBase):
-    __tablename__ = 'pity_gconfig'
+class GConfig(ArgusBase):
+    __tablename__ = 'argus_gconfig'
     env = Column(INT)
     key = Column(String(64))
     value = Column(TEXT)

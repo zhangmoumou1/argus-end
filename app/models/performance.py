@@ -1,11 +1,11 @@
 from sqlalchemy import BOOLEAN, Column, INT, TEXT, String
 from sqlalchemy.dialects.mysql import SMALLINT
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityPerformancePlan(PityBase):
-    __tablename__ = "pity_performance_plan"
+class ArgusPerformancePlan(ArgusBase):
+    __tablename__ = "argus_performance_plan"
 
     project_id = Column(INT, nullable=False, index=True)
     env = Column(INT, nullable=False, index=True)
@@ -68,8 +68,8 @@ class PityPerformancePlan(PityBase):
             setattr(self, key, value)
 
 
-class PityPerformanceReport(PityBase):
-    __tablename__ = "pity_performance_report"
+class ArgusPerformanceReport(ArgusBase):
+    __tablename__ = "argus_performance_report"
 
     plan_id = Column(INT, nullable=False, index=True)
     executor = Column(INT, nullable=False, index=True)
@@ -123,8 +123,8 @@ class PityPerformanceReport(PityBase):
             setattr(self, key, value)
 
 
-class PityPerformanceParameterFile(PityBase):
-    __tablename__ = "pity_performance_parameter_file"
+class ArgusPerformanceParameterFile(ArgusBase):
+    __tablename__ = "argus_performance_parameter_file"
 
     project_id = Column(INT, nullable=False, index=True)
     name = Column(String(128), nullable=False)
@@ -152,8 +152,8 @@ class PityPerformanceParameterFile(PityBase):
             setattr(self, key, value)
 
 
-class PityPerformanceRunLog(PityBase):
-    __tablename__ = "pity_performance_run_log"
+class ArgusPerformanceRunLog(ArgusBase):
+    __tablename__ = "argus_performance_run_log"
 
     run_id = Column(INT, nullable=False, index=True)
     level = Column(String(16), nullable=False, default="INFO")

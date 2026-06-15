@@ -1,10 +1,10 @@
 from sqlalchemy import Column, String, Text
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityKnowledgeBase(PityBase):
-    __tablename__ = "pity_knowledge_base"
+class ArgusKnowledgeBase(ArgusBase):
+    __tablename__ = "argus_knowledge_base"
 
     title = Column(String(128), nullable=False, comment="文档标题")
     summary = Column(String(512), nullable=True, comment="文档摘要")

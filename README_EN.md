@@ -1,4 +1,4 @@
-[中文文档](https://github.com/wuranxu/pity/blob/main/README.md)
+[中文文档](https://github.com/wuranxu/argus/blob/main/README.md)
 
 ![png](https://img.shields.io/badge/Python-3.5+-green)
 ![png](https://img.shields.io/badge/React-17+-blue)
@@ -11,8 +11,8 @@
 1. clone code
 
 ```bash
-$ git clone https://github.com/wuranxu/pity
-$ cd pity
+$ git clone https://github.com/wuranxu/argus
+$ cd argus
 ```
 
 2. install dependencies
@@ -33,7 +33,7 @@ $ pip install -r requirements.txt
 6. start server
 
 ```bash
-$ python pity.py
+$ python argus.py
 ```
 
 7. registry
@@ -42,23 +42,23 @@ $ python pity.py
 
   First people will be `ADMIN`
 
-![](https://static.pity.fun/picture/2022-1-2/1641092636428-image.png)
+![](https://static.argus.fun/picture/2022-1-2/1641092636428-image.png)
 
-  Sign in and enjoy `pity`！
+  Sign in and enjoy `argus`！
 
 ## 🖕 Overview 
 
-[Documents 🍚](http://pity.readthedocs.org/)
+[Documents 🍚](http://argus.readthedocs.org/)
 
-[Demo 🍍](https://pity.fun/)
+[Demo 🍍](https://argus.fun/)
 
-### 😢 About pity 
+### 😢 About argus 
 
-pity is an auto test tool based on `Python`+`FastApi`+`React` for api test. It's not an absolute production right now.
+argus is an auto test tool based on `Python`+`FastApi`+`React` for api test. It's not an absolute production right now.
 
 ### ❤️ Heart 
 
-I hope pity can help someone still uses robotframework or writes script for apitest.pity can help you a lot.
+I hope argus can help someone still uses robotframework or writes script for apitest.argus can help you a lot.
 
 ### 😊 Features
 
@@ -82,7 +82,7 @@ I hope pity can help someone still uses robotframework or writes script for apit
 
 - [ ] 🐘 Micro Services
 - [ ] 🐄 DataFactory for developing data
-- [ ] 🐸 support har/jmx to pity case
+- [ ] 🐸 support har/jmx to argus case
 - [ ] 👍 CI/CD，like pipeline, provide openapi
 - [ ] 🌼 notification
 - [ ] 🌛 support dubbo/grpc
@@ -95,4 +95,4 @@ I hope pity can help someone still uses robotframework or writes script for apit
 
   you can ask anything in my wechat group.
 
-![](https://static.pity.fun/picture/2022-1-2/1641097484952-ddff5bf23bdccaaf23fa227aa2e9957.jpg)
+![](https://static.argus.fun/picture/2022-1-2/1641097484952-ddff5bf23bdccaaf23fa227aa2e9957.jpg)

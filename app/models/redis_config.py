@@ -1,10 +1,10 @@
 from sqlalchemy import Column, INT, String, Boolean, UniqueConstraint
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityRedis(PityBase):
-    __tablename__ = "pity_redis_info"
+class ArgusRedis(ArgusBase):
+    __tablename__ = "argus_redis_info"
     __table_args__ = (
         UniqueConstraint('env', 'name', 'deleted_at'),
     )

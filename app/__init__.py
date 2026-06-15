@@ -22,9 +22,9 @@ sys.path.append(__file__)
 
 # from starlette_context import middleware, plugins
 
-pity = FastAPI()
+argus = FastAPI()
 
-# pity.add_middleware(
+# argus.add_middleware(
 #     middleware.ContextMiddleware,
 #     plugins=(
 #         plugins.ForwardedForPlugin(),
@@ -56,7 +56,7 @@ async def get_body(request: Request) -> bytes:
     return body
 
 
-@pity.middleware("http")
+@argus.middleware("http")
 async def errors_handling(request: Request, call_next):
     # body = await request.body()
     try:
@@ -87,7 +87,7 @@ def error_map(error_type: str, field: str, msg: str = None):
         return msg if msg else f"参数: {field} 值不合法"
     return msg if msg else f"参数错误: {field}"
 
-@pity.exception_handler(RequestValidationError)
+@argus.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
         status_code=status.HTTP_200_OK,
@@ -99,7 +99,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
-@pity.exception_handler(PermissionException)
+@argus.exception_handler(PermissionException)
 async def unexpected_exception_error(request: Request, exc: PermissionException):
     return JSONResponse(
         status_code=status.HTTP_200_OK,
@@ -110,7 +110,7 @@ async def unexpected_exception_error(request: Request, exc: PermissionException)
     )
 
 
-@pity.exception_handler(AuthException)
+@argus.exception_handler(AuthException)
 async def unexpected_exception_error(request: Request, exc: AuthException):
     return JSONResponse(
         status_code=status.HTTP_200_OK,
@@ -129,12 +129,12 @@ async def global_execution_handler(request: Request, exc: Exception):
 
 
 # add global error
-pity.add_middleware(
+argus.add_middleware(
     ServerErrorMiddleware,
     handler=global_execution_handler,
 )
 # add cors
-pity.add_middleware(
+argus.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
@@ -215,21 +215,21 @@ def init_logging():
     logging.getLogger("uvicorn").handlers = [intercept_handler]
     # set logs output, level and format
     # logger.add(sys.stdout, level=logging.DEBUG, format=format_record, filter=make_filter('stdout'))
-    # 为pity添加一个info log文件，主要记录debug和info级别的日志
-    pity_info = os.path.join(Config.LOG_DIR, f"{Config.PITY_INFO}.log")
-    # 为pity添加一个error log文件，主要记录warning和error级别的日志
-    pity_error = os.path.join(Config.LOG_DIR, f"{Config.PITY_ERROR}.log")
-    logger.add(pity_info, enqueue=True, rotation="20 MB", level="DEBUG", filter=make_filter(Config.PITY_INFO))
+    # 为argus添加一个info log文件，主要记录debug和info级别的日志
+    argus_info = os.path.join(Config.LOG_DIR, f"{Config.ARGUS_INFO}.log")
+    # 为argus添加一个error log文件，主要记录warning和error级别的日志
+    argus_error = os.path.join(Config.LOG_DIR, f"{Config.ARGUS_ERROR}.log")
+    logger.add(argus_info, enqueue=True, rotation="20 MB", level="DEBUG", filter=make_filter(Config.ARGUS_INFO))
 
-    logger.add(pity_error, enqueue=True, rotation="10 MB", level="WARNING", filter=make_filter(Config.PITY_ERROR))
+    logger.add(argus_error, enqueue=True, rotation="10 MB", level="WARNING", filter=make_filter(Config.ARGUS_ERROR))
 
     # 配置loguru的日志句柄，sink代表输出的目标
     logger.configure(
         handlers=[
             {"sink": sys.stdout, "level": logging.DEBUG, "format": format_record},
-            {"sink": pity_info, "level": logging.INFO, "format": INFO_FORMAT, "filter": make_filter(Config.PITY_INFO)},
-            {"sink": pity_error, "level": logging.WARNING, "format": ERROR_FORMAT,
-             "filter": make_filter(Config.PITY_ERROR)}
+            {"sink": argus_info, "level": logging.INFO, "format": INFO_FORMAT, "filter": make_filter(Config.ARGUS_INFO)},
+            {"sink": argus_error, "level": logging.WARNING, "format": ERROR_FORMAT,
+             "filter": make_filter(Config.ARGUS_ERROR)}
         ]
     )
     return logger

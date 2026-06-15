@@ -8,8 +8,9 @@ EXPIRED_HOUR = 72
 
 
 class UserToken(object):
-    key = 'pityToken'
-    salt = 'pity'
+    key = 'argusToken'
+    salt = 'argus'
+    legacy_salts = ('argus', 'pity')
 
     @staticmethod
     def get_token(data):
@@ -32,3 +33,15 @@ class UserToken(object):
         bt = f"{password}{UserToken.salt}".encode("utf-8")
         m.update(bt)
         return m.hexdigest()
+
+    @staticmethod
+    def build_password_candidates(password):
+        candidates = []
+        for salt in UserToken.legacy_salts:
+            m = hashlib.md5()
+            bt = f"{password}{salt}".encode("utf-8")
+            m.update(bt)
+            hashed = m.hexdigest()
+            if hashed not in candidates:
+                candidates.append(hashed)
+        return candidates

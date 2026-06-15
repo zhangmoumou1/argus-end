@@ -2,10 +2,10 @@ from typing import Optional
 
 from pydantic import BaseModel, field_validator
 
-from app.schema.base import PityModel
+from app.schema.base import ArgusModel
 
 
-class PityTestCaseOutParametersForm(BaseModel):
+class ArgusTestCaseOutParametersForm(BaseModel):
     id: int = None
     # case_id = None
     name: str
@@ -16,13 +16,13 @@ class PityTestCaseOutParametersForm(BaseModel):
     @field_validator("name", "source")
     @classmethod
     def name_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
-class PityTestCaseParametersDto(PityTestCaseOutParametersForm):
+class ArgusTestCaseParametersDto(ArgusTestCaseOutParametersForm):
     case_id: int = None
 
 
-class PityTestCaseVariablesDto(BaseModel):
+class ArgusTestCaseVariablesDto(BaseModel):
     case_id: int
     step_name: str

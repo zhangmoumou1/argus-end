@@ -1,6 +1,6 @@
 from pydantic.v1 import validator, BaseModel
 
-from app.schema.base import PityModel
+from app.schema.base import ArgusModel
 
 
 class RedisConfigForm(BaseModel):
@@ -15,5 +15,5 @@ class RedisConfigForm(BaseModel):
 
     @validator("name", "addr", "cluster", "db", "env")
     def data_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 

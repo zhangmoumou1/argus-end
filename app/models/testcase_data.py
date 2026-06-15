@@ -5,10 +5,10 @@ __author__ = "miluo"
 
 from sqlalchemy import Column, INT, String, UniqueConstraint, TEXT
 
-from app.models.basic import PityBase
+from app.models.basic import ArgusBase
 
 
-class PityTestcaseData(PityBase):
+class ArgusTestcaseData(ArgusBase):
     env = Column(INT, nullable=False)
     case_id = Column(INT, nullable=False)
     name = Column(String(32), nullable=False)
@@ -18,7 +18,7 @@ class PityTestcaseData(PityBase):
         UniqueConstraint('env', 'case_id', 'name', 'deleted_at'),
     )
 
-    __tablename__ = "pity_testcase_data"
+    __tablename__ = "argus_testcase_data"
 
     __fields__ = [name]
     __tag__ = "测试数据"

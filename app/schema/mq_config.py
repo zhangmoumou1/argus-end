@@ -1,6 +1,6 @@
 from pydantic.v1 import BaseModel, validator
 
-from app.schema.base import PityModel
+from app.schema.base import ArgusModel
 
 
 class MQConfigForm(BaseModel):
@@ -18,7 +18,7 @@ class MQConfigForm(BaseModel):
 
     @validator("env", "name", "mq_type", "host", "port")
     def data_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
 class MQPublishForm(BaseModel):
@@ -30,7 +30,7 @@ class MQPublishForm(BaseModel):
 
     @validator("id", "destination")
     def required_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
 class MQConsumeForm(BaseModel):
@@ -43,7 +43,7 @@ class MQConsumeForm(BaseModel):
 
     @validator("id", "destination")
     def required_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
 class MQConsumerStatsForm(BaseModel):
@@ -53,7 +53,7 @@ class MQConsumerStatsForm(BaseModel):
 
     @validator("id", "destination")
     def required_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
 class RabbitQueueListForm(BaseModel):
@@ -61,7 +61,7 @@ class RabbitQueueListForm(BaseModel):
 
     @validator("id")
     def required_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
 class KafkaTopicListForm(BaseModel):
@@ -69,7 +69,7 @@ class KafkaTopicListForm(BaseModel):
 
     @validator("id")
     def required_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
 class KafkaTopicMessagesForm(BaseModel):
@@ -81,7 +81,7 @@ class KafkaTopicMessagesForm(BaseModel):
 
     @validator("id", "topic")
     def required_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
 class KafkaConsumerGroupListForm(BaseModel):
@@ -89,7 +89,7 @@ class KafkaConsumerGroupListForm(BaseModel):
 
     @validator("id")
     def required_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
 class KafkaConsumerGroupDetailForm(BaseModel):
@@ -98,7 +98,7 @@ class KafkaConsumerGroupDetailForm(BaseModel):
 
     @validator("id", "group_id")
     def required_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
 class RabbitGetMessagesForm(BaseModel):
@@ -111,7 +111,7 @@ class RabbitGetMessagesForm(BaseModel):
 
     @validator("id", "queue")
     def required_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)
 
 
 class RabbitQueueOperateForm(BaseModel):
@@ -120,4 +120,4 @@ class RabbitQueueOperateForm(BaseModel):
 
     @validator("id", "queue")
     def required_not_empty(cls, v):
-        return PityModel.not_empty(v)
+        return ArgusModel.not_empty(v)

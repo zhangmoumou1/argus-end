@@ -1,7 +1,7 @@
 import urllib.parse
 
-from pity_proxy.mock import PityMock
-from pity_proxy.record import PityRecorder
+from argus_proxy.mock import ArgusMock
+from argus_proxy.record import ArgusRecorder
 from config import Config
 
 
@@ -23,11 +23,11 @@ async def start_proxy(log):
         return
 
     addons = [
-        PityRecorder()
+        ArgusRecorder()
     ]
     try:
         if Config.MOCK_ON:
-            addons.append(PityMock())
+            addons.append(ArgusMock())
         opts = options.Options(listen_host='0.0.0.0', listen_port=Config.PROXY_PORT)
         m = DumpMaster(opts, False, False)
         block_addon = m.addons.get("block")

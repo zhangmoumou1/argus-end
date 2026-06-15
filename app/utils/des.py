@@ -3,7 +3,7 @@ import binascii
 from pyDes import des, CBC, PAD_PKCS5
 
 # 秘钥
-KEY = 'pityspwd'
+KEY = 'argusspwd'
 
 
 class Des(object):

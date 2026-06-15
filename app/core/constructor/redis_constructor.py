@@ -1,7 +1,7 @@
 import json
 
 from app.core.constructor.constructor import ConstructorAbstract
-from app.crud.config.RedisConfigDao import PityRedisConfigDao
+from app.crud.config.RedisConfigDao import ArgusRedisConfigDao
 from app.models.constructor import Constructor
 
 
@@ -15,7 +15,7 @@ class RedisConstructor(ConstructorAbstract):
             redis = data.get("redis")
             command = data.get("command")
             executor.append(f"当前{ConstructorAbstract.get_name(constructor)}类型为redis, 名称: {redis}\n命令: {command}\n")
-            command_result = await PityRedisConfigDao.execute_command(command=command, name=redis, env=env)
+            command_result = await ArgusRedisConfigDao.execute_command(command=command, name=redis, env=env)
             executor.append(
                 f"当前{ConstructorAbstract.get_name(constructor)}返回变量: {constructor.value}\n返回值:\n {command_result}\n")
             return command_result

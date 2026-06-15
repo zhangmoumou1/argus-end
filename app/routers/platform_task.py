@@ -7,15 +7,15 @@ from app.core.platform_audit import PlatformAuditService
 from app.core.platform_mq import publish_platform_task
 from app.core.platform_task import PlatformTaskService, decode_payload
 from app.enums.platform_task import PlatformTaskStatus, TASK_TERMINAL_STATUSES
-from app.handler.fatcory import PityResponse
-from app.models.platform_task import PityPlatformTask
+from app.handler.fatcory import ArgusResponse
+from app.models.platform_task import ArgusPlatformTask
 from app.routers import Permission, get_session
 
 router = APIRouter(prefix="/platform/task")
 
 
-def serialize_platform_task(task: PityPlatformTask, include_payload=False):
-    data = PityResponse.model_to_dict(task)
+def serialize_platform_task(task: ArgusPlatformTask, include_payload=False):
+    data = ArgusResponse.model_to_dict(task)
     if include_payload:
         data["payload"] = decode_payload(task.payload)
     else:
@@ -26,15 +26,15 @@ def serialize_platform_task(task: PityPlatformTask, include_payload=False):
 @router.get("/detail")
 async def get_platform_task_detail(id: int, include_payload: bool = False, session=Depends(get_session), _=Depends(Permission())):
     result = await session.execute(
-        select(PityPlatformTask).where(
-            PityPlatformTask.id == int(id or 0),
-            PityPlatformTask.deleted_at == 0,
+        select(ArgusPlatformTask).where(
+            ArgusPlatformTask.id == int(id or 0),
+            ArgusPlatformTask.deleted_at == 0,
         )
     )
     task = result.scalars().first()
     if task is None:
-        return PityResponse.failed("任务不存在")
-    return PityResponse.success(serialize_platform_task(task, include_payload=include_payload))
+        return ArgusResponse.failed("任务不存在")
+    return ArgusResponse.success(serialize_platform_task(task, include_payload=include_payload))
 
 
 @router.get("/list")
@@ -52,20 +52,20 @@ async def list_platform_tasks(
     page = max(int(page or 1), 1)
     size = min(max(int(size or 20), 1), 200)
     offset = (page - 1) * size
-    filters = [PityPlatformTask.deleted_at == 0]
+    filters = [ArgusPlatformTask.deleted_at == 0]
     if task_type:
-        filters.append(PityPlatformTask.task_type == task_type)
+        filters.append(ArgusPlatformTask.task_type == task_type)
     if status:
-        filters.append(PityPlatformTask.status == status)
+        filters.append(ArgusPlatformTask.status == status)
     if int(project_id or 0) > 0:
-        filters.append(PityPlatformTask.project_id == int(project_id))
+        filters.append(ArgusPlatformTask.project_id == int(project_id))
     if biz_type:
-        filters.append(PityPlatformTask.biz_type == biz_type)
+        filters.append(ArgusPlatformTask.biz_type == biz_type)
     if int(biz_id or 0) > 0:
-        filters.append(PityPlatformTask.biz_id == int(biz_id))
+        filters.append(ArgusPlatformTask.biz_id == int(biz_id))
     total_row = await session.execute(
         text(
-            "SELECT COUNT(1) AS total FROM pity_platform_task WHERE deleted_at=0 "
+            "SELECT COUNT(1) AS total FROM argus_platform_task WHERE deleted_at=0 "
             + ("AND task_type=:task_type " if task_type else "")
             + ("AND status=:status " if status else "")
             + ("AND project_id=:project_id " if int(project_id or 0) > 0 else "")
@@ -82,13 +82,13 @@ async def list_platform_tasks(
     )
     total = int((total_row.mappings().first() or {}).get("total") or 0)
     rows = await session.execute(
-        select(PityPlatformTask)
+        select(ArgusPlatformTask)
         .where(*filters)
-        .order_by(desc(PityPlatformTask.id))
+        .order_by(desc(ArgusPlatformTask.id))
         .limit(size)
         .offset(offset)
     )
-    return PityResponse.page(
+    return ArgusResponse.page(
         [serialize_platform_task(item) for item in rows.scalars().all()],
         total=total,
         page=page,
@@ -99,16 +99,16 @@ async def list_platform_tasks(
 @router.post("/cancel")
 async def cancel_platform_task(id: int, session=Depends(get_session), user_info=Depends(Permission())):
     result = await session.execute(
-        select(PityPlatformTask).where(
-            PityPlatformTask.id == int(id or 0),
-            PityPlatformTask.deleted_at == 0,
+        select(ArgusPlatformTask).where(
+            ArgusPlatformTask.id == int(id or 0),
+            ArgusPlatformTask.deleted_at == 0,
         )
     )
     task = result.scalars().first()
     if task is None:
-        return PityResponse.failed("任务不存在")
+        return ArgusResponse.failed("任务不存在")
     if str(task.status or "") in TASK_TERMINAL_STATUSES:
-        return PityResponse.success(serialize_platform_task(task))
+        return ArgusResponse.success(serialize_platform_task(task))
     task.status = PlatformTaskStatus.CANCELLING.value
     task.stage = "cancelling"
     task.stage_text = "任务正在取消"
@@ -122,24 +122,24 @@ async def cancel_platform_task(id: int, session=Depends(get_session), user_info=
         summary="平台任务被手动取消",
         detail={"task_id": int(task.id or 0), "status": str(task.status or "")},
     )
-    return PityResponse.success(serialize_platform_task(task))
+    return ArgusResponse.success(serialize_platform_task(task))
 
 
 @router.post("/retry")
 async def retry_platform_task(id: int, session=Depends(get_session), user_info=Depends(Permission())):
     result = await session.execute(
-        select(PityPlatformTask).where(
-            PityPlatformTask.id == int(id or 0),
-            PityPlatformTask.deleted_at == 0,
+        select(ArgusPlatformTask).where(
+            ArgusPlatformTask.id == int(id or 0),
+            ArgusPlatformTask.deleted_at == 0,
         )
     )
     task = result.scalars().first()
     if task is None:
-        return PityResponse.failed("任务不存在")
+        return ArgusResponse.failed("任务不存在")
     if str(task.status or "") not in TASK_TERMINAL_STATUSES:
-        return PityResponse.failed("仅已结束任务允许重试")
+        return ArgusResponse.failed("仅已结束任务允许重试")
     if not str(task.queue_name or "").strip():
-        return PityResponse.failed("当前任务缺少队列信息，无法重试")
+        return ArgusResponse.failed("当前任务缺少队列信息，无法重试")
     task.retry_count = 0
     task.status = PlatformTaskStatus.QUEUED.value
     task.stage = "queued"
@@ -166,4 +166,4 @@ async def retry_platform_task(id: int, session=Depends(get_session), user_info=D
         summary="平台任务被手动重试",
         detail={"task_id": int(task.id or 0), "queue_name": str(task.queue_name or "")},
     )
-    return PityResponse.success(serialize_platform_task(task))
+    return ArgusResponse.success(serialize_platform_task(task))

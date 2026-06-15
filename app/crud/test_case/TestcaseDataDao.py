@@ -7,27 +7,27 @@ from sqlalchemy import select
 from app.crud import Mapper, ModelWrapper
 from app.enums.OperationEnum import OperationType
 from app.models import async_session, DatabaseHelper
-from app.models.testcase_data import PityTestcaseData
-from app.schema.testcase_data import PityTestcaseDataForm
+from app.models.testcase_data import ArgusTestcaseData
+from app.schema.testcase_data import ArgusTestcaseDataForm
 
 
-@ModelWrapper(PityTestcaseData)
-class PityTestcaseDataDao(Mapper):
+@ModelWrapper(ArgusTestcaseData)
+class ArgusTestcaseDataDao(Mapper):
 
     @classmethod
-    async def insert_testcase_data(cls, form: PityTestcaseDataForm, user_id: int):
+    async def insert_testcase_data(cls, form: ArgusTestcaseDataForm, user_id: int):
         try:
             async with async_session() as session:
                 async with session.begin():
-                    sql = select(PityTestcaseData).where(PityTestcaseData.case_id == form.case_id,
-                                                         PityTestcaseData.env == form.env,
-                                                         PityTestcaseData.name == form.name,
-                                                         PityTestcaseData.deleted_at == 0)
+                    sql = select(ArgusTestcaseData).where(ArgusTestcaseData.case_id == form.case_id,
+                                                         ArgusTestcaseData.env == form.env,
+                                                         ArgusTestcaseData.name == form.name,
+                                                         ArgusTestcaseData.deleted_at == 0)
                     result = await session.execute(sql)
                     query = result.scalars().first()
                     if query is not None:
                         raise Exception("该数据已存在, 请重新编辑")
-                    data = PityTestcaseData(**form.dict(), user_id=user_id)
+                    data = ArgusTestcaseData(**form.dict(), user_id=user_id)
                     session.add(data)
                     await session.flush()
                     await cls.insert_log(session, user_id, OperationType.INSERT, data, key=data.id)
@@ -39,12 +39,12 @@ class PityTestcaseDataDao(Mapper):
             raise Exception(f"新增测试数据失败, {str(e)}")
 
     @classmethod
-    async def update_testcase_data(cls, form: PityTestcaseDataForm, user: int):
+    async def update_testcase_data(cls, form: ArgusTestcaseDataForm, user: int):
         try:
             async with async_session() as session:
                 async with session.begin():
-                    sql = select(PityTestcaseData).where(PityTestcaseData.id == form.id,
-                                                         PityTestcaseData.deleted_at == 0)
+                    sql = select(ArgusTestcaseData).where(ArgusTestcaseData.id == form.id,
+                                                         ArgusTestcaseData.deleted_at == 0)
                     result = await session.execute(sql)
                     query = result.scalars().first()
                     if query is None:
@@ -65,8 +65,8 @@ class PityTestcaseDataDao(Mapper):
         try:
             async with async_session() as session:
                 async with session.begin():
-                    sql = select(PityTestcaseData).where(PityTestcaseData.id == id,
-                                                         PityTestcaseData.deleted_at == 0)
+                    sql = select(ArgusTestcaseData).where(ArgusTestcaseData.id == id,
+                                                         ArgusTestcaseData.deleted_at == 0)
                     result = await session.execute(sql)
                     query = result.scalars().first()
                     if query is None:
@@ -83,8 +83,8 @@ class PityTestcaseDataDao(Mapper):
         ans = defaultdict(list)
         try:
             async with async_session() as session:
-                sql = select(PityTestcaseData).where(PityTestcaseData.case_id == case_id,
-                                                     PityTestcaseData.deleted_at == 0)
+                sql = select(ArgusTestcaseData).where(ArgusTestcaseData.case_id == case_id,
+                                                     ArgusTestcaseData.deleted_at == 0)
                 result = await session.execute(sql)
                 query = result.scalars().all()
                 for q in query:
@@ -95,12 +95,12 @@ class PityTestcaseDataDao(Mapper):
             raise Exception(f"查询测试数据失败, {str(e)}")
 
     @classmethod
-    async def list_testcase_data_by_env(cls, env: int, case_id: int) -> List[PityTestcaseData]:
+    async def list_testcase_data_by_env(cls, env: int, case_id: int) -> List[ArgusTestcaseData]:
         try:
             async with async_session() as session:
-                sql = select(PityTestcaseData).where(PityTestcaseData.case_id == case_id,
-                                                     PityTestcaseData.env == env,
-                                                     PityTestcaseData.deleted_at == 0)
+                sql = select(ArgusTestcaseData).where(ArgusTestcaseData.case_id == case_id,
+                                                     ArgusTestcaseData.env == env,
+                                                     ArgusTestcaseData.deleted_at == 0)
                 result = await session.execute(sql)
                 return result.scalars().all()
         except Exception as e:
