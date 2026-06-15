@@ -72,10 +72,16 @@ UI_RUNNER_POLL_INTERVAL_MS=5000
 
 ## 启动
 
-在后端项目根目录执行：
+首次部署或 `requirements.txt` 变更时执行：
 
 ```bash
 docker compose -f ops/docker-compose.yaml up -d --build
+```
+
+日常发布如果只是代码变更、依赖没变，可执行：
+
+```bash
+docker compose -f ops/docker-compose.yaml up -d
 ```
 
 ## 检查

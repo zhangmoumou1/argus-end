@@ -1,12 +1,13 @@
 FROM python:3.8 as builder
+ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /argus
 COPY ./requirements.txt ./requirements.txt
 RUN python -m venv /argus/venv  \
     && /argus/venv/bin/python -m pip install --upgrade pip \
-    && /argus/venv/bin/python -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ \
-    && apt update -y \
-    && apt upgrade -y \
-    && apt install -y tzdata
+    && /argus/venv/bin/python -m pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
 
 
 FROM python:3.8
