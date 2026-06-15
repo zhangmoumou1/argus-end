@@ -116,6 +116,38 @@ tail -f logs/startup/argus-api.log
 tail -f logs/startup/argus-ui-runner.log
 ```
 
+## 代码更新后如何发布
+
+后端 Python 代码改动：
+
+```bash
+docker compose -f ops/docker-compose.yaml up -d --build argus-api
+```
+
+UI Runner 代码改动：
+
+```bash
+docker compose -f ops/docker-compose.yaml up -d --build argus-ui-runner
+```
+
+后端和 UI Runner 一起改动：
+
+```bash
+docker compose -f ops/docker-compose.yaml up -d --build argus-api argus-ui-runner
+```
+
+只改 `conf/pro.env` 等配置文件：
+
+```bash
+docker compose -f ops/docker-compose.yaml up -d argus-api
+```
+
+或直接重启：
+
+```bash
+docker compose -f ops/docker-compose.yaml restart argus-api
+```
+
 ## 说明
 
 - `ops/docker-compose.yaml` 已包含：MySQL、Redis、RabbitMQ、RustFS(S3兼容)、argus-api、argus-ui-runner
