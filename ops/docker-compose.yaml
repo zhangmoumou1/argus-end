@@ -36,6 +36,40 @@ services:
     networks:
       - argus_backend
 
+  argus-rabbitmq:
+    image: rabbitmq:3-management
+    container_name: argus_rabbitmq
+    restart: always
+    environment:
+      TZ: Asia/Shanghai
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - argus_backend
+
+  argus-rustfs:
+    image: minio/minio:latest
+    container_name: argus_rustfs
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      TZ: Asia/Shanghai
+      MINIO_ROOT_USER: ${OSS_ACCESS_KEY_ID:-rustfs}
+      MINIO_ROOT_PASSWORD: ${OSS_ACCESS_KEY_SECRET:-susan123}
+    ports:
+      - "${OSS_PORT:-9000}:9000"
+      - "${OSS_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - rustfs_data:/data
+    networks:
+      - argus_backend
+
   argus-api:
     build:
       context: ../
@@ -44,6 +78,11 @@ services:
         buildno: 1
     container_name: argus_api
     restart: always
+    depends_on:
+      - argus-mysql
+      - argus-redis
+      - argus-rabbitmq
+      - argus-rustfs
     ports:
       - "${ARGUS_API_PORT:-7777}:7777"
     env_file:
@@ -78,6 +117,8 @@ services:
 volumes:
   mysql_data:
   redis_data:
+  rabbitmq_data:
+  rustfs_data:
 
 networks:
   argus_backend:

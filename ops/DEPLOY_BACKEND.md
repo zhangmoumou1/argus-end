@@ -11,6 +11,11 @@
 
 后端部署时请确保该域名最终可以正常访问到前端页面，并且前端配置的接口地址能够连到当前后端服务。
 
+## 本地调试和 Docker 部署
+
+- `conf/dev.env`：本地调试用，默认走 `127.0.0.1`
+- `conf/pro.env`：Docker 部署用，默认走容器服务名
+
 ## 首次部署只需要改 2 个文件
 
 ### 1. 改后端配置 `conf/pro.env`
@@ -18,20 +23,20 @@
 可直接按下面示例填写：
 
 ```env
-MYSQL_HOST="114.132.241.138"
+MYSQL_HOST="argus-mysql"
 MYSQL_PORT=3306
 MYSQL_USER="root"
 MYSQL_PWD="19950308zyc."
 DBNAME="argus"
 
 REDIS_ON=True
-REDIS_HOST="114.132.241.138"
+REDIS_HOST="argus-redis"
 REDIS_PORT=6379
 REDIS_DB=0
 REDIS_PASSWORD=""
 
 OSS_TYPE="s3"
-OSS_ENDPOINT="http://114.132.241.138:9000"
+OSS_ENDPOINT="http://argus-rustfs:9000"
 OSS_ACCESS_KEY_ID="rustfs"
 OSS_ACCESS_KEY_SECRET="susan123"
 OSS_BUCKET="argus-end"
@@ -44,7 +49,7 @@ EMAIL_HOST="smtp.126.com"
 EMAIL_TO="测试报告收件人pro"
 YAPI_TOKEN="ff"
 
-RABBITMQ_HOST="114.132.241.138"
+RABBITMQ_HOST="argus-rabbitmq"
 RABBITMQ_PORT=5672
 RABBITMQ_USER="admin"
 RABBITMQ_PASSWORD="admin"
@@ -107,5 +112,5 @@ tail -f logs/startup/argus-ui-runner.log
 
 ## 说明
 
-- `ops/docker-compose.yaml` 已包含：MySQL、Redis、argus-api、argus-ui-runner
+- `ops/docker-compose.yaml` 已包含：MySQL、Redis、RabbitMQ、RustFS(S3兼容)、argus-api、argus-ui-runner
 - 前端请到 `argus-front` 仓库单独部署
