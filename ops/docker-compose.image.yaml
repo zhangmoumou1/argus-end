@@ -74,11 +74,7 @@ services:
     restart: unless-stopped
 
   argus-api:
-    build:
-      context: ../
-      dockerfile: ops/dockerfile
-      args:
-        buildno: 1
+    image: ccr.ccs.tencentyun.com/zhangyancheng/argus-end:1.0
     container_name: argus_api
     restart: always
     depends_on:

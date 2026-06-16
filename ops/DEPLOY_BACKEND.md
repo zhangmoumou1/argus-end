@@ -1,33 +1,58 @@
-# Argus 部署说明
+# Argus 后端部署说明
 
-后端项目路径：`argus-end`  
-前端项目路径：`argus-front`
+后端项目路径：`argus-end`
 
-当前访问域名示例：
+## 访问地址总览
 
-- `http://zhangyanc.club`
-- `http://www.zhangyanc.club`
+前端访问地址：
 
-## 部署前先准备对象存储
+```text
+http://域名/
+```
 
-RustFS / S3 对象存储中需要提前创建 2 个 bucket：
+后端访问地址：
+
+```text
+http://域名:7777/
+```
+
+后端接口文档地址：
+
+```text
+http://域名:7777/docs
+```
+
+## 部署后初始化对象存储
+
+RabbitMQ 管理后台访问地址：
+
+```text
+http://域名:15672/#/
+```
+
+RustFS 对象存储控制台访问地址：
+
+```text
+http://域名:9091/
+```
+
+RustFS / S3 对象存储中应在部署完成后创建 2 个 bucket：
 
 - `argus-end`
 - `public`
 
-## 公有镜像地址
+## 后端配置文件
 
-当前可直接使用腾讯云公有镜像：
+部署前先修改：
 
-```bash
-docker pull ccr.ccs.tencentyun.com/zhangyancheng/argus-end:1.0
+```text
+argus-end/conf/pro.env
 ```
 
-## 部署前先改配置
+公有镜像版的数据库、Redis、RabbitMQ、RustFS、对象存储等账密信息，统一放在 `conf/pro.env`，不直接写在 `ops/docker-compose.image.yaml`。
+两份 compose 都统一读取 `conf/pro.env` 作为容器运行配置。
 
-### 1. 后端配置 `argus-end/conf/pro.env`
-
-按实际环境修改下面这些字段：
+最少关注这些字段：
 
 ```env
 MYSQL_HOST=argus-mysql
@@ -49,37 +74,20 @@ OSS_ACCESS_KEY_SECRET=susan123
 OSS_BUCKET=argus-end
 OSS_AVATAR_BUCKET=public
 
-EMAIL_SENDER=wuranxu1993@126.com
-EMAIL_PASSWORD=XCLHTLWLUPMBRSFD
-EMAIL_HOST=smtp.126.com
-EMAIL_TO=测试报告收件人pro
-YAPI_TOKEN=ff
-
 RABBITMQ_HOST=argus-rabbitmq
 RABBITMQ_PORT=5672
 RABBITMQ_USER=admin
 RABBITMQ_PASSWORD=admin
 
-MOCK_ON=False
-PROXY_ON=False
-PROXY_PORT=7778
-GRAFANA_URL=http://192.168.8.25:3001/
-
 SERVER_PORT=7777
 ARGUS_API_WORKERS=2
 ```
 
-### 2. 可选：镜像地址
+UI Runner 最小配置：
 
-如果需要切换镜像版本，可在 `conf/pro.env` 或 shell 环境中增加：
-
-```env
-ARGUS_API_IMAGE=ccr.ccs.tencentyun.com/zhangyancheng/argus-end:1.0
+```text
+argus-end/ui_runner/.env
 ```
-
-### 3. UI Runner 配置 `argus-end/ui_runner/.env`
-
-最少保留：
 
 ```env
 UI_RUNNER_BROWSER=chromium
@@ -87,110 +95,117 @@ UI_RUNNER_HEADLESS=true
 UI_RUNNER_POLL_INTERVAL_MS=5000
 ```
 
-### 4. 前端接口地址
+## 两套部署方式
 
-前端部署前，确认 `argus-front` 的环境配置里接口地址指向后端域名或后端服务地址。
+### 方案一：服务器自己构建
 
-## 后端启动
+适合：
 
-先进入目录：
+- 代码刚改完，想直接在服务器构建
+- 不依赖腾讯云公有镜像
 
-```bash
-cd ~/argus/argus-end/ops
+使用文件：
+
+```text
+ops/docker-compose.yaml
 ```
 
 首次部署：
 
 ```bash
-docker-compose up -d argus-mysql argus-redis argus-rabbitmq argus-rustfs
-docker-compose pull argus-api
-docker-compose up -d argus-api
+cd ~/argus/argus-end/ops
+docker-compose -f docker-compose.yaml up -d argus-mysql argus-redis argus-rabbitmq argus-rustfs
+docker-compose -f docker-compose.yaml up -d --build argus-api
 ```
 
 后端更新发布：
 
 ```bash
-docker-compose pull argus-api
-docker-compose up -d argus-api
+cd ~/argus/argus-end/ops
+docker-compose -f docker-compose.yaml up -d --build argus-api
 ```
 
 UI Runner 更新发布：
 
 ```bash
-docker-compose up -d --build argus-ui-runner
+cd ~/argus/argus-end/ops
+docker-compose -f docker-compose.yaml up -d --build argus-ui-runner
 ```
 
-只是重启：
+### 方案二：直接拉腾讯云公有镜像
 
-```bash
-docker-compose restart argus-api
+适合：
+
+- 对外部署
+- 服务器配置较低，不想本机构建
+- 只想 pull + up
+
+使用文件：
+
+```text
+ops/docker-compose.image.yaml
 ```
 
-## 小机器建议
-
-- `2核2G` 建议 `ARGUS_API_WORKERS=2`
-- 前端和后端不要同时重建，分开执行更稳
-- UI 自动化执行时，尽量不要同时做前端构建
-- 如果只是改配置或普通重启，优先用 `docker-compose up -d`，不要每次都 `--build`
-- 有公有镜像时，优先 `docker-compose pull && docker-compose up -d`，不要在服务器本机构建
-
-## 前端启动
-
-进入前端部署目录：
+当前公有镜像：
 
 ```bash
-cd ~/argus/argus-front/ops
+docker pull ccr.ccs.tencentyun.com/zhangyancheng/argus-end:1.0
 ```
 
-首次部署或镜像需要重建时：
+首次部署：
 
 ```bash
-docker-compose up -d --build
+cd ~/argus/argus-end/ops
+docker-compose -f docker-compose.image.yaml up -d argus-mysql argus-redis argus-rabbitmq argus-rustfs
+docker-compose -f docker-compose.image.yaml pull argus-api
+docker-compose -f docker-compose.image.yaml up -d argus-api
 ```
 
-只是重启服务：
+后端更新发布：
 
 ```bash
-docker-compose up -d
+cd ~/argus/argus-end/ops
+docker-compose -f docker-compose.image.yaml pull argus-api
+docker-compose -f docker-compose.image.yaml up -d argus-api
+```
+
+UI Runner 更新发布：
+
+```bash
+cd ~/argus/argus-end/ops
+docker-compose -f docker-compose.image.yaml up -d --build argus-ui-runner
 ```
 
 ## 查看状态
 
-后端：
+自己构建版：
 
 ```bash
 cd ~/argus/argus-end/ops
-docker-compose ps
+docker-compose -f docker-compose.yaml ps
 ```
 
-前端：
+公有镜像版：
 
 ```bash
-cd ~/argus/argus-front/ops
-docker-compose ps
+cd ~/argus/argus-end/ops
+docker-compose -f docker-compose.image.yaml ps
 ```
 
 ## 看日志
 
-后端容器日志：
+自己构建版：
 
 ```bash
 cd ~/argus/argus-end/ops
-docker-compose logs -f argus-api
+docker-compose -f docker-compose.yaml logs -f argus-api
 ```
 
-UI Runner 日志：
+公有镜像版：
 
 ```bash
 cd ~/argus/argus-end/ops
-docker-compose logs -f argus-ui-runner
-```
-
-前端日志：
-
-```bash
-cd ~/argus/argus-front/ops
-docker-compose logs -f argus-front
+docker-compose -f docker-compose.image.yaml logs -f argus-api
 ```
 
 后端启动日志文件：
@@ -205,43 +220,10 @@ UI Runner 启动日志文件：
 tail -f ~/argus/argus-end/logs/startup/argus-ui-runner.log
 ```
 
-## SSH 断开后怎么处理
+## 说明
 
-重新登录服务器后执行：
-
-```bash
-cd ~/argus/argus-front/ops
-docker-compose ps
-docker-compose logs --tail=100
-```
-
-或查看后端：
-
-```bash
-cd ~/argus/argus-end/ops
-docker-compose ps
-docker-compose logs --tail=100
-```
-
-如果服务没起来，再重新执行一次：
-
-```bash
-docker-compose up -d --build
-```
-
-## 当前 docker-compose 包含的服务
-
-后端 `argus-end/ops/docker-compose.yaml` 已包含：
-
-- `argus-mysql`
-- `argus-redis`
-- `argus-rabbitmq`
-- `argus-rustfs`
-- `argus-api`
-- `argus-ui-runner`
-
-其中：
-
-- `argus-api` 可直接使用腾讯云公有镜像
-- `argus-mysql`、`argus-redis`、`argus-rabbitmq`、`argus-rustfs` 属于基础依赖服务
-- `argus-ui-runner` 仍按当前 compose 配置单独处理
+- `docker-compose.yaml`：服务器自己构建 `argus-api`
+- `docker-compose.image.yaml`：直接拉腾讯云公有镜像 `argus-api`
+- `argus-mysql`、`argus-redis`、`argus-rabbitmq`、`argus-rustfs` 都是基础依赖服务
+- `argus-ui-runner` 当前仍按本地 Dockerfile 单独构建
+- `2核2G` 机器更推荐使用“公有镜像版”
