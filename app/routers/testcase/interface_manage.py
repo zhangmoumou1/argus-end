@@ -27,7 +27,14 @@ from config import Config
 router = APIRouter(prefix="/interface-management")
 DEFAULT_SYNC_CRON = "0 0 * * *"
 _INTERFACE_SCHEMA_READY = False
-_INTERFACE_SCHEMA_LOCK = asyncio.Lock()
+_INTERFACE_SCHEMA_LOCK = None
+
+
+def _get_interface_schema_lock():
+    global _INTERFACE_SCHEMA_LOCK
+    if _INTERFACE_SCHEMA_LOCK is None:
+        _INTERFACE_SCHEMA_LOCK = asyncio.Lock()
+    return _INTERFACE_SCHEMA_LOCK
 
 
 def normalize_path(path: str):
@@ -564,7 +571,7 @@ async def ensure_interface_schema(session):
     if not Config.RUNTIME_SCHEMA_MIGRATION_ENABLED:
         _INTERFACE_SCHEMA_READY = True
         return
-    async with _INTERFACE_SCHEMA_LOCK:
+    async with _get_interface_schema_lock():
         if _INTERFACE_SCHEMA_READY:
             return
         await session.execute(text(
@@ -1751,4 +1758,3 @@ async def review_endpoint_case(form: dict, user_info=Depends(Permission())):
         )
         await session.commit()
     return ArgusResponse.success({"case_id": case_id, "review_status": review_status})
-

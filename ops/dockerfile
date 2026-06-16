@@ -12,6 +12,7 @@ RUN python -m venv /argus/venv  \
 
 FROM python:3.8
 ENV PYTHONUNBUFFERED=1
+ENV ARGUS_API_WORKERS=2
 WORKDIR /argus
 COPY . .
 COPY --from=builder /argus/venv/ /argus/venv/
@@ -20,4 +21,4 @@ RUN mkdir -p /argus/logs/startup
 
 EXPOSE 7777
 
-CMD ["sh", "-c", "exec /argus/venv/bin/gunicorn main:argus -b 0.0.0.0:7777 -w 8 -k uvicorn.workers.UvicornWorker --log-level info --access-logfile - --error-logfile - 2>&1 | tee -a /argus/logs/startup/argus-api.log"]
+CMD ["sh", "-c", "exec /argus/venv/bin/gunicorn main:argus -b 0.0.0.0:7777 -w ${ARGUS_API_WORKERS:-2} -k uvicorn.workers.UvicornWorker --log-level info --timeout 120 --graceful-timeout 30 --keep-alive 10 --max-requests 500 --max-requests-jitter 50 --access-logfile - --error-logfile - 2>&1 | tee -a /argus/logs/startup/argus-api.log"]

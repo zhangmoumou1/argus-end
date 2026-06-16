@@ -15,42 +15,43 @@
 按实际环境修改下面这些字段：
 
 ```env
-MYSQL_HOST="argus-mysql"
+MYSQL_HOST=argus-mysql
 MYSQL_PORT=3306
-MYSQL_USER="root"
-MYSQL_PWD="19950308zyc."
-DBNAME="argus"
+MYSQL_USER=root
+MYSQL_PWD=19950308zyc.
+DBNAME=argus
 
 REDIS_ON=True
-REDIS_HOST="argus-redis"
+REDIS_HOST=argus-redis
 REDIS_PORT=6379
 REDIS_DB=0
-REDIS_PASSWORD=""
+REDIS_PASSWORD=
 
-OSS_TYPE="s3"
-OSS_ENDPOINT="http://argus-rustfs:9000"
-OSS_ACCESS_KEY_ID="rustfs"
-OSS_ACCESS_KEY_SECRET="susan123"
-OSS_BUCKET="argus-end"
-OSS_AVATAR_BUCKET="public"
+OSS_TYPE=s3
+OSS_ENDPOINT=http://argus-rustfs:9000
+OSS_ACCESS_KEY_ID=rustfs
+OSS_ACCESS_KEY_SECRET=susan123
+OSS_BUCKET=argus-end
+OSS_AVATAR_BUCKET=public
 
-EMAIL_SENDER="wuranxu1993@126.com"
-EMAIL_PASSWORD="XCLHTLWLUPMBRSFD"
-EMAIL_HOST="smtp.126.com"
-EMAIL_TO="测试报告收件人pro"
-YAPI_TOKEN="ff"
+EMAIL_SENDER=wuranxu1993@126.com
+EMAIL_PASSWORD=XCLHTLWLUPMBRSFD
+EMAIL_HOST=smtp.126.com
+EMAIL_TO=测试报告收件人pro
+YAPI_TOKEN=ff
 
-RABBITMQ_HOST="argus-rabbitmq"
+RABBITMQ_HOST=argus-rabbitmq
 RABBITMQ_PORT=5672
-RABBITMQ_USER="admin"
-RABBITMQ_PASSWORD="admin"
+RABBITMQ_USER=admin
+RABBITMQ_PASSWORD=admin
 
 MOCK_ON=False
 PROXY_ON=False
 PROXY_PORT=7778
-GRAFANA_URL="http://192.168.8.25:3001/"
+GRAFANA_URL=http://192.168.8.25:3001/
 
 SERVER_PORT=7777
+ARGUS_API_WORKERS=2
 ```
 
 ### 2. UI Runner 配置 `argus-end/ui_runner/.env`
@@ -81,6 +82,8 @@ cd ~/argus/argus-end/ops
 docker-compose up -d --build
 ```
 
+`2核2G` 机器建议一次只重建一个项目，优先不要前后端同时 `--build`。
+
 只是重启服务：
 
 ```bash
@@ -98,6 +101,13 @@ docker-compose up -d --build argus-api
 ```bash
 docker-compose up -d --build argus-ui-runner
 ```
+
+## 小机器建议
+
+- `2核2G` 建议 `ARGUS_API_WORKERS=2`
+- 前端和后端不要同时重建，分开执行更稳
+- UI 自动化执行时，尽量不要同时做前端构建
+- 如果只是改配置或普通重启，优先用 `docker-compose up -d`，不要每次都 `--build`
 
 ## 前端启动
 

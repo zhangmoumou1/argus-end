@@ -12,7 +12,7 @@ aiohttp==3.8.1
 aiomysql==0.2.0
 Jinja2==3.0.3
 APScheduler==3.8.0
-redis==4.0.2
+redis==6.1.1
 redlock==1.2.0
 yagmail==0.15.277
 oss2==2.15.0

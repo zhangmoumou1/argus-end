@@ -97,6 +97,7 @@ services:
     environment:
       TZ: Asia/Shanghai
       argus_env: pro
+      ARGUS_API_WORKERS: ${ARGUS_API_WORKERS:-2}
     volumes:
       - ../logs:/argus/logs
       - ../ui_runner:/argus/ui_runner
