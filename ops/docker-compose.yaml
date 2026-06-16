@@ -25,10 +25,14 @@ services:
     container_name: argus_redis
     restart: always
     command: >
-      sh -c "redis-server --appendonly yes
-      --requirepass ${REDIS_PASSWORD:-}"
+      sh -c 'if [ -n "$$REDIS_PASSWORD" ]; then
+      exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD";
+      else
+      exec redis-server --appendonly yes;
+      fi'
     environment:
       TZ: Asia/Shanghai
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
@@ -113,6 +117,7 @@ services:
       TZ: Asia/Shanghai
     volumes:
       - ../ui_runner:/app
+      - ui_runner_node_modules:/app/node_modules
       - ../logs:/app/logs
     networks:
       - argus_backend
@@ -121,6 +126,7 @@ volumes:
   mysql_data:
   redis_data:
   rabbitmq_data:
+  ui_runner_node_modules:
 
 networks:
   argus_backend:

@@ -1,26 +1,18 @@
-# Argus 后端部署说明
+# Argus 部署说明
 
-后端项目路径：`argus-end`
+后端项目路径：`argus-end`  
+前端项目路径：`argus-front`
 
-## 域名
-
-当前前端访问域名：
+当前访问域名示例：
 
 - `http://zhangyanc.club`
 - `http://www.zhangyanc.club`
 
-后端部署时请确保该域名最终可以正常访问到前端页面，并且前端配置的接口地址能够连到当前后端服务。
+## 部署前先改配置
 
-## 本地调试和 Docker 部署
+### 1. 后端配置 `argus-end/conf/pro.env`
 
-- `conf/dev.env`：本地调试用，默认走 `127.0.0.1`
-- `conf/pro.env`：Docker 部署用，默认走容器服务名
-
-## 首次部署只需要改 2 个文件
-
-### 1. 改后端配置 `conf/pro.env`
-
-可直接按下面示例填写：
+按实际环境修改下面这些字段：
 
 ```env
 MYSQL_HOST="argus-mysql"
@@ -42,7 +34,6 @@ OSS_ACCESS_KEY_SECRET="susan123"
 OSS_BUCKET="argus-end"
 OSS_AVATAR_BUCKET="public"
 
-# system config
 EMAIL_SENDER="wuranxu1993@126.com"
 EMAIL_PASSWORD="XCLHTLWLUPMBRSFD"
 EMAIL_HOST="smtp.126.com"
@@ -62,7 +53,9 @@ GRAFANA_URL="http://192.168.8.25:3001/"
 SERVER_PORT=7777
 ```
 
-### 2. 改 UI Runner 最小配置 `ui_runner/.env`
+### 2. UI Runner 配置 `argus-end/ui_runner/.env`
+
+最少保留：
 
 ```env
 UI_RUNNER_BROWSER=chromium
@@ -70,85 +63,144 @@ UI_RUNNER_HEADLESS=true
 UI_RUNNER_POLL_INTERVAL_MS=5000
 ```
 
-## 启动
+### 3. 前端接口地址
 
-首次部署或 `requirements.txt` 变更时执行：
+前端部署前，确认 `argus-front` 的环境配置里接口地址指向后端域名或后端服务地址。
 
-```bash
-docker compose -f ops/docker-compose.yaml up -d --build
-```
+## 后端启动
 
-日常发布如果只是代码变更、依赖没变，可执行：
+进入后端部署目录：
 
 ```bash
-docker compose -f ops/docker-compose.yaml up -d
+cd ~/argus/argus-end/ops
 ```
 
-## 检查
-
-查看容器：
+首次部署或镜像需要重建时：
 
 ```bash
-docker compose -f ops/docker-compose.yaml ps
+docker-compose up -d --build
 ```
 
-查看后端日志：
+只是重启服务：
 
 ```bash
-docker compose -f ops/docker-compose.yaml logs -f argus-api
+docker-compose up -d
 ```
 
-查看 UI Runner 日志：
+只发布后端代码：
 
 ```bash
-docker compose -f ops/docker-compose.yaml logs -f argus-ui-runner
+docker-compose up -d --build argus-api
 ```
 
-查看后端启动日志文件：
+只发布 UI Runner：
 
 ```bash
-tail -f logs/startup/argus-api.log
+docker-compose up -d --build argus-ui-runner
 ```
 
-查看 UI Runner 启动日志文件：
+## 前端启动
+
+进入前端部署目录：
 
 ```bash
-tail -f logs/startup/argus-ui-runner.log
+cd ~/argus/argus-front/ops
 ```
 
-## 代码更新后如何发布
-
-后端 Python 代码改动：
+首次部署或镜像需要重建时：
 
 ```bash
-docker compose -f ops/docker-compose.yaml up -d --build argus-api
+docker-compose up -d --build
 ```
 
-UI Runner 代码改动：
+只是重启服务：
 
 ```bash
-docker compose -f ops/docker-compose.yaml up -d --build argus-ui-runner
+docker-compose up -d
 ```
 
-后端和 UI Runner 一起改动：
+## 查看状态
+
+后端：
 
 ```bash
-docker compose -f ops/docker-compose.yaml up -d --build argus-api argus-ui-runner
+cd ~/argus/argus-end/ops
+docker-compose ps
 ```
 
-只改 `conf/pro.env` 等配置文件：
+前端：
 
 ```bash
-docker compose -f ops/docker-compose.yaml up -d argus-api
+cd ~/argus/argus-front/ops
+docker-compose ps
 ```
 
-或直接重启：
+## 看日志
+
+后端容器日志：
 
 ```bash
-docker compose -f ops/docker-compose.yaml restart argus-api
+cd ~/argus/argus-end/ops
+docker-compose logs -f argus-api
 ```
 
-## 说明
+UI Runner 日志：
 
-- `ops/docker-compose.yaml` 已包含：MySQL、Redis、RabbitMQ、RustFS(S3兼容)、argus-api、argus-ui-runner
-- 前端请到 `argus-front` 仓库单独部署
+```bash
+cd ~/argus/argus-end/ops
+docker-compose logs -f argus-ui-runner
+```
+
+前端日志：
+
+```bash
+cd ~/argus/argus-front/ops
+docker-compose logs -f argus-front
+```
+
+后端启动日志文件：
+
+```bash
+tail -f ~/argus/argus-end/logs/startup/argus-api.log
+```
+
+UI Runner 启动日志文件：
+
+```bash
+tail -f ~/argus/argus-end/logs/startup/argus-ui-runner.log
+```
+
+## SSH 断开后怎么处理
+
+重新登录服务器后执行：
+
+```bash
+cd ~/argus/argus-front/ops
+docker-compose ps
+docker-compose logs --tail=100
+```
+
+或查看后端：
+
+```bash
+cd ~/argus/argus-end/ops
+docker-compose ps
+docker-compose logs --tail=100
+```
+
+如果服务没起来，再重新执行一次：
+
+```bash
+docker-compose up -d --build
+```
+
+## 当前 docker-compose 包含的服务
+
+后端 `argus-end/ops/docker-compose.yaml` 已包含：
+
+- `argus-mysql`
+- `argus-redis`
+- `argus-rabbitmq`
+- `argus-rustfs`
+- `argus-api`
+- `argus-ui-runner`
