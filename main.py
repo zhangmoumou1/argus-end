@@ -42,6 +42,8 @@ logger = init_logging()
 logger.bind(name=None).opt(ansi=True).success(f"argus is running at <red>{ARGUS_ENV}</red>")
 logger.bind(name=None).success(BANNER)
 
+API_PREFIX = "/argus"
+
 proxy_task = None
 platform_worker_task = None
 
@@ -50,8 +52,10 @@ def _skip_request_logging(request: Request):
     if not Config.REQUEST_LOG_ENABLED:
         return True
     path = str(getattr(request.url, "path", "") or "").strip()
+    normalized_path = path[len(API_PREFIX):] if path.startswith(API_PREFIX) else path
     for prefix in Config.REQUEST_LOG_SKIP_PATHS or []:
-        if path.startswith(str(prefix or "").strip()):
+        current_prefix = str(prefix or "").strip()
+        if path.startswith(current_prefix) or normalized_path.startswith(current_prefix):
             return True
     return False
 
@@ -112,25 +116,25 @@ async def request_info(request: Request):
 
 
 # 注册路由
-argus.include_router(user.router)
-argus.include_router(project.router, dependencies=[Depends(request_info)])
-argus.include_router(http.router, dependencies=[Depends(request_info)])
-argus.include_router(testcase_router, dependencies=[Depends(request_info)])
-argus.include_router(functional_case_router, dependencies=[Depends(request_info)])
-argus.include_router(functional_case_skill_router, dependencies=[Depends(request_info)])
-argus.include_router(interface_manage_router, dependencies=[Depends(request_info)])
-argus.include_router(mock_config_router, dependencies=[Depends(request_info)])
-argus.include_router(config_router, dependencies=[Depends(request_info)])
-argus.include_router(online_router, dependencies=[Depends(request_info)])
-argus.include_router(oss_router, dependencies=[Depends(request_info)])
-argus.include_router(operation_router, dependencies=[Depends(request_info)])
-argus.include_router(platform_task_router, dependencies=[Depends(request_info)])
-argus.include_router(msg_router, dependencies=[Depends(request_info)])
-argus.include_router(workspace_router, dependencies=[Depends(request_info)])
-argus.include_router(performance_router, dependencies=[Depends(request_info)])
-argus.include_router(ui_test_router, dependencies=[Depends(request_info)])
-argus.include_router(share_router)
-argus.include_router(notification_admin_router, dependencies=[Depends(request_info)])
+argus.include_router(user.router, prefix=API_PREFIX)
+argus.include_router(project.router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(http.router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(testcase_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(functional_case_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(functional_case_skill_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(interface_manage_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(mock_config_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(config_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(online_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(oss_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(operation_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(platform_task_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(msg_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(workspace_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(performance_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(ui_test_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(share_router, prefix=API_PREFIX)
+argus.include_router(notification_admin_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
 
 
 @argus.on_event('startup')
@@ -254,7 +258,7 @@ async def stop_platform_task_worker():
         platform_worker_task = None
 
 
-@argus.websocket("/ws/{user_id}")
+@argus.websocket(f"{API_PREFIX}/ws/{{user_id}}")
 async def websocket_endpoint(websocket: WebSocket, user_id: int):
     async def send_heartbeat():
         while True:
