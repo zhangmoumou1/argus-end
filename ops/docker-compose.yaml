@@ -78,6 +78,7 @@ services:
     restart: unless-stopped
 
   argus-api:
+    image: ${ARGUS_API_IMAGE:-ccr.ccs.tencentyun.com/zhangyancheng/argus-end:1.0}
     build:
       context: ../
       dockerfile: ops/dockerfile

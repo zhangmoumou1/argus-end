@@ -8,6 +8,21 @@
 - `http://zhangyanc.club`
 - `http://www.zhangyanc.club`
 
+## 部署前先准备对象存储
+
+RustFS / S3 对象存储中需要提前创建 2 个 bucket：
+
+- `argus-end`
+- `public`
+
+## 公有镜像地址
+
+当前可直接使用腾讯云公有镜像：
+
+```bash
+docker pull ccr.ccs.tencentyun.com/zhangyancheng/argus-end:1.0
+```
+
 ## 部署前先改配置
 
 ### 1. 后端配置 `argus-end/conf/pro.env`
@@ -54,7 +69,15 @@ SERVER_PORT=7777
 ARGUS_API_WORKERS=2
 ```
 
-### 2. UI Runner 配置 `argus-end/ui_runner/.env`
+### 2. 可选：镜像地址
+
+如果需要切换镜像版本，可在 `conf/pro.env` 或 shell 环境中增加：
+
+```env
+ARGUS_API_IMAGE=ccr.ccs.tencentyun.com/zhangyancheng/argus-end:1.0
+```
+
+### 3. UI Runner 配置 `argus-end/ui_runner/.env`
 
 最少保留：
 
@@ -64,42 +87,43 @@ UI_RUNNER_HEADLESS=true
 UI_RUNNER_POLL_INTERVAL_MS=5000
 ```
 
-### 3. 前端接口地址
+### 4. 前端接口地址
 
 前端部署前，确认 `argus-front` 的环境配置里接口地址指向后端域名或后端服务地址。
 
 ## 后端启动
 
-进入后端部署目录：
+先进入目录：
 
 ```bash
 cd ~/argus/argus-end/ops
 ```
 
-首次部署或镜像需要重建时：
+首次部署：
 
 ```bash
-docker-compose up -d --build
+docker-compose up -d argus-mysql argus-redis argus-rabbitmq argus-rustfs
+docker-compose pull argus-api
+docker-compose up -d argus-api
 ```
 
-`2核2G` 机器建议一次只重建一个项目，优先不要前后端同时 `--build`。
-
-只是重启服务：
+后端更新发布：
 
 ```bash
-docker-compose up -d
+docker-compose pull argus-api
+docker-compose up -d argus-api
 ```
 
-只发布后端代码：
-
-```bash
-docker-compose up -d --build argus-api
-```
-
-只发布 UI Runner：
+UI Runner 更新发布：
 
 ```bash
 docker-compose up -d --build argus-ui-runner
+```
+
+只是重启：
+
+```bash
+docker-compose restart argus-api
 ```
 
 ## 小机器建议
@@ -108,6 +132,7 @@ docker-compose up -d --build argus-ui-runner
 - 前端和后端不要同时重建，分开执行更稳
 - UI 自动化执行时，尽量不要同时做前端构建
 - 如果只是改配置或普通重启，优先用 `docker-compose up -d`，不要每次都 `--build`
+- 有公有镜像时，优先 `docker-compose pull && docker-compose up -d`，不要在服务器本机构建
 
 ## 前端启动
 
@@ -214,3 +239,9 @@ docker-compose up -d --build
 - `argus-rustfs`
 - `argus-api`
 - `argus-ui-runner`
+
+其中：
+
+- `argus-api` 可直接使用腾讯云公有镜像
+- `argus-mysql`、`argus-redis`、`argus-rabbitmq`、`argus-rustfs` 属于基础依赖服务
+- `argus-ui-runner` 仍按当前 compose 配置单独处理
