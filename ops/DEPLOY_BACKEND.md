@@ -95,6 +95,16 @@ UI_RUNNER_HEADLESS=true
 UI_RUNNER_POLL_INTERVAL_MS=5000
 ```
 
+## 共享网络初始化
+
+首次部署前先执行一次：
+
+```bash
+docker network create argus_shared
+```
+
+如果网络已存在，Docker 会提示已存在，可直接忽略。
+
 ## 两套部署方式
 
 ### 方案一：服务器自己构建

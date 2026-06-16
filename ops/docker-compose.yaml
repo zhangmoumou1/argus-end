@@ -98,6 +98,7 @@ services:
       - ../ui_runner:/argus/ui_runner
     networks:
       - argus_backend
+      - argus_shared
 
   argus-ui-runner:
     build:
@@ -126,3 +127,5 @@ volumes:
 
 networks:
   argus_backend:
+  argus_shared:
+    external: true
