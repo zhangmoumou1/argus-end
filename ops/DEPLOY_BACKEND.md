@@ -22,6 +22,12 @@ http://域名/argus/
 http://域名/docs
 ```
 
+宿主机 Nginx 统一入口配置：
+
+```text
+argus-end/ops/nginx.conf
+```
+
 ## 部署后初始化对象存储
 
 RabbitMQ 管理后台访问地址：
@@ -94,16 +100,6 @@ UI_RUNNER_BROWSER=chromium
 UI_RUNNER_HEADLESS=true
 UI_RUNNER_POLL_INTERVAL_MS=5000
 ```
-
-## 共享网络初始化
-
-首次部署前先执行一次：
-
-```bash
-docker network create argus_shared
-```
-
-如果网络已存在，Docker 会提示已存在，可直接忽略。
 
 ## 两套部署方式
 
@@ -228,6 +224,27 @@ UI Runner 启动日志文件：
 
 ```bash
 tail -f ~/argus/argus-end/logs/startup/argus-ui-runner.log
+```
+
+## 宿主机 Nginx
+
+推荐由宿主机 Nginx 统一对外暴露 `80/443`，前端和后端容器只提供内部端口：
+
+- 前端容器：`127.0.0.1:8000`
+- 后端容器：`127.0.0.1:7777`
+
+示例配置文件：
+
+```text
+~/argus/argus-end/ops/nginx.conf
+```
+
+加载方式示例：
+
+```bash
+sudo cp ~/argus/argus-end/ops/nginx.conf /etc/nginx/conf.d/argus.conf
+sudo nginx -t
+sudo systemctl reload nginx
 ```
 
 ## 说明
