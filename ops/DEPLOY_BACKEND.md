@@ -13,13 +13,13 @@ http://域名/
 后端访问地址：
 
 ```text
-http://域名:7777/argus/
+http://域名/argus/
 ```
 
 后端接口文档地址：
 
 ```text
-http://域名:7777/docs
+http://域名/docs
 ```
 
 ## 部署后初始化对象存储
