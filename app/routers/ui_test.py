@@ -466,6 +466,10 @@ async def ensure_ui_test_schema(session):
         "retry_times INT NOT NULL DEFAULT 0,"
         "status VARCHAR(32) NOT NULL DEFAULT 'enabled',"
         "runner_config LONGTEXT NULL,"
+        "receiver TEXT NULL,"
+        "msg_type VARCHAR(64) NULL,"
+        "pass_rate SMALLINT NOT NULL DEFAULT 0,"
+        "notification_config_id BIGINT NULL,"
         "KEY idx_ui_plan_project_deleted (project_id, deleted_at)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='UI测试计划表'"
     ))
@@ -586,6 +590,7 @@ async def ensure_ui_test_schema(session):
         ('receiver', "ALTER TABLE argus_ui_test_plan ADD COLUMN receiver TEXT NULL COMMENT '推送用户ID，逗号分隔'"),
         ('msg_type', "ALTER TABLE argus_ui_test_plan ADD COLUMN msg_type VARCHAR(64) NULL COMMENT '推送方式 0=邮件 1=钉钉 2=企业微信 3=飞书'"),
         ('pass_rate', "ALTER TABLE argus_ui_test_plan ADD COLUMN pass_rate SMALLINT NOT NULL DEFAULT 0 COMMENT '成功率阈值，0表示未配置'"),
+        ('notification_config_id', "ALTER TABLE argus_ui_test_plan ADD COLUMN notification_config_id BIGINT NULL COMMENT '通知配置ID，关联argus_notification_config'"),
     ]:
         if col not in existing_cols:
             await session.execute(text(alter_sql))
