@@ -4,8 +4,10 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi.responses import Response
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import bindparam, text
@@ -1106,7 +1108,19 @@ def _guess_artifact_preview_type(path_value: str):
     return "file"
 
 
-async def _build_artifact_descriptor(client, bucket_name: str, object_key: str, label: str = ""):
+def _build_ui_artifact_proxy_url(object_key: str, bucket_name: str = ""):
+    normalized_key = str(object_key or "").replace("\\", "/").strip().strip("/")
+    if not normalized_key:
+        return ""
+    query = {
+        "object_key": normalized_key,
+    }
+    if str(bucket_name or "").strip():
+        query["bucket_name"] = str(bucket_name or "").strip()
+    return f"/argus/ui-test/run/share-artifact/view?{urlencode(query)}"
+
+
+async def _build_artifact_descriptor(client, bucket_name: str, object_key: str, label: str = "", proxy_url: str = ""):
     normalized_key = str(object_key or "").replace("\\", "/").strip().strip("/")
     if not normalized_key:
         return None
@@ -1125,7 +1139,7 @@ async def _build_artifact_descriptor(client, bucket_name: str, object_key: str, 
     try:
         detail = await client.get_object_detail(normalized_key, bucket_name=bucket_name or None)
         item.update({
-            "view_url": detail.get("view_url") or "",
+            "view_url": str(proxy_url or detail.get("view_url") or "").strip(),
             "content_type": detail.get("content_type") or "",
             "bucket_name": detail.get("bucket") or item["bucket_name"],
             "size": int(detail.get("size") or 0),
@@ -2071,6 +2085,10 @@ async def get_ui_test_run_detail(
                 str(data.get("artifact_bucket") or UI_BUCKET_NAME or ""),
                 str(item.get("screenshot_path") or ""),
                 f"步骤{int(item.get('step_index') or 0)}截图",
+                proxy_url=_build_ui_artifact_proxy_url(
+                    str(item.get("screenshot_path") or ""),
+                    str(data.get("artifact_bucket") or UI_BUCKET_NAME or ""),
+                ),
             )
         else:
             item["screenshot_artifact"] = None
@@ -2080,9 +2098,27 @@ async def get_ui_test_run_detail(
     artifact_bucket = str(data.get("artifact_bucket") or UI_BUCKET_NAME or "")
     if include_artifacts and client:
         data["artifacts"] = [item for item in [
-            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("report_path") or ""), "执行报告"),
-            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("video_path") or ""), "录屏"),
-            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("result_json_path") or ""), "结果JSON"),
+            await _build_artifact_descriptor(
+                client,
+                artifact_bucket,
+                str(data.get("report_path") or ""),
+                "执行报告",
+                proxy_url=_build_ui_artifact_proxy_url(str(data.get("report_path") or ""), artifact_bucket),
+            ),
+            await _build_artifact_descriptor(
+                client,
+                artifact_bucket,
+                str(data.get("video_path") or ""),
+                "录屏",
+                proxy_url=_build_ui_artifact_proxy_url(str(data.get("video_path") or ""), artifact_bucket),
+            ),
+            await _build_artifact_descriptor(
+                client,
+                artifact_bucket,
+                str(data.get("result_json_path") or ""),
+                "结果JSON",
+                proxy_url=_build_ui_artifact_proxy_url(str(data.get("result_json_path") or ""), artifact_bucket),
+            ),
         ] if item]
     else:
         data["artifacts"] = []
@@ -2162,6 +2198,10 @@ async def get_ui_test_shared_run_detail(
                 str(data.get("artifact_bucket") or UI_BUCKET_NAME or ""),
                 str(item.get("screenshot_path") or ""),
                 f"步骤{int(item.get('step_index') or 0)}截图",
+                proxy_url=_build_ui_artifact_proxy_url(
+                    str(item.get("screenshot_path") or ""),
+                    str(data.get("artifact_bucket") or UI_BUCKET_NAME or ""),
+                ),
             )
         else:
             item["screenshot_artifact"] = None
@@ -2171,9 +2211,27 @@ async def get_ui_test_shared_run_detail(
     artifact_bucket = str(data.get("artifact_bucket") or UI_BUCKET_NAME or "")
     if include_artifacts and client:
         data["artifacts"] = [item for item in [
-            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("report_path") or ""), "执行报告"),
-            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("video_path") or ""), "录屏"),
-            await _build_artifact_descriptor(client, artifact_bucket, str(data.get("result_json_path") or ""), "结果JSON"),
+            await _build_artifact_descriptor(
+                client,
+                artifact_bucket,
+                str(data.get("report_path") or ""),
+                "执行报告",
+                proxy_url=_build_ui_artifact_proxy_url(str(data.get("report_path") or ""), artifact_bucket),
+            ),
+            await _build_artifact_descriptor(
+                client,
+                artifact_bucket,
+                str(data.get("video_path") or ""),
+                "录屏",
+                proxy_url=_build_ui_artifact_proxy_url(str(data.get("video_path") or ""), artifact_bucket),
+            ),
+            await _build_artifact_descriptor(
+                client,
+                artifact_bucket,
+                str(data.get("result_json_path") or ""),
+                "结果JSON",
+                proxy_url=_build_ui_artifact_proxy_url(str(data.get("result_json_path") or ""), artifact_bucket),
+            ),
         ] if item]
     else:
         data["artifacts"] = []
@@ -2213,10 +2271,41 @@ async def get_ui_test_run_step_detail(id: int, session=Depends(get_session)):
             str(run.get("artifact_bucket") or UI_BUCKET_NAME or ""),
             str(data.get("screenshot_path") or ""),
             f"步骤{int(data.get('step_index') or 0)}截图",
+            proxy_url=_build_ui_artifact_proxy_url(
+                str(data.get("screenshot_path") or ""),
+                str(run.get("artifact_bucket") or UI_BUCKET_NAME or ""),
+            ),
         )
     else:
         data["screenshot_artifact"] = None
     return ArgusResponse.success(data)
+
+
+@router.get("/run/share-artifact/view")
+async def view_ui_test_shared_artifact(object_key: str, bucket_name: str = "", session=Depends(get_session)):
+    await ensure_ui_test_schema(session)
+    normalized_key = str(object_key or "").replace("\\", "/").strip().strip("/")
+    if not normalized_key:
+        return ArgusResponse.failed("object_key不能为空")
+    bucket_value = str(bucket_name or UI_BUCKET_NAME or "").strip()
+    verify_row = await session.execute(
+        text(
+            "SELECT 1 AS matched FROM argus_ui_test_run "
+            "WHERE deleted_at=0 AND (report_path=:object_key OR video_path=:object_key OR result_json_path=:object_key) "
+            "UNION ALL "
+            "SELECT 1 AS matched FROM argus_ui_test_step_result "
+            "WHERE deleted_at=0 AND screenshot_path=:object_key "
+            "LIMIT 1"
+        ),
+        {"object_key": normalized_key},
+    )
+    if not verify_row.mappings().first():
+        return ArgusResponse.failed("文件不存在")
+    client = OssClient.get_oss_client()
+    detail = await client.get_object_detail(normalized_key, bucket_name=bucket_value or None)
+    content = await client.get_file_object(normalized_key, bucket_name=bucket_value or None)
+    media_type = str(detail.get("content_type") or "").strip() or "application/octet-stream"
+    return Response(content=content, media_type=media_type)
 
 
 @router.post("/run/stop")
