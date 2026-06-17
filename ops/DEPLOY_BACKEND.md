@@ -140,21 +140,21 @@ ops/docker-compose.yaml
 ```bash
 cd ~/argus/argus-end/ops
 docker-compose -f docker-compose.yaml up -d argus-mysql argus-redis argus-rabbitmq argus-rustfs
-docker-compose -f docker-compose.yaml up -d --build argus-api
+docker-compose -f docker-compose.yaml up -d --build --no-deps argus-api
 ```
 
 后端更新发布：
 
 ```bash
 cd ~/argus/argus-end/ops
-docker-compose -f docker-compose.yaml up -d --build argus-api
+docker-compose -f docker-compose.yaml up -d --build --no-deps argus-api
 ```
 
 UI Runner 更新发布：
 
 ```bash
 cd ~/argus/argus-end/ops
-docker-compose -f docker-compose.yaml up -d --build argus-ui-runner
+docker-compose -f docker-compose.yaml up -d --build --no-deps argus-ui-runner
 ```
 
 ### 方案二：直接拉腾讯云公有镜像
@@ -183,7 +183,7 @@ docker pull ccr.ccs.tencentyun.com/zhangyancheng/argus-end:1.0
 cd ~/argus/argus-end/ops
 docker-compose -f docker-compose.image.yaml up -d argus-mysql argus-redis argus-rabbitmq argus-rustfs
 docker-compose -f docker-compose.image.yaml pull argus-api
-docker-compose -f docker-compose.image.yaml up -d argus-api
+docker-compose -f docker-compose.image.yaml up -d --no-deps argus-api
 ```
 
 后端更新发布：
@@ -191,14 +191,14 @@ docker-compose -f docker-compose.image.yaml up -d argus-api
 ```bash
 cd ~/argus/argus-end/ops
 docker-compose -f docker-compose.image.yaml pull argus-api
-docker-compose -f docker-compose.image.yaml up -d argus-api
+docker-compose -f docker-compose.image.yaml up -d --no-deps argus-api
 ```
 
 UI Runner 更新发布：
 
 ```bash
 cd ~/argus/argus-end/ops
-docker-compose -f docker-compose.image.yaml up -d --build argus-ui-runner
+docker-compose -f docker-compose.image.yaml up -d --build --no-deps argus-ui-runner
 ```
 
 ## 查看状态
