@@ -130,6 +130,9 @@ def _parse_json_text(value):
 
 
 def _normalize_runner_server(request: Request):
+    internal_server = str(getattr(Config, "UI_RUNNER_INTERNAL_SERVER", "") or "").strip().rstrip("/")
+    if internal_server:
+        return internal_server
     origin = str(getattr(request, "base_url", "") or "").strip().rstrip("/")
     return origin or "http://127.0.0.1:7777"
 

@@ -96,6 +96,7 @@ class BaseConfig(BaseSettings):
         "/favicon.ico",
     ])
     RUNTIME_SCHEMA_MIGRATION_ENABLED: bool = True
+    UI_RUNNER_INTERNAL_SERVER: str = ""
 
     # 测试报告路径
     REPORT_PATH: ClassVar[str] = os.path.join(ROOT, "templates", "report.html")
