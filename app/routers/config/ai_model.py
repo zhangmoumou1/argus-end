@@ -8,7 +8,7 @@ from config import Config
 
 
 @router.get("/ai-model/config", summary="获取AI模型配置")
-async def get_ai_model_config(_=Depends(Permission(Config.ADMIN))):
+async def get_ai_model_config(_=Depends(Permission())):
     try:
         data = await GConfigDao.get_ai_model_config()
         return ArgusResponse.success(data)
@@ -26,7 +26,7 @@ async def update_ai_model_config(form: dict, user_info=Depends(Permission(Config
 
 
 @router.get("/ai-model/providers", summary="获取AI模型供应商和默认版本")
-async def list_ai_model_providers(_=Depends(Permission(Config.ADMIN))):
+async def list_ai_model_providers(_=Depends(Permission())):
     try:
         data = GConfigDao.get_ai_model_provider_options()
         return ArgusResponse.success(data)

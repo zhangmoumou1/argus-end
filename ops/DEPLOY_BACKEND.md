@@ -28,6 +28,25 @@ http://域名/docs
 argus-end/ops/nginx.conf
 ```
 
+## 宿主机准备
+
+当前部署方案依赖宿主机 Nginx 作为统一入口。
+
+如果服务器还没安装 Nginx，先安装：
+
+```bash
+sudo apt update
+sudo apt install -y nginx
+```
+
+安装后确认服务状态：
+
+```bash
+sudo systemctl enable nginx
+sudo systemctl start nginx
+sudo systemctl status nginx
+```
+
 ## 部署后初始化对象存储
 
 RabbitMQ 管理后台访问地址：
@@ -246,6 +265,8 @@ sudo cp ~/argus/argus-end/ops/nginx.conf /etc/nginx/conf.d/argus.conf
 sudo nginx -t
 sudo systemctl reload nginx
 ```
+
+如果 `/etc/nginx/conf.d/` 下还没有 `argus.conf`，说明这一步还没执行，域名访问会直接异常。
 
 ## 说明
 
