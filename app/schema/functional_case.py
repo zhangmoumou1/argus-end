@@ -51,6 +51,7 @@ class FunctionalCaseFileMoveForm(BaseModel):
 class FunctionalCaseAIGenerateForm(BaseModel):
     project_id: int
     title: str
+    ai_model_id: Optional[str] = ""
     requirement_text: Optional[str] = ""
     instruction_text: Optional[str] = ""
     images: List[str] = []
@@ -62,7 +63,7 @@ class FunctionalCaseAIGenerateForm(BaseModel):
             raise ValueError("用例名称不能为空")
         return value
 
-    @validator("requirement_text", "instruction_text", pre=True, always=True)
+    @validator("ai_model_id", "requirement_text", "instruction_text", pre=True, always=True)
     def normalize_text(cls, value):
         return (value or "").strip()
 
@@ -137,6 +138,7 @@ class FunctionalCaseSkillTaskForm(BaseModel):
     project_id: int
     case_file_id: Optional[int] = 0
     title: str
+    ai_model_id: Optional[str] = ""
     requirement_text: Optional[str] = ""
     instruction_text: Optional[str] = ""
     generate_instruction_text: Optional[str] = ""
@@ -156,7 +158,7 @@ class FunctionalCaseSkillTaskForm(BaseModel):
             raise ValueError("用例名称不能为空")
         return value
 
-    @validator("requirement_text", "instruction_text", "generate_instruction_text", "review_instruction_text", pre=True, always=True)
+    @validator("ai_model_id", "requirement_text", "instruction_text", "generate_instruction_text", "review_instruction_text", pre=True, always=True)
     def normalize_task_text(cls, value):
         return str(value or "").strip()
 

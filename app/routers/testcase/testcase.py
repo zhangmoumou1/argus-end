@@ -994,7 +994,7 @@ async def ai_generate_flow_preview(form: dict, user_info=Depends(Permission()), 
         context = await build_endpoint_context(session, form)
         if not context.get("endpoints"):
             return ArgusResponse.failed("请至少选择一个接口版本")
-        ai_config = await GConfigDao.get_active_ai_model_config()
+        ai_config = await GConfigDao.get_active_ai_model_config(form.get("ai_model_id"))
         try:
             payload = call_kimi_for_flow_cases(context, ai_config)
         except ValueError as kimi_error:

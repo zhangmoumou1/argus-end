@@ -1260,7 +1260,7 @@ async def ai_generate_file(form: FunctionalCaseAIGenerateForm, _=Depends(Permiss
     if not form.requirement_text and not form.instruction_text and not form.images:
         return ArgusResponse.failed("请至少提供需求描述、生成要求或需求截图")
     try:
-        ai_config = await GConfigDao.get_active_ai_model_config()
+        ai_config = await GConfigDao.get_active_ai_model_config(form.ai_model_id)
         ai_payload = call_kimi_generate(form, ai_config)
         title, data = normalize_ai_case_data(ai_payload, form.title)
         stats = analyze_case_data(data)

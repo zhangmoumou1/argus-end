@@ -153,14 +153,20 @@ class GConfigDao(Mapper):
         current_active_id = str(saved.get("active_model_id") or "").strip()
         if current_active_id:
             active_model_id = current_active_id
-        if not active_model_id:
-            matched_enabled = next((item for item in providers if item.get("enabled")), None)
-            active_model_id = str((matched_enabled or providers[0]).get("id") or "")
         if not any(str(item.get("id") or "") == active_model_id for item in providers):
             active_model_id = str(providers[0].get("id") or "")
 
-        for item in providers:
-            item["enabled"] = str(item.get("id") or "") == active_model_id
+        enabled_items = [item for item in providers if item.get("enabled")]
+        if not enabled_items:
+            fallback_id = active_model_id or str(providers[0].get("id") or "")
+            for item in providers:
+                if str(item.get("id") or "") == fallback_id:
+                    item["enabled"] = True
+                    enabled_items = [item]
+                    break
+        enabled_ids = {str(item.get("id") or "") for item in enabled_items}
+        if not active_model_id or active_model_id not in enabled_ids:
+            active_model_id = str((enabled_items[0] if enabled_items else providers[0]).get("id") or "")
 
         return {
             "active_model_id": active_model_id,
@@ -214,13 +220,27 @@ class GConfigDao(Mapper):
         return config if include_secret else cls._public_ai_model_config(config)
 
     @classmethod
-    async def get_active_ai_model_config(cls):
+    async def get_active_ai_model_config(cls, model_id: str = "", require_enabled: bool = True):
         config = await cls.get_ai_model_config(include_secret=True)
-        active_model_id = str(config.get("active_model_id") or "").strip()
-        model_config = next(
-            (item for item in (config.get("providers") or []) if str(item.get("id") or "") == active_model_id),
-            None,
-        )
+        providers = config.get("providers") or []
+        target_model_id = str(model_id or config.get("active_model_id") or "").strip()
+        model_config = None
+        selected_explicitly = bool(str(model_id or "").strip())
+        if target_model_id:
+            model_config = next(
+                (item for item in providers if str(item.get("id") or "").strip() == target_model_id),
+                None,
+            )
+        if require_enabled and model_config and not model_config.get("enabled"):
+            model_config = None
+        if selected_explicitly and model_config is None:
+            raise Exception("所选AI模型不存在或未启用")
+        if model_config is None:
+            enabled_providers = [item for item in providers if item.get("enabled")]
+            model_config = next(
+                (item for item in enabled_providers if str(item.get("id") or "").strip() == str(config.get("active_model_id") or "").strip()),
+                None,
+            ) or (enabled_providers[0] if enabled_providers else None)
         if not model_config or not model_config.get("api_key"):
             raise Exception("请先到后台管理-模型配置配置并启用AI模型")
         return model_config
@@ -248,6 +268,8 @@ class GConfigDao(Mapper):
 
         if not next_config["providers"]:
             raise Exception("请至少保留一个模型配置")
+        if not any(item.get("enabled") for item in next_config["providers"]):
+            raise Exception("请至少启用一个模型配置")
         if not next_config.get("active_model_id"):
             raise Exception("请先启用一个模型配置")
         async with async_session() as session:
@@ -586,4 +608,3 @@ class GConfigDao(Mapper):
                 if row.key not in result:
                     result[row.key] = GConfigDao._parse_value(row)
         return result
-

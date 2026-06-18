@@ -807,7 +807,7 @@ def call_active_model_generate(task_payload, docs, ai_config):
 
 
 async def generate_with_fallback(task_payload, docs):
-    ai_config = await GConfigDao.get_active_ai_model_config()
+    ai_config = await GConfigDao.get_active_ai_model_config(task_payload.get("ai_model_id"))
     loop = asyncio.get_running_loop()
     provider = str(ai_config.get("provider") or "").strip() or "unknown"
     model = str(ai_config.get("model") or "").strip() or "unknown"
@@ -1015,6 +1015,7 @@ def load_task_request_payload(task, task_dir):
     payload = decode_task_input_payload(task.input_payload)
     payload.setdefault("project_id", task.project_id)
     payload.setdefault("title", task.title)
+    payload.setdefault("ai_model_id", "")
     payload.setdefault("requirement_text", task.requirement_text or "")
     payload.setdefault("instruction_text", task.instruction_text or "")
     payload.setdefault("generate_instruction_text", "")
@@ -1168,7 +1169,7 @@ async def execute_skill_task(task_id, task_payload=None, docs=None):
         )
         await update_task_state(task_id, user_id, status="running", stage="prepare", stage_text="正在组装模型请求", progress=10)
 
-        ai_config = await GConfigDao.get_active_ai_model_config()
+        ai_config = await GConfigDao.get_active_ai_model_config(task_payload.get("ai_model_id"))
         review_provider = ai_config.get("provider") or ""
         logger.info(
             f"functional skill task execute task_id={task_id}, generator=structured-messages, "
@@ -1576,6 +1577,7 @@ async def create_skill_task(form: FunctionalCaseSkillTaskForm, user_info=Depends
         "project_id": form.project_id,
         "case_file_id": int(form.case_file_id or 0),
         "title": form.title,
+        "ai_model_id": form.ai_model_id,
         "requirement_text": form.requirement_text,
         "instruction_text": form.instruction_text,
         "generate_instruction_text": form.generate_instruction_text,
@@ -1621,7 +1623,7 @@ async def create_skill_task(form: FunctionalCaseSkillTaskForm, user_info=Depends
         await session.commit()
         await session.refresh(task)
     try:
-        ai_config = await GConfigDao.get_active_ai_model_config()
+        ai_config = await GConfigDao.get_active_ai_model_config(form.ai_model_id)
         logger.info(
             f"functional skill task create task_id={task.id}, generator=structured-messages, "
             f"system_active_ai_provider={ai_config.get('provider')}, system_active_ai_model={ai_config.get('model')}, system_active_ai_base_url={ai_config.get('base_url')}"
