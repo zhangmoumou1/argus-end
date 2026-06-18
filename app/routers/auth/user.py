@@ -128,7 +128,7 @@ async def generate_reset_url(email: str):
         if user is not None:
             # 说明邮件存在，发送邮件
             em = Des.des_encrypt(email)
-            link = f"""https://argus.fun/#/user/resetPassword?token={em}"""
+            link = f"""{Config.SERVER_REPORT.rstrip('/')}/#/user/resetPassword?token={em}"""
             render_html = Email.render_html(Config.PASSWORD_HTML_PATH, link=link, name=user.name)
             asyncio.create_task(Email.send_msg("重置你的argus密码", render_html, None, email))
         return ArgusResponse.success()

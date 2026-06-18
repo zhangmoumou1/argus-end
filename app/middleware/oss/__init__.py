@@ -101,7 +101,7 @@ class OssClient(object):
             if oss_type == OssEnum.ALIYUN.value:
                 cls._client = AliyunOss(access_key_id, access_key_secret, endpoint, bucket)
             elif oss_type == OssEnum.QINIU.value:
-                cls._client = QiniuOss(access_key_id, access_key_secret, bucket)
+                cls._client = QiniuOss(access_key_id, access_key_secret, bucket, endpoint)
             elif oss_type == OssEnum.TENCENT.value:
                 cls._client = TencentCos(access_key_id, access_key_secret, endpoint, bucket)
             elif oss_type == OssEnum.S3.value:

@@ -1,98 +1,131 @@
-[中文文档](https://github.com/wuranxu/argus/blob/main/README.md)
+[中文说明](./README.md)
 
-![png](https://img.shields.io/badge/Python-3.5+-green)
-![png](https://img.shields.io/badge/React-17+-blue)
-![png](https://img.shields.io/badge/FastApi-green)
-![png](https://img.shields.io/badge/contributors-3-green)
+# Argus Test Platform
 
+> An AI-first open-source testing platform for API automation, XMind-style functional case design, UI testing, performance testing, Mock services, and shared reports.
 
-## 🎉 Getting Started
+![Python](https://img.shields.io/badge/Python-3.8+-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-Frontend-61DAFB?logo=react&logoColor=111827)
+![License](https://img.shields.io/badge/License-MIT-111827)
 
-1. clone code
+Argus is built for teams that want more than a request runner. It brings test assets, execution workflows, and AI assistance into one platform.
 
-```bash
-$ git clone https://github.com/wuranxu/argus
-$ cd argus
+## AI Highlights
+
+- `AI-generated API flows`: build executable API scenarios from service assets.
+- `AI-generated functional cases`: turn requirements, screenshots, and rule docs into structured cases.
+- `Model-aware execution`: UI plans, API flow generation, and functional case generation can run with the selected model.
+- `Unified model config`: manage multiple enabled models from the admin panel.
+
+## Core Capabilities
+
+- `API Testing`: request debugging, automation cases, chained scenarios, variables, dependency passing.
+- `Functional Case Design`: XMind-style case management with AI generation and structured maintenance.
+- `UI Testing`: recording, planning, scheduling, model-based execution, and report playback.
+- `Performance Testing`: load activities, result aggregation, and performance reports.
+- `Mock & Assets`: service management, API assets, and Mock collaboration.
+- `Reports & Platform Config`: API/UI/performance reports, environments, gateways, notifications, and model config.
+
+## Server Deployment
+
+Recommended reading order:
+
+1. [Initialization data guide](./init_data/README.md)
+2. [Backend deployment guide](./ops/DEPLOY_BACKEND.md)
+3. `argus-front/ops/DEPLOY_FRONTEND.md`
+
+Notes:
+
+- Backend startup automatically prepares database schema changes.
+- The sample data in `init_data/` is intended for first-time deployment only. Do not run it again once data already exists.
+
+## Local Start
+
+Recommended local prerequisites:
+
+- `Python 3.8+`
+- `Node.js 18+`
+- `MySQL 8`
+- `Redis 6+`
+- `RabbitMQ`
+- `RustFS / S3-compatible object storage`
+
+Update backend config first:
+
+```text
+argus-end/conf/dev.env
 ```
 
-2. install dependencies
+At minimum, check database, Redis, RabbitMQ, object storage, and:
 
-```bash
-# 可换豆瓣源或者清华源安装依赖
-$ pip install -r requirements.txt
+```env
+SERVER_PORT=7777
+SERVER_REPORT=http://localhost:8000
 ```
 
-3. install and start redis
-
-4. install and start mysql
-
-5. edit config.py
-
-  edit connection info about redis and mysql
-
-6. start server
+Install backend dependencies and start:
 
 ```bash
-$ python argus.py
+pip install -r requirements.txt
+python argus.py
 ```
 
-7. registry
+Then update frontend config:
 
-  Open your browser, enter url: `http://localhost:7777`, then you will see the page.
+```text
+argus-front/config/defaultSettings.ts
+```
 
-  First people will be `ADMIN`
+Recommended local value:
 
-![](https://static.argus.fun/picture/2022-1-2/1641092636428-image.png)
+```ts
+apiUrl: 'localhost:7777/argus'
+```
 
-  Sign in and enjoy `argus`！
+Install frontend dependencies and start:
 
-## 🖕 Overview 
+```bash
+npm install
+npm run start
+```
 
-[Documents 🍚](http://argus.readthedocs.org/)
+Default local URL:
 
-[Demo 🍍](https://argus.fun/)
+```text
+http://localhost:8000
+```
 
-### 😢 About argus 
+Backend API:
 
-argus is an auto test tool based on `Python`+`FastApi`+`React` for api test. It's not an absolute production right now.
+```text
+http://localhost:7777/argus/
+```
 
-### ❤️ Heart 
+Backend API docs:
 
-I hope argus can help someone still uses robotframework or writes script for apitest.argus can help you a lot.
+```text
+http://localhost:7777/docs
+http://localhost:7777/redoc
+```
 
-### 😊 Features
+## Links
 
-+ [x] 🔥 absolute auth rule, support login with github
+- Live demo: http://zhangyanc.club/
+- Backend API docs: http://zhangyanc.club/docs
+- Backend OpenAPI: http://zhangyanc.club/openapi.json
+- Backend repo: [zhangmoumou1/argus-end](https://github.com/zhangmoumou1/argus-end)
+- Frontend repo: [zhangmoumou1/argus-front](https://github.com/zhangmoumou1/argus-front)
 
-- [x] 🀄 absolute project management
+## Architecture
 
-* [x] 🚴 fast with FastApi
+```text
+argus-front  -> React / Umi / Ant Design
+argus-end    -> FastAPI / SQLAlchemy / Scheduler
+storage      -> MySQL / Redis / OSS
+runtime      -> API / UI / Performance / Mock / AI
+```
 
-- [x] 📝 many options for data dependencies, you can make and use data so easy
-- [x] 🎨 online http request like postman
-- [x] 🍷 global variable for you
-- [x] 🐍 redis online
-- [x] 🐎 test plan
-- [x] 🙈 online database manager
-- [x] 📰 beautiful email notification
-- [x] 😹 cronjob for case
-- [x] 🐧 beautiful test report
+Argus is designed to become:
 
-## 🙋 Coming soon 
-
-- [ ] 🐘 Micro Services
-- [ ] 🐄 DataFactory for developing data
-- [ ] 🐸 support har/jmx to argus case
-- [ ] 👍 CI/CD，like pipeline, provide openapi
-- [ ] 🌼 notification
-- [ ] 🌛 support dubbo/grpc
-- [ ] 🐛 yapi
-- [ ] 🌽 and so on
-
-  You can open issues to communicate with me, if you like the project, give a star will make me happy.
-
-## 🎨 Wechat communicate group
-
-  you can ask anything in my wechat group.
-
-![](https://static.argus.fun/picture/2022-1-2/1641097484952-ddff5bf23bdccaaf23fa227aa2e9957.jpg)
+`test assets + AI acceleration + unified collaboration`

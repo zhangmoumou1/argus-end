@@ -1,89 +1,109 @@
-# Argus 后端部署说明
+# Argus 后端部署文档
 
 后端项目路径：`argus-end`
 
-## 访问地址总览
+## 访问地址
 
-前端访问地址：
+- 平台首页：`http://你的域名或IP/`
+- 后端接口：`http://你的域名或IP/argus/`
+- 后端接口文档：`http://你的域名或IP/docs`
+- OpenAPI：`http://你的域名或IP/openapi.json`
+
+默认端口：
+
+- 前端容器：`127.0.0.1:8000`
+- 后端容器：`127.0.0.1:7777`
+- 宿主机统一入口：Nginx
+
+## 本地启动
+
+本机建议先安装：
+
+- `Python 3.8+`
+- `Node.js 18+`
+- `MySQL 8`
+- `Redis 6+`
+- `RabbitMQ`
+- `RustFS / S3 兼容对象存储`
+
+后端改这里：
 
 ```text
-http://域名/
+argus-end/conf/dev.env
 ```
 
-后端访问地址：
+至少确认：
+
+```env
+MYSQL_HOST=你的本机数据库地址
+MYSQL_PORT=3306
+MYSQL_USER=你的数据库账号
+MYSQL_PWD=你的数据库密码
+DBNAME=argus
+
+REDIS_HOST=你的本机Redis地址
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_PASSWORD=
+
+RABBITMQ_HOST=你的本机RabbitMQ地址
+RABBITMQ_PORT=5672
+RABBITMQ_USER=你的RabbitMQ账号
+RABBITMQ_PASSWORD=你的RabbitMQ密码
+
+OSS_TYPE=s3
+OSS_ENDPOINT=http://你的本机RustFS地址:9000
+OSS_ACCESS_KEY_ID=你的对象存储AccessKey
+OSS_ACCESS_KEY_SECRET=你的对象存储SecretKey
+OSS_BUCKET=argus-end
+OSS_AVATAR_BUCKET=public
+
+SERVER_PORT=7777
+SERVER_REPORT=http://localhost:8000
+```
+
+前端改这里：
 
 ```text
-http://域名/argus/
+argus-front/config/defaultSettings.ts
 ```
 
-后端接口文档地址：
+本机联调推荐：
 
-```text
-http://域名/docs
+```ts
+apiUrl: 'localhost:7777/argus'
 ```
 
-宿主机 Nginx 统一入口配置：
-
-```text
-argus-end/ops/nginx.conf
-```
-
-## 宿主机准备
-
-当前部署方案依赖宿主机 Nginx 作为统一入口。
-
-如果服务器还没安装 Nginx，先安装：
+启动命令：
 
 ```bash
-sudo apt update
-sudo apt install -y nginx
+cd ~/argus/argus-end
+pip install -r requirements.txt
+python argus.py
 ```
-
-安装后确认服务状态：
 
 ```bash
-sudo systemctl enable nginx
-sudo systemctl start nginx
-sudo systemctl status nginx
+cd ~/argus/argus-front
+npm install
+npm run start
 ```
 
-## 部署后初始化对象存储
+## 服务器部署
 
-RabbitMQ 管理后台访问地址：
+### 服务器部署前要改的地方
 
-```text
-http://域名:15672/#/
-```
+1. `argus-end/conf/pro.env`
+2. `argus-end/ops/nginx.conf`
+3. `argus-front/config/defaultSettings.ts`
+4. `argus-front/ops/nginx.frontend.conf`
 
-RustFS 对象存储控制台访问地址：
-
-```text
-http://域名:9091/
-```
-
-RustFS / S3 对象存储中应在部署完成后创建 2 个 bucket：
-
-- `argus-end`
-- `public`
-
-## 后端配置文件
-
-部署前先修改：
-
-```text
-argus-end/conf/pro.env
-```
-
-公有镜像版的数据库、Redis、RabbitMQ、RustFS、对象存储等账密信息，统一放在 `conf/pro.env`，不直接写在 `ops/docker-compose.image.yaml`。
-两份 compose 都统一读取 `conf/pro.env` 作为容器运行配置。
-
-最少关注这些字段：
+`conf/pro.env` 至少确认这些字段：
 
 ```env
 MYSQL_HOST=argus-mysql
 MYSQL_PORT=3306
 MYSQL_USER=root
-MYSQL_PWD=19950308zyc.
+MYSQL_PWD=your_password
 DBNAME=argus
 
 REDIS_ON=True
@@ -105,14 +125,25 @@ RABBITMQ_USER=admin
 RABBITMQ_PASSWORD=admin
 
 SERVER_PORT=7777
+SERVER_REPORT=http://你的域名或IP
 ARGUS_API_WORKERS=2
 ```
 
-UI Runner 最小配置：
+如果你用域名部署：
 
-```text
-argus-end/ui_runner/.env
-```
+- `ops/nginx.conf` 的 `server_name` 改成你的域名
+- `argus-front/ops/nginx.frontend.conf` 的 `server_name` 改成你的域名
+- `argus-front/config/defaultSettings.ts` 的 `apiUrl` 改成 `你的域名/argus`
+- `conf/pro.env` 的 `SERVER_REPORT` 改成 `http://你的域名` 或 `https://你的域名`
+
+如果你用 IP 部署：
+
+- `ops/nginx.conf` 的 `server_name` 改成 `_`
+- `argus-front/ops/nginx.frontend.conf` 的 `server_name` 改成 `_`
+- `argus-front/config/defaultSettings.ts` 的 `apiUrl` 改成 `服务器IP/argus`
+- `conf/pro.env` 的 `SERVER_REPORT` 改成 `http://服务器IP`
+
+`ui_runner/.env` 最少保留：
 
 ```env
 UI_RUNNER_BROWSER=chromium
@@ -120,73 +151,57 @@ UI_RUNNER_HEADLESS=true
 UI_RUNNER_POLL_INTERVAL_MS=5000
 ```
 
-## 两套部署方式
+## 首次初始化
 
-### 方案一：服务器自己构建
+- 后端启动时会自动做表结构初始化
+- `init_data/` 里的示例数据只在首次发布时执行一次，已有数据不要重复覆盖
 
-适合：
-
-- 代码刚改完，想直接在服务器构建
-- 不依赖腾讯云公有镜像
-
-使用文件：
+参考：
 
 ```text
-ops/docker-compose.yaml
+argus-end/init_data/README.md
 ```
 
-首次部署：
+### 宿主机准备
+
+```bash
+sudo apt update
+sudo apt install -y nginx
+sudo systemctl enable nginx
+sudo systemctl start nginx
+```
+
+### 方式一：服务器本机构建
 
 ```bash
 cd ~/argus/argus-end/ops
 docker-compose -f docker-compose.yaml up -d argus-mysql argus-redis argus-rabbitmq argus-rustfs
 docker-compose -f docker-compose.yaml up -d --build --no-deps argus-api
+docker-compose -f docker-compose.yaml up -d --build --no-deps argus-ui-runner
 ```
 
-后端更新发布：
+后续更新：
 
 ```bash
 cd ~/argus/argus-end/ops
 docker-compose -f docker-compose.yaml up -d --build --no-deps argus-api
-```
-
-UI Runner 更新发布：
-
-```bash
-cd ~/argus/argus-end/ops
 docker-compose -f docker-compose.yaml up -d --build --no-deps argus-ui-runner
 ```
 
-### 方案二：直接拉腾讯云公有镜像
-
-适合：
-
-- 对外部署
-- 服务器配置较低，不想本机构建
-- 只想 pull + up
-
-使用文件：
-
-```text
-ops/docker-compose.image.yaml
-```
-
-当前公有镜像：
-
-```bash
-docker pull ccr.ccs.tencentyun.com/zhangyancheng/argus-end:1.0
-```
-
-首次部署：
+### 方式二：使用公有镜像
 
 ```bash
 cd ~/argus/argus-end/ops
-docker-compose -f docker-compose.image.yaml up -d argus-mysql argus-redis argus-rabbitmq argus-rustfs
+docker-compose -f docker-compose.image.yaml up -d argus-mysql argus-redis argus-rabbitmq argus-rustfs argus-ui-runner
 docker-compose -f docker-compose.image.yaml pull argus-api
 docker-compose -f docker-compose.image.yaml up -d --no-deps argus-api
 ```
 
-后端更新发布：
+说明：
+
+- `argus-api` 使用公有镜像
+
+后续更新：
 
 ```bash
 cd ~/argus/argus-end/ops
@@ -194,71 +209,9 @@ docker-compose -f docker-compose.image.yaml pull argus-api
 docker-compose -f docker-compose.image.yaml up -d --no-deps argus-api
 ```
 
-UI Runner 更新发布：
+### Nginx
 
-```bash
-cd ~/argus/argus-end/ops
-docker-compose -f docker-compose.image.yaml up -d --build --no-deps argus-ui-runner
-```
-
-## 查看状态
-
-自己构建版：
-
-```bash
-cd ~/argus/argus-end/ops
-docker-compose -f docker-compose.yaml ps
-```
-
-公有镜像版：
-
-```bash
-cd ~/argus/argus-end/ops
-docker-compose -f docker-compose.image.yaml ps
-```
-
-## 看日志
-
-自己构建版：
-
-```bash
-cd ~/argus/argus-end/ops
-docker-compose -f docker-compose.yaml logs -f argus-api
-```
-
-公有镜像版：
-
-```bash
-cd ~/argus/argus-end/ops
-docker-compose -f docker-compose.image.yaml logs -f argus-api
-```
-
-后端启动日志文件：
-
-```bash
-tail -f ~/argus/argus-end/logs/startup/argus-api.log
-```
-
-UI Runner 启动日志文件：
-
-```bash
-tail -f ~/argus/argus-end/logs/startup/argus-ui-runner.log
-```
-
-## 宿主机 Nginx
-
-推荐由宿主机 Nginx 统一对外暴露 `80/443`，前端和后端容器只提供内部端口：
-
-- 前端容器：`127.0.0.1:8000`
-- 后端容器：`127.0.0.1:7777`
-
-示例配置文件：
-
-```text
-~/argus/argus-end/ops/nginx.conf
-```
-
-加载方式示例：
+加载配置：
 
 ```bash
 sudo cp ~/argus/argus-end/ops/nginx.conf /etc/nginx/conf.d/argus.conf
@@ -266,12 +219,33 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-如果 `/etc/nginx/conf.d/` 下还没有 `argus.conf`，说明这一步还没执行，域名访问会直接异常。
+部署完成后在对象存储里创建两个 bucket：
 
-## 说明
+- `argus-end`
+- `public`
 
-- `docker-compose.yaml`：服务器自己构建 `argus-api`
-- `docker-compose.image.yaml`：直接拉腾讯云公有镜像 `argus-api`
-- `argus-mysql`、`argus-redis`、`argus-rabbitmq`、`argus-rustfs` 都是基础依赖服务
-- `argus-ui-runner` 当前仍按本地 Dockerfile 单独构建
-- `2核2G` 机器更推荐使用“公有镜像版”
+### 验证
+
+查看状态：
+
+```bash
+cd ~/argus/argus-end/ops
+docker-compose -f docker-compose.yaml ps
+docker-compose -f docker-compose.image.yaml ps
+```
+
+查看日志：
+
+```bash
+cd ~/argus/argus-end/ops
+docker-compose -f docker-compose.yaml logs -f argus-api
+docker-compose -f docker-compose.image.yaml logs -f argus-api
+tail -f ~/argus/argus-end/logs/startup/argus-api.log
+tail -f ~/argus/argus-end/logs/startup/argus-ui-runner.log
+```
+
+能正常打开下面这些地址，就说明部署基本成功：
+
+- `http://你的域名或IP/`
+- `http://你的域名或IP/docs`
+- `http://你的域名或IP/openapi.json`

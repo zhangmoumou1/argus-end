@@ -110,12 +110,7 @@ class BaseConfig(BaseSettings):
     # dao路径
     DAO_PATH: ClassVar[str] = os.path.join(APP_PATH, "crud")
 
-    SERVER_REPORT: ClassVar[str] = "http://localhost:8000"
-
-    OSS_URL: ClassVar[str] = "http://oss.argus.fun"
-
-    # 七牛云链接地址，如果采用七牛oss，需要自行替换
-    QINIU_URL: ClassVar[str] = "https://static.argus.fun"
+    SERVER_REPORT: str = "http://localhost:8000"
 
     RELATION: ClassVar[str] = "argus_relation"
     ALIAS: ClassVar[str] = "__alias__"
@@ -153,8 +148,6 @@ class ProConfig(BaseConfig):
         env_file_encoding="utf-8",
         extra="ignore",
     )
-
-    SERVER_REPORT: ClassVar[str] = "https://argus.fun"
     SERVER_HOST: str = "127.0.0.1"
 
 
