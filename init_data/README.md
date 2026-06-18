@@ -5,7 +5,8 @@
 - `02_ai_model_config.sql`：后台管理-模型配置初始化 SQL
 - `03_project_and_directory.sql`：测试项目与功能用例目录初始化 SQL
 - `04_functional_case_file.sql`：功能用例文件初始化 SQL
-- `05_run_all.sql`：按顺序合并后的总 SQL
+- `05_functional_case_item.sql`：功能用例明细初始化 SQL
+- `06_run_all.sql`：按顺序合并后的总 SQL
 - `skill_docs/`：对应技能文档的 Markdown 源文件
 
 导入顺序：
@@ -13,6 +14,7 @@
 2. `02_ai_model_config.sql`
 3. `03_project_and_directory.sql`
 4. `04_functional_case_file.sql`
+5. `05_functional_case_item.sql`
 
 说明：
 - 这批数据用于项目首次发布初始化；后续库里已存在时，不要再执行覆盖。
