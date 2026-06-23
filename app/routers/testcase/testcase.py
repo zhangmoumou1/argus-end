@@ -1572,6 +1572,12 @@ async def update_batch_testcase_out_parameters(case_id: int, form: List[ArgusTes
 
 @router.post("/parameters/update")
 async def update_testcase_out_parameters(form: ArgusTestCaseOutParametersForm, user_info=Depends(Permission())):
+    target = await ArgusTestCaseOutParametersDao.query_record(id=form.id)
+    if target is None:
+        return ArgusResponse.failed("出参不存在")
+    duplicate = await ArgusTestCaseOutParametersDao.query_record(name=form.name, case_id=target.case_id)
+    if duplicate is not None and duplicate.id != form.id:
+        return ArgusResponse.failed("参数名称已存在")
     data = await ArgusTestCaseOutParametersDao.update_record_by_id(user_info['id'], form, log=True)
     return ArgusResponse.success(data)
 

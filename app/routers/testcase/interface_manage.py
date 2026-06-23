@@ -28,6 +28,13 @@ router = APIRouter(prefix="/interface-management")
 DEFAULT_SYNC_CRON = "0 0 * * *"
 _INTERFACE_SCHEMA_READY = False
 _INTERFACE_SCHEMA_LOCK = None
+_LOCAL_OPENAPI_PATHS = {
+    "/openapi.json",
+    "/docs",
+    "/redoc",
+    "/swagger-ui.html",
+    "/swagger-ui/index.html",
+}
 
 
 def _get_interface_schema_lock():
@@ -35,6 +42,21 @@ def _get_interface_schema_lock():
     if _INTERFACE_SCHEMA_LOCK is None:
         _INTERFACE_SCHEMA_LOCK = asyncio.Lock()
     return _INTERFACE_SCHEMA_LOCK
+
+
+def _local_openapi_hosts():
+    hosts = {"localhost", "127.0.0.1", "0.0.0.0"}
+    for raw_url in (getattr(Config, "PUBLIC_BASE_URL", ""), getattr(Config, "SERVER_REPORT", "")):
+        parsed = urlparse(str(raw_url or "").strip())
+        host = str(parsed.hostname or "").strip().lower()
+        if host:
+            hosts.add(host)
+    return hosts
+
+
+def _is_local_openapi_path(path: str):
+    normalized = normalize_path(path or "")
+    return any(normalized == item or normalized.endswith(item) for item in _LOCAL_OPENAPI_PATHS)
 
 
 def normalize_path(path: str):
@@ -496,10 +518,10 @@ def parse_yapi_payload(payload):
 def resolve_local_openapi_payload(source_url: str):
     parsed = urlparse(str(source_url or "").strip())
     host = str(parsed.hostname or "").strip().lower()
-    path = normalize_path(parsed.path or "")
-    if host not in {"localhost", "127.0.0.1", "0.0.0.0"}:
+    path = parsed.path or ""
+    if host and host not in _local_openapi_hosts():
         return None
-    if path in {"/openapi.json", "/docs", "/redoc", "/swagger-ui.html", "/swagger-ui/index.html"}:
+    if _is_local_openapi_path(path):
         payload = argus.openapi()
         if isinstance(payload, dict) and (payload.get("openapi") or payload.get("swagger")):
             return payload
@@ -564,6 +586,23 @@ def resolve_swagger_payload(source_url: str):
     return payload
 
 
+async def resolve_swagger_payload_async(source_url: str):
+    return await asyncio.to_thread(resolve_swagger_payload, source_url)
+
+
+async def resolve_yapi_payload_async(source_url: str, token: str):
+    final_url = str(source_url or "").strip()
+    if token:
+        final_url = f"{final_url}{'&' if '?' in final_url else '?'}token={token}"
+
+    def _fetch():
+        response = requests.get(final_url, timeout=120)
+        response.raise_for_status()
+        return response.json()
+
+    return await asyncio.to_thread(_fetch)
+
+
 async def ensure_interface_schema(session):
     global _INTERFACE_SCHEMA_READY
     if _INTERFACE_SCHEMA_READY:
@@ -619,6 +658,119 @@ async def ensure_interface_schema(session):
         "update_user INT NOT NULL"
         ")"
     ))
+
+
+async def update_service_sync_state(session, service: ArgusApiService, status: str, user_id: int):
+    service.last_sync_status = status
+    service.last_sync_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    service.update_user = user_id
+    service.updated_at = datetime.now()
+    await session.flush()
+
+
+async def mark_service_sync_state(service_id: int, status: str, user_id: int):
+    async with async_session() as session:
+        await ensure_interface_schema(session)
+        service = (await session.execute(
+            select(ArgusApiService).where(ArgusApiService.id == service_id, ArgusApiService.deleted_at == 0)
+        )).scalars().first()
+        if service is None:
+            return None
+        await update_service_sync_state(session, service, status, user_id)
+        await session.commit()
+        return service
+
+
+async def perform_swagger_import(service_id: int, source_url: str, user_id: int, payload: dict = None):
+    if not source_url and not isinstance(payload, dict):
+        raise ValueError("请提供 source_url")
+    if not isinstance(payload, dict):
+        payload = await resolve_swagger_payload_async(source_url)
+    endpoint_items = parse_swagger_payload(payload)
+    resolved_base_url = resolve_swagger_base_url(payload, source_url)
+    async with async_session() as session:
+        await ensure_interface_schema(session)
+        service = (await session.execute(
+            select(ArgusApiService).where(ArgusApiService.id == service_id, ArgusApiService.deleted_at == 0)
+        )).scalars().first()
+        if service is None:
+            raise ValueError("服务不存在")
+        old = deepcopy(service)
+        service.source_type = "swagger"
+        service.source_config = safe_json_dumps({"source_url": source_url})
+        if resolved_base_url:
+            service.base_url = resolved_base_url
+        await update_service_sync_state(session, service, "success", user_id)
+        summary = await upsert_endpoints(session, service, user_id, endpoint_items)
+        await ArgusOperationDao.insert_log(
+            session,
+            user_id,
+            OperationType.UPDATE,
+            service,
+            old,
+            service.id,
+            changed=["source_type", "source_config", "last_sync_status", "last_sync_at"],
+        )
+        await session.commit()
+    return {"count": len(endpoint_items), **summary}
+
+
+async def perform_yapi_import(service_id: int, source_url: str, source_text: str, user_id: int):
+    token = ""
+    try:
+        config_data = SystemConfiguration.get_config() or {}
+        token = str(((config_data.get("yapi") or {}).get("token")) or "").strip()
+    except Exception:
+        token = ""
+
+    if not source_text and not source_url:
+        raise ValueError("请提供 source_url 或 source_text")
+    if not source_text and not token:
+        raise ValueError("系统设置未配置YAPI Token，请先到后台管理-系统设置或 conf/*.env 中配置")
+
+    if source_text:
+        payload = json.loads(source_text)
+    else:
+        payload = await resolve_yapi_payload_async(source_url, token)
+
+    endpoint_items = parse_yapi_payload(payload)
+    async with async_session() as session:
+        await ensure_interface_schema(session)
+        service = (await session.execute(
+            select(ArgusApiService).where(ArgusApiService.id == service_id, ArgusApiService.deleted_at == 0)
+        )).scalars().first()
+        if service is None:
+            raise ValueError("服务不存在")
+        old = deepcopy(service)
+        service.source_type = "yapi"
+        service.source_config = safe_json_dumps({"source_url": source_url})
+        await update_service_sync_state(session, service, "success", user_id)
+        summary = await upsert_endpoints(session, service, user_id, endpoint_items)
+        await ArgusOperationDao.insert_log(
+            session,
+            user_id,
+            OperationType.UPDATE,
+            service,
+            old,
+            service.id,
+            changed=["source_type", "source_config", "last_sync_status", "last_sync_at"],
+        )
+        await session.commit()
+    return {"count": len(endpoint_items), **summary}
+
+
+async def run_service_sync_task(service_id: int, user_id: int, source_type: str, source_url: str):
+    try:
+        if source_type == "swagger":
+            await perform_swagger_import(service_id, source_url, user_id)
+            return
+        if source_type == "yapi":
+            await perform_yapi_import(service_id, source_url, "", user_id)
+            return
+        raise ValueError("该服务不是可同步来源，请先配置swagger或yapi")
+    except Exception:
+        await mark_service_sync_state(service_id, "failed", user_id)
+        return
         await session.execute(text(
         "CREATE TABLE IF NOT EXISTS argus_api_endpoint_version ("
         "id INT PRIMARY KEY AUTO_INCREMENT,"
@@ -1550,40 +1702,15 @@ async def import_swagger(form: dict, user_info=Depends(Permission())):
         if source_text:
             payload = json.loads(source_text)
         else:
-            payload = resolve_swagger_payload(source_url)
+            payload = await resolve_swagger_payload_async(source_url)
     except Exception as exc:
         return ArgusResponse.failed(f"Swagger解析失败: {exc}")
 
-    endpoint_items = parse_swagger_payload(payload)
-    resolved_base_url = resolve_swagger_base_url(payload, source_url)
-    async with async_session() as session:
-        await ensure_interface_schema(session)
-        service = (await session.execute(
-            select(ArgusApiService).where(ArgusApiService.id == service_id, ArgusApiService.deleted_at == 0)
-        )).scalars().first()
-        if service is None:
-            return ArgusResponse.failed("服务不存在")
-        old = deepcopy(service)
-        service.source_type = "swagger"
-        service.source_config = safe_json_dumps({"source_url": source_url})
-        if resolved_base_url:
-            service.base_url = resolved_base_url
-        service.last_sync_status = "success"
-        service.last_sync_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        service.update_user = user_info["id"]
-        service.updated_at = datetime.now()
-        summary = await upsert_endpoints(session, service, user_info["id"], endpoint_items)
-        await ArgusOperationDao.insert_log(
-            session,
-            user_info["id"],
-            OperationType.UPDATE,
-            service,
-            old,
-            service.id,
-            changed=["source_type", "source_config", "last_sync_status", "last_sync_at"],
-        )
-        await session.commit()
-    return ArgusResponse.success({"count": len(endpoint_items), **summary})
+    try:
+        summary = await perform_swagger_import(service_id, source_url, user_info["id"], payload=payload)
+    except Exception as exc:
+        return ArgusResponse.failed(f"Swagger导入失败: {exc}")
+    return ArgusResponse.success(summary)
 
 
 @router.post("/import/yapi")
@@ -1593,58 +1720,11 @@ async def import_yapi(form: dict, user_info=Depends(Permission())):
         return ArgusResponse.failed("service_id不能为空")
     source_url = str(form.get("source_url") or "").strip()
     source_text = str(form.get("source_text") or "").strip()
-    token = ""
     try:
-        config_data = SystemConfiguration.get_config() or {}
-        token = str(((config_data.get("yapi") or {}).get("token")) or "").strip()
-    except Exception:
-        token = ""
-
-    if not source_text and not source_url:
-        return ArgusResponse.failed("请提供 source_url 或 source_text")
-    if not source_text and not token:
-        return ArgusResponse.failed("系统设置未配置YAPI Token，请先到后台管理-系统设置或 conf/*.env 中配置")
-
-    try:
-        if source_text:
-            payload = json.loads(source_text)
-        else:
-            final_url = source_url
-            if token:
-                final_url = f"{source_url}{'&' if '?' in source_url else '?'}token={token}"
-            response = requests.get(final_url, timeout=120)
-            response.raise_for_status()
-            payload = response.json()
+        summary = await perform_yapi_import(service_id, source_url, source_text, user_info["id"])
     except Exception as exc:
-        return ArgusResponse.failed(f"YAPI解析失败: {exc}")
-
-    endpoint_items = parse_yapi_payload(payload)
-    async with async_session() as session:
-        await ensure_interface_schema(session)
-        service = (await session.execute(
-            select(ArgusApiService).where(ArgusApiService.id == service_id, ArgusApiService.deleted_at == 0)
-        )).scalars().first()
-        if service is None:
-            return ArgusResponse.failed("服务不存在")
-        old = deepcopy(service)
-        service.source_type = "yapi"
-        service.source_config = safe_json_dumps({"source_url": source_url})
-        service.last_sync_status = "success"
-        service.last_sync_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        service.update_user = user_info["id"]
-        service.updated_at = datetime.now()
-        summary = await upsert_endpoints(session, service, user_info["id"], endpoint_items)
-        await ArgusOperationDao.insert_log(
-            session,
-            user_info["id"],
-            OperationType.UPDATE,
-            service,
-            old,
-            service.id,
-            changed=["source_type", "source_config", "last_sync_status", "last_sync_at"],
-        )
-        await session.commit()
-    return ArgusResponse.success({"count": len(endpoint_items), **summary})
+        return ArgusResponse.failed(f"YAPI导入失败: {exc}")
+    return ArgusResponse.success(summary)
 
 
 @router.post("/service/sync")
@@ -1662,17 +1742,19 @@ async def sync_service(form: dict, user_info=Depends(Permission())):
 
     source_type = (service.source_type or "manual").lower()
     config_data = safe_json_loads(service.source_config)
-    if source_type == "swagger":
-        return await import_swagger({
-            "service_id": service_id,
-            "source_url": config_data.get("source_url") or "",
-        }, user_info)
-    if source_type == "yapi":
-        return await import_yapi({
-            "service_id": service_id,
-            "source_url": config_data.get("source_url") or "",
-        }, user_info)
-    return ArgusResponse.failed("该服务不是可同步来源，请先配置swagger或yapi")
+    source_url = str(config_data.get("source_url") or "").strip()
+    if source_type not in {"swagger", "yapi"}:
+        return ArgusResponse.failed("该服务不是可同步来源，请先配置swagger或yapi")
+    if not source_url:
+        return ArgusResponse.failed("请先配置同步地址")
+
+    await mark_service_sync_state(service_id, "running", user_info["id"])
+    asyncio.create_task(run_service_sync_task(service_id, user_info["id"], source_type, source_url))
+    return ArgusResponse.success({
+        "service_id": service_id,
+        "status": "running",
+        "source_type": source_type,
+    }, msg="已开始后台同步")
 
 
 @router.post("/endpoint/deprecate")

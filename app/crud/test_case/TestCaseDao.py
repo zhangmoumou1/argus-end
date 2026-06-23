@@ -37,8 +37,8 @@ class TestCaseDao(Mapper):
         try:
             filters = [TestCase.deleted_at == 0]
             if directory_id:
-                parents = await ArgusTestcaseDirectoryDao.get_directory_son(directory_id)
-                filters = [TestCase.deleted_at == 0, TestCase.directory_id.in_(parents)]
+                # Interface case listing should only show cases directly under the selected directory.
+                filters = [TestCase.deleted_at == 0, TestCase.directory_id == directory_id]
             if name:
                 filters.append(TestCase.name.like(f"%{name}%"))
             if url:
@@ -240,6 +240,8 @@ class TestCaseDao(Mapper):
     @classmethod
     async def update_test_case(cls, test_case: TestCaseForm, user_id: int) -> TestCase:
         try:
+            base_case_form = test_case.copy(deep=True)
+            base_case_form.out_parameters = []
             async with async_session() as session:
                 async with session.begin():
                     query = await session.execute(
@@ -248,7 +250,7 @@ class TestCaseDao(Mapper):
                     if data is None:
                         raise Exception("用例不存在")
                     old = deepcopy(data)
-                    changed = cls.update_model(data, test_case, user_id)
+                    changed = cls.update_model(data, base_case_form, user_id)
                     await session.flush()
                     if changed:
                         await cls.insert_log(session, user_id, OperationType.UPDATE, data, old, data.id, changed)

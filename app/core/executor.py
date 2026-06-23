@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import json
 import re
@@ -789,6 +790,8 @@ class Executor(object):
 
         if isinstance(result, bytes):
             return result.decode()
+        if not isinstance(result, str):
+            return result
 
         # 优先判断是否是时间
         try:
@@ -806,6 +809,10 @@ class Executor(object):
         try:
             return json.loads(result)
         except:
+            pass
+        try:
+            return ast.literal_eval(result)
+        except Exception:
             return result
 
     @staticmethod
