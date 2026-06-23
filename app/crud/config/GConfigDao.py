@@ -16,7 +16,8 @@ from app.models.user import User
 from app.schema.gconfig import GConfigForm
 
 
-AI_MODEL_CONFIG_KEY = "__ai_model_config__"
+AI_MODEL_CONFIG_KEY = "ai_model_config"
+LEGACY_AI_MODEL_CONFIG_KEYS = ["__ai_model_config__"]
 
 AI_MODEL_PRESET_ORDER = ["kimi", "qwen", "deepseek", "openai", "custom"]
 
@@ -74,9 +75,14 @@ AI_MODEL_DEFAULTS = AI_MODEL_PRESETS
 @ModelWrapper(GConfig)
 class GConfigDao(Mapper):
     AI_MODEL_CONFIG_KEY = AI_MODEL_CONFIG_KEY
+    LEGACY_AI_MODEL_CONFIG_KEYS = LEGACY_AI_MODEL_CONFIG_KEYS
     AI_MODEL_DEFAULTS = AI_MODEL_DEFAULTS
     AI_MODEL_PRESETS = AI_MODEL_PRESETS
     AI_MODEL_PRESET_ORDER = AI_MODEL_PRESET_ORDER
+
+    @classmethod
+    def _ai_model_config_keys(cls):
+        return [cls.AI_MODEL_CONFIG_KEY, *cls.LEGACY_AI_MODEL_CONFIG_KEYS]
 
     @staticmethod
     def _value_to_text(value):
@@ -262,7 +268,7 @@ class GConfigDao(Mapper):
                 select(GConfig).where(
                     GConfig.deleted_at == 0,
                     GConfig.type == int(GConfigVariableType.special_var),
-                    GConfig.key == cls.AI_MODEL_CONFIG_KEY,
+                    GConfig.key.in_(cls._ai_model_config_keys()),
                 ).order_by(desc(GConfig.id))
             )
             row = result.scalars().first()
@@ -329,7 +335,7 @@ class GConfigDao(Mapper):
                     select(GConfig).where(
                         GConfig.deleted_at == 0,
                         GConfig.type == int(GConfigVariableType.special_var),
-                        GConfig.key == cls.AI_MODEL_CONFIG_KEY,
+                        GConfig.key.in_(cls._ai_model_config_keys()),
                     ).order_by(desc(GConfig.id))
                 )
                 row = result.scalars().first()
@@ -349,6 +355,7 @@ class GConfigDao(Mapper):
                     await cls.insert_log(session, user_id, OperationType.INSERT, row, key=row.id)
                 else:
                     old = deepcopy(row)
+                    row.key = cls.AI_MODEL_CONFIG_KEY
                     row.value = text_value
                     row.key_type = int(GConfigParserEnum.json)
                     row.enable = True
@@ -362,7 +369,7 @@ class GConfigDao(Mapper):
                         row,
                         old,
                         row.id,
-                        changed=["value", "key_type", "enable"],
+                        changed=["key", "value", "key_type", "enable"],
                     )
         return cls._public_ai_model_config(next_config)
 

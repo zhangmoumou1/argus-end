@@ -1,6 +1,6 @@
-# 基础配置类
 import os
 from typing import Any, ClassVar, Dict, List, Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,6 +18,7 @@ class BaseConfig(BaseSettings):
     SERVER_PORT: int
 
     HEARTBEAT: int = 48
+    PUBLIC_BASE_URL: str = ""
 
     # mock server
     MOCK_ON: bool
@@ -55,6 +56,7 @@ class BaseConfig(BaseSettings):
     # RustFS / S3 compatible OSS
     OSS_TYPE: str = ""
     OSS_ENDPOINT: str = ""
+    OSS_PUBLIC_ENDPOINT: str = ""
     OSS_ACCESS_KEY_ID: str = ""
     OSS_ACCESS_KEY_SECRET: str = ""
     OSS_BUCKET: str = ""
@@ -64,6 +66,8 @@ class BaseConfig(BaseSettings):
     OSS_USE_SSL: bool = False
     OSS_FORCE_PATH_STYLE: bool = True
     OSS_PRESIGN_EXPIRE: int = 3600
+    OSS_PORT: int = 9000
+    OSS_CONSOLE_PORT: int = 9091
 
     # system config migrated from configuration_*.json
     EMAIL_SENDER: str = ""
@@ -111,6 +115,54 @@ class BaseConfig(BaseSettings):
     DAO_PATH: ClassVar[str] = os.path.join(APP_PATH, "crud")
 
     SERVER_REPORT: str = "http://localhost:8000"
+
+    def model_post_init(self, __context):
+        super().model_post_init(__context)
+        self._apply_public_url_defaults()
+
+    @staticmethod
+    def _normalize_base_url(url: str) -> str:
+        value = str(url or "").strip().rstrip("/")
+        return value
+
+    @staticmethod
+    def _replace_url_port(url: str, port: int) -> str:
+        value = str(url or "").strip()
+        if not value:
+            return ""
+        parts = urlsplit(value)
+        if not parts.scheme or not parts.netloc:
+            return value.rstrip("/")
+        hostname = parts.hostname or ""
+        if not hostname:
+            return value.rstrip("/")
+        userinfo = ""
+        if parts.username:
+            userinfo = parts.username
+            if parts.password:
+                userinfo = f"{userinfo}:{parts.password}"
+            userinfo = f"{userinfo}@"
+        default_port = 443 if parts.scheme == "https" else 80
+        next_port = int(port or 0) or default_port
+        netloc = f"{userinfo}{hostname}"
+        if next_port != default_port:
+            netloc = f"{netloc}:{next_port}"
+        return urlunsplit((parts.scheme, netloc, "", "", "")).rstrip("/")
+
+    def _apply_public_url_defaults(self):
+        public_base = self._normalize_base_url(getattr(self, "PUBLIC_BASE_URL", ""))
+        server_report = self._normalize_base_url(getattr(self, "SERVER_REPORT", ""))
+        oss_public_endpoint = self._normalize_base_url(getattr(self, "OSS_PUBLIC_ENDPOINT", ""))
+
+        if public_base and (not server_report or server_report == "http://localhost:8000"):
+            self.SERVER_REPORT = public_base
+        else:
+            self.SERVER_REPORT = server_report or "http://localhost:8000"
+
+        if public_base and not oss_public_endpoint:
+            self.OSS_PUBLIC_ENDPOINT = self._replace_url_port(public_base, getattr(self, "OSS_PORT", 9000))
+        else:
+            self.OSS_PUBLIC_ENDPOINT = oss_public_endpoint
 
     RELATION: ClassVar[str] = "argus_relation"
     ALIAS: ClassVar[str] = "__alias__"

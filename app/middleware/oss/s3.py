@@ -13,6 +13,7 @@ class S3CompatibleOss(OssFile):
     def __init__(
         self,
         endpoint: str,
+        public_endpoint: str,
         access_key_id: str,
         access_key_secret: str,
         default_bucket: str,
@@ -24,9 +25,22 @@ class S3CompatibleOss(OssFile):
         self.default_bucket = default_bucket
         self.presign_expire = presign_expire
         self.force_path_style = force_path_style
+        self.public_endpoint = str(public_endpoint or endpoint or "").strip()
         self.client = boto3.client(
             "s3",
             endpoint_url=endpoint,
+            aws_access_key_id=access_key_id,
+            aws_secret_access_key=access_key_secret,
+            region_name=region,
+            use_ssl=use_ssl,
+            config=BotoConfig(
+                signature_version="s3v4",
+                s3={"addressing_style": "path" if force_path_style else "auto"},
+            ),
+        )
+        self.presign_client = boto3.client(
+            "s3",
+            endpoint_url=self.public_endpoint,
             aws_access_key_id=access_key_id,
             aws_secret_access_key=access_key_secret,
             region_name=region,
@@ -58,7 +72,7 @@ class S3CompatibleOss(OssFile):
         return str(bucket_name or self.default_bucket or "").strip()
 
     def _build_object_url(self, bucket_name: str, key: str) -> str:
-        endpoint = str(self.client.meta.endpoint_url or "").rstrip("/")
+        endpoint = str(self.public_endpoint or self.client.meta.endpoint_url or "").rstrip("/")
         encoded_key = quote(str(key or "").lstrip("/"), safe="/")
         parts = urlsplit(endpoint)
         if not parts.scheme or not parts.netloc:
@@ -68,7 +82,7 @@ class S3CompatibleOss(OssFile):
         return urlunsplit((parts.scheme, f"{bucket_name}.{parts.netloc}", f"/{encoded_key}", "", ""))
 
     def _presigned_url(self, bucket_name: str, key: str) -> str:
-        return self.client.generate_presigned_url(
+        return self.presign_client.generate_presigned_url(
             "get_object",
             Params={"Bucket": bucket_name, "Key": key},
             ExpiresIn=self.presign_expire,

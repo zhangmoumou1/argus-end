@@ -51,6 +51,7 @@ class OssClient(object):
         return {
             "oss_type": oss_type,
             "endpoint": str(getattr(Config, "OSS_ENDPOINT", "") or "").strip(),
+            "public_endpoint": str(getattr(Config, "OSS_PUBLIC_ENDPOINT", "") or "").strip(),
             "access_key_id": str(getattr(Config, "OSS_ACCESS_KEY_ID", "") or "").strip(),
             "access_key_secret": str(getattr(Config, "OSS_ACCESS_KEY_SECRET", "") or "").strip(),
             "bucket": str(getattr(Config, "OSS_BUCKET", "") or "").strip(),
@@ -107,6 +108,7 @@ class OssClient(object):
             elif oss_type == OssEnum.S3.value:
                 cls._client = S3CompatibleOss(
                     endpoint=endpoint,
+                    public_endpoint=str(oss_config.get("public_endpoint") or endpoint or "").strip(),
                     access_key_id=access_key_id,
                     access_key_secret=access_key_secret,
                     default_bucket=bucket,

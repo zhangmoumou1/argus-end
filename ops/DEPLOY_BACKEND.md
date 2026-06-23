@@ -51,6 +51,8 @@ RABBITMQ_PORT=5672
 RABBITMQ_USER=你的RabbitMQ账号
 RABBITMQ_PASSWORD=你的RabbitMQ密码
 
+PUBLIC_BASE_URL=http://localhost:8000
+
 OSS_TYPE=s3
 OSS_ENDPOINT=http://你的本机RustFS地址:9000
 OSS_ACCESS_KEY_ID=你的对象存储AccessKey
@@ -59,7 +61,6 @@ OSS_BUCKET=argus-end
 OSS_AVATAR_BUCKET=public
 
 SERVER_PORT=7777
-SERVER_REPORT=http://localhost:8000
 ```
 
 前端改这里：
@@ -112,6 +113,8 @@ REDIS_PORT=6379
 REDIS_DB=0
 REDIS_PASSWORD=
 
+PUBLIC_BASE_URL=http://你的域名或IP
+
 OSS_TYPE=s3
 OSS_ENDPOINT=http://argus-rustfs:9000
 OSS_ACCESS_KEY_ID=rustfs
@@ -125,23 +128,28 @@ RABBITMQ_USER=admin
 RABBITMQ_PASSWORD=admin
 
 SERVER_PORT=7777
-SERVER_REPORT=http://你的域名或IP
 ARGUS_API_WORKERS=2
 ```
+
+说明：
+
+- `SERVER_REPORT` 默认继承 `PUBLIC_BASE_URL`
+- `OSS_PUBLIC_ENDPOINT` 默认按 `PUBLIC_BASE_URL + OSS_PORT` 推导
+- 如果对象存储外网地址不是 `http://你的域名或IP:9000`，再单独显式配置 `OSS_PUBLIC_ENDPOINT`
 
 如果你用域名部署：
 
 - `ops/nginx.conf` 的 `server_name` 改成你的域名
 - `argus-front/ops/nginx.frontend.conf` 的 `server_name` 改成你的域名
-- `argus-front/config/defaultSettings.ts` 的 `apiUrl` 改成 `你的域名/argus`
-- `conf/pro.env` 的 `SERVER_REPORT` 改成 `http://你的域名` 或 `https://你的域名`
+- `conf/pro.env` 的 `PUBLIC_BASE_URL` 改成 `http://你的域名` 或 `https://你的域名`
+- 如果对象存储外网地址和 `你的域名:9000` 不一致，再单独配置 `OSS_PUBLIC_ENDPOINT`
 
 如果你用 IP 部署：
 
 - `ops/nginx.conf` 的 `server_name` 改成 `_`
 - `argus-front/ops/nginx.frontend.conf` 的 `server_name` 改成 `_`
-- `argus-front/config/defaultSettings.ts` 的 `apiUrl` 改成 `服务器IP/argus`
-- `conf/pro.env` 的 `SERVER_REPORT` 改成 `http://服务器IP`
+- `conf/pro.env` 的 `PUBLIC_BASE_URL` 改成 `http://服务器IP`
+- 如果对象存储外网地址和 `http://服务器IP:9000` 不一致，再单独配置 `OSS_PUBLIC_ENDPOINT`
 
 `ui_runner/.env` 最少保留：
 

@@ -516,7 +516,7 @@ source 枚举：
 
 INSERT INTO argus_gconfig
 (created_at, updated_at, deleted_at, create_user, update_user, env, `key`, value, `key_type`, `type`, project_id, case_id, case_name, enable)
-VALUES('2026-06-16 19:49:49', '2026-06-17 14:46:37', 0, 1, 1, 0, '__ai_model_config__', '{"active_model_id":"qwen_2","providers":[{"id":"qwen_2","provider_type":"qwen","provider":"qwen","provider_name":"qwen","name":"qwen","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","model":"qwen3.6-plus","model_options":["qwen3.6-plus"],"models":["qwen3.6-plus"],"api_key":"sk-f69eb070ffaa4174af6d85b408833aa4","wire_api":"chat_completions","enabled":true}]}', 1, 3, NULL, NULL, NULL, 1);
+VALUES('2026-06-16 19:49:49', '2026-06-17 14:46:37', 0, 1, 1, 0, 'ai_model_config', '{"active_model_id":"qwen_2","providers":[{"id":"qwen_2","provider_type":"qwen","provider":"qwen","provider_name":"qwen","name":"qwen","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","model":"qwen3.6-plus","model_options":["qwen3.6-plus"],"models":["qwen3.6-plus"],"api_key":"sk-f69eb070ffaa4174af6d85b408833aa4","wire_api":"chat_completions","enabled":true}]}', 1, 3, NULL, NULL, NULL, 1);
 
 INSERT INTO argus_project
 (created_at, updated_at, deleted_at, create_user, update_user, name, owner, app, description, avatar, dingtalk_url)
