@@ -32,7 +32,7 @@ class ArgusFunctionalCaseFile(ArgusBase):
     title = Column(String(128), nullable=False, comment="功能用例名称")
     directory_id = Column(INT, nullable=False, comment="所属目录")
     file_path = Column(String(255), nullable=False, comment="功能用例JSON文件路径")
-    case_data = Column(TEXT, nullable=True, comment="功能用例JSON内容")
+    case_data = Column(LONGTEXT, nullable=True, comment="功能用例JSON内容")
     sort_index = Column(INT, nullable=False, default=0, comment="排序")
 
     __fields__ = [title]

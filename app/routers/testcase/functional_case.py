@@ -192,13 +192,22 @@ async def ensure_functional_case_schema(session):
                 )
             )
         file_case_data_column = await session.execute(
-            text("SHOW COLUMNS FROM argus_functional_case_file LIKE 'case_data'")
+            text("SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS "
+                 "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='argus_functional_case_file' AND COLUMN_NAME='case_data'")
         )
-        if file_case_data_column.first() is None:
+        file_case_data_row = file_case_data_column.first()
+        if file_case_data_row is None:
             await session.execute(
                 text(
                     "ALTER TABLE argus_functional_case_file "
                     "ADD COLUMN case_data LONGTEXT NULL COMMENT '功能用例JSON内容'"
+                )
+            )
+        elif file_case_data_row[1] != 'longtext':
+            await session.execute(
+                text(
+                    "ALTER TABLE argus_functional_case_file "
+                    "MODIFY COLUMN case_data LONGTEXT NULL COMMENT '功能用例JSON内容'"
                 )
             )
         directory_project_column = await session.execute(

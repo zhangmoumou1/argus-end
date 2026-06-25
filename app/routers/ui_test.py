@@ -2,12 +2,13 @@ import asyncio
 import hashlib
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import bindparam, text
@@ -36,6 +37,13 @@ UI_RUNNER_BOOTSTRAP_FILE = Path(__file__).resolve().parents[2] / "ui_runner" / "
 UI_RUN_ACTIVE_STATUSES = {"queued", "claimed", "running", "uploading"}
 UI_RUN_TERMINAL_STATUSES = {"success", "failed", "cancelled", "skipped", "partial_success"}
 UI_PRIORITY_MARKER_SQL = "source_snapshot LIKE '%priority_%'"
+UI_STREAM_POLL_INTERVAL = 1.0
+UI_STREAM_KEEPALIVE_INTERVAL = 15.0
+UI_STREAM_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
 
 
 def _node_text(node):
@@ -2163,8 +2171,25 @@ async def run_ui_test_plan(request: Request, session=Depends(get_session), user_
     })
 
 
-@router.get("/run/list")
-async def list_ui_test_runs(
+def _serialize_sse_event(event, data, event_id=None):
+    lines = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    if event:
+        lines.append(f"event: {event}")
+    payload = json.dumps(data, ensure_ascii=False, default=str)
+    for line in payload.splitlines() or [""]:
+        lines.append(f"data: {line}")
+    return "\n".join(lines) + "\n\n"
+
+
+def _serialize_sse_comment(comment="keepalive"):
+    return f": {comment}\n\n"
+
+
+async def _query_ui_test_runs_payload(
+        session,
+        user_info,
         project_id: int = 0,
         plan_id: int = 0,
         case_ref_id: int = 0,
@@ -2179,10 +2204,7 @@ async def list_ui_test_runs(
         page: int = 1,
         size: int = 20,
         paged: bool = False,
-        session=Depends(get_session),
-        user_info=Depends(Permission()),
 ):
-    await ensure_ui_test_schema(session)
     normalized_scope = str(scope or "report").strip().lower()
     page, size, offset = _clamp_pagination(page, size, 200)
     base_from = (
@@ -2271,26 +2293,23 @@ async def list_ui_test_runs(
         item.pop("plan_env_name", None)
         items.append(item)
     if not paged:
-        return ArgusResponse.success(items)
+        return items
 
     count_params = {key: value for key, value in params.items() if key not in {"limit", "offset"}}
     count_row = await session.execute(text(f"SELECT COUNT(1) AS total {base_from}{where_sql}"), count_params)
     total = int((count_row.mappings().first() or {}).get("total") or 0)
-    return ArgusResponse.success(_paged_payload(items, total, page, size))
+    return _paged_payload(items, total, page, size)
 
 
-@router.get("/run/detail")
-async def get_ui_test_run_detail(
+async def _query_ui_test_run_detail_payload(
+        session,
+        request: Request,
         id: int,
         include_payload: bool = True,
         include_artifacts: bool = True,
         include_step_payload: bool = True,
         include_step_artifacts: bool = True,
-        request: Request = None,
-        session=Depends(get_session),
-        _=Depends(Permission()),
 ):
-    await ensure_ui_test_schema(session)
     run_payload_columns = ", r.runner_payload, r.result_payload" if include_payload else ""
     run_row = await session.execute(
         text(
@@ -2312,7 +2331,7 @@ async def get_ui_test_run_detail(
     )
     run = run_row.mappings().first()
     if not run:
-        return ArgusResponse.failed("UI测试执行记录不存在")
+        return None
     step_payload_columns = ", request_payload, result_payload" if include_step_payload else ""
     step_rows = await session.execute(
         text(
@@ -2403,6 +2422,128 @@ async def get_ui_test_run_detail(
         ] if item]
     else:
         data["artifacts"] = []
+    return data
+
+
+def _resolve_ui_debug_focus_run_id(runs, focus_run_id=0):
+    expected_id = int(focus_run_id or 0)
+    if expected_id > 0 and any(int(item.get("id") or 0) == expected_id for item in runs):
+        return expected_id
+    for item in runs:
+        if str(item.get("status") or "").strip().lower() in UI_RUN_ACTIVE_STATUSES:
+            return int(item.get("id") or 0)
+    if runs:
+        return int(runs[0].get("id") or 0)
+    return 0
+
+
+async def _build_ui_debug_stream_payload(
+        session,
+        request: Request,
+        user_info,
+        project_id: int,
+        case_ref_id: int,
+        focus_run_id: int = 0,
+        include_payload: bool = True,
+        include_artifacts: bool = True,
+        include_step_payload: bool = False,
+        include_step_artifacts: bool = True,
+):
+    runs = await _query_ui_test_runs_payload(
+        session=session,
+        user_info=user_info,
+        project_id=project_id,
+        case_ref_id=case_ref_id,
+        scope="debug",
+        page=1,
+        size=100,
+        paged=False,
+    )
+    active_run_id = _resolve_ui_debug_focus_run_id(runs, focus_run_id=focus_run_id)
+    detail = None
+    if active_run_id > 0:
+        detail = await _query_ui_test_run_detail_payload(
+            session=session,
+            request=request,
+            id=active_run_id,
+            include_payload=include_payload,
+            include_artifacts=include_artifacts,
+            include_step_payload=include_step_payload,
+            include_step_artifacts=include_step_artifacts,
+        )
+    has_active_run = any(str(item.get("status") or "").strip().lower() in UI_RUN_ACTIVE_STATUSES for item in runs)
+    return {
+        "runs": runs,
+        "detail": detail,
+        "active_run_id": active_run_id or (detail or {}).get("id") or 0,
+        "done": bool(runs) and not has_active_run,
+    }
+
+
+@router.get("/run/list")
+async def list_ui_test_runs(
+        project_id: int = 0,
+        plan_id: int = 0,
+        case_ref_id: int = 0,
+        executor_id: int = 0,
+        env_name: str = "",
+        scope: str = "report",
+        source: str = "",
+        status: str = "",
+        keyword: str = "",
+        started_at_start: str = "",
+        started_at_end: str = "",
+        page: int = 1,
+        size: int = 20,
+        paged: bool = False,
+        session=Depends(get_session),
+        user_info=Depends(Permission()),
+):
+    await ensure_ui_test_schema(session)
+    data = await _query_ui_test_runs_payload(
+        session=session,
+        user_info=user_info,
+        project_id=project_id,
+        plan_id=plan_id,
+        case_ref_id=case_ref_id,
+        executor_id=executor_id,
+        env_name=env_name,
+        scope=scope,
+        source=source,
+        status=status,
+        keyword=keyword,
+        started_at_start=started_at_start,
+        started_at_end=started_at_end,
+        page=page,
+        size=size,
+        paged=paged,
+    )
+    return ArgusResponse.success(data)
+
+
+@router.get("/run/detail")
+async def get_ui_test_run_detail(
+        id: int,
+        include_payload: bool = True,
+        include_artifacts: bool = True,
+        include_step_payload: bool = True,
+        include_step_artifacts: bool = True,
+        request: Request = None,
+        session=Depends(get_session),
+        _=Depends(Permission()),
+):
+    await ensure_ui_test_schema(session)
+    data = await _query_ui_test_run_detail_payload(
+        session=session,
+        request=request,
+        id=id,
+        include_payload=include_payload,
+        include_artifacts=include_artifacts,
+        include_step_payload=include_step_payload,
+        include_step_artifacts=include_step_artifacts,
+    )
+    if not data:
+        return ArgusResponse.failed("UI测试执行记录不存在")
     return ArgusResponse.success(data)
 
 
@@ -2418,119 +2559,183 @@ async def get_ui_test_shared_run_detail(
 ):
     """公开分享接口，无需鉴权"""
     await ensure_ui_test_schema(session)
-    run_payload_columns = ", r.runner_payload, r.result_payload" if include_payload else ""
-    run_row = await session.execute(
-        text(
-            "SELECT r.id, r.created_at, r.updated_at, r.create_user, r.project_id, r.plan_id, r.case_ref_id, "
-            "r.run_name, r.status, r.trigger_mode, r.browser, r.headless, r.artifact_bucket, r.artifact_prefix, "
-            "r.screenshot_dir, r.video_path, r.trace_path, r.report_path, r.result_json_path, "
-            "r.error_message, r.started_at, r.finished_at, "
-            "p.name AS plan_name, p.env_name AS plan_env_name, pr.name AS project_name, "
-            "u.name AS executor_name, c.file_title, c.node_title, c.node_path "
-            f"{run_payload_columns} "
-            "FROM argus_ui_test_run r "
-            "LEFT JOIN argus_ui_test_plan p ON r.plan_id=p.id "
-            "LEFT JOIN argus_project pr ON r.project_id=pr.id "
-            "LEFT JOIN argus_ui_test_case_ref c ON r.case_ref_id=c.id "
-            "LEFT JOIN argus_user u ON r.create_user=u.id "
-            "WHERE r.deleted_at=0 AND r.id=:id"
-        ),
-        {"id": id},
+    data = await _query_ui_test_run_detail_payload(
+        session=session,
+        request=request,
+        id=id,
+        include_payload=include_payload,
+        include_artifacts=include_artifacts,
+        include_step_payload=include_step_payload,
+        include_step_artifacts=include_step_artifacts,
     )
-    run = run_row.mappings().first()
-    if not run:
+    if not data:
         return ArgusResponse.failed("UI测试执行记录不存在")
-    step_payload_columns = ", request_payload, result_payload" if include_step_payload else ""
-    step_rows = await session.execute(
-        text(
-            "SELECT id, step_index, step_name, step_type, status, screenshot_path, error_message, duration_ms "
-            f"{step_payload_columns} "
-            "FROM argus_ui_test_step_result WHERE deleted_at=0 AND run_id=:run_id ORDER BY step_index ASC, id ASC"
-        ),
-        {"run_id": id},
-    )
-    data = dict(run)
-    if include_payload:
-        data["runner_payload"] = _parse_json_text(data.get("runner_payload")) or {}
-        data["result_payload"] = _parse_json_text(data.get("result_payload")) or {}
-    else:
-        data["runner_payload"] = {}
-        data["result_payload"] = {}
-    data["env_name"] = str(data.get("plan_env_name") or data["runner_payload"].get("env_name") or "").strip()
-    data["address_name"] = str(data["runner_payload"].get("address_name") or "").strip()
-    data.pop("plan_env_name", None)
-    client = None
-    if include_artifacts or include_step_artifacts:
-        try:
-            client = OssClient.get_oss_client()
-        except Exception:
-            client = None
-    steps = []
-    for row in step_rows.mappings().all():
-        item = dict(row)
-        if include_step_payload:
-            item["request_payload"] = _parse_json_text(item.get("request_payload")) or item.get("request_payload") or ""
-            item["result_payload"] = _parse_json_text(item.get("result_payload")) or item.get("result_payload") or ""
-        else:
-            item["request_payload"] = ""
-            item["result_payload"] = ""
-        if include_step_artifacts and client and item.get("screenshot_path"):
-            item["screenshot_artifact"] = await _build_artifact_descriptor(
-                client,
-                str(data.get("artifact_bucket") or UI_BUCKET_NAME or ""),
-                str(item.get("screenshot_path") or ""),
-                f"步骤{int(item.get('step_index') or 0)}截图",
-                proxy_url=_build_ui_artifact_proxy_url(
-                    str(item.get("screenshot_path") or ""),
-                    str(data.get("artifact_bucket") or UI_BUCKET_NAME or ""),
-                    request=request,
-                ),
-            )
-        else:
-            item["screenshot_artifact"] = None
-        steps.append(item)
-    data["steps"] = steps
-    data["analysis_summary"] = _build_run_analysis(data, steps)
-    artifact_bucket = str(data.get("artifact_bucket") or UI_BUCKET_NAME or "")
-    if include_artifacts and client:
-        data["artifacts"] = [item for item in [
-            await _build_artifact_descriptor(
-                client,
-                artifact_bucket,
-                str(data.get("report_path") or ""),
-                "执行报告",
-                proxy_url=_build_ui_artifact_proxy_url(
-                    str(data.get("report_path") or ""),
-                    artifact_bucket,
-                    request=request,
-                ),
-            ),
-            await _build_artifact_descriptor(
-                client,
-                artifact_bucket,
-                str(data.get("video_path") or ""),
-                "录屏",
-                proxy_url=_build_ui_artifact_proxy_url(
-                    str(data.get("video_path") or ""),
-                    artifact_bucket,
-                    request=request,
-                ),
-            ),
-            await _build_artifact_descriptor(
-                client,
-                artifact_bucket,
-                str(data.get("result_json_path") or ""),
-                "结果JSON",
-                proxy_url=_build_ui_artifact_proxy_url(
-                    str(data.get("result_json_path") or ""),
-                    artifact_bucket,
-                    request=request,
-                ),
-            ),
-        ] if item]
-    else:
-        data["artifacts"] = []
     return ArgusResponse.success(data)
+
+
+@router.get("/run/stream")
+async def stream_ui_test_run_detail(
+        id: int,
+        include_payload: bool = True,
+        include_artifacts: bool = True,
+        include_step_payload: bool = True,
+        include_step_artifacts: bool = True,
+        request: Request = None,
+        _=Depends(Permission()),
+):
+    async def event_generator():
+        event_id = 0
+        last_payload = ""
+        last_keepalive_at = 0.0
+        done_sent = False
+        while True:
+            if await request.is_disconnected():
+                break
+            async with async_session() as stream_session:
+                await ensure_ui_test_schema(stream_session)
+                data = await _query_ui_test_run_detail_payload(
+                    session=stream_session,
+                    request=request,
+                    id=id,
+                    include_payload=include_payload,
+                    include_artifacts=include_artifacts,
+                    include_step_payload=include_step_payload,
+                    include_step_artifacts=include_step_artifacts,
+                )
+            if not data:
+                event_id += 1
+                yield _serialize_sse_event("error", {"message": "UI测试执行记录不存在", "done": True}, event_id)
+                break
+            done = str(data.get("status") or "").strip().lower() in UI_RUN_TERMINAL_STATUSES
+            payload = {
+                "run": data,
+                "run_id": int(data.get("id") or 0),
+                "done": done,
+            }
+            payload_text = json.dumps(payload, ensure_ascii=False, default=str, sort_keys=True)
+            now = time.monotonic()
+            if payload_text != last_payload:
+                event_id += 1
+                last_payload = payload_text
+                last_keepalive_at = now
+                yield _serialize_sse_event("snapshot", payload, event_id)
+            elif now - last_keepalive_at >= UI_STREAM_KEEPALIVE_INTERVAL:
+                last_keepalive_at = now
+                yield _serialize_sse_comment("run-stream-keepalive")
+            if done and not done_sent:
+                done_sent = True
+                event_id += 1
+                yield _serialize_sse_event("done", {"run_id": int(data.get("id") or 0), "done": True}, event_id)
+                break
+            await asyncio.sleep(UI_STREAM_POLL_INTERVAL)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=UI_STREAM_HEADERS)
+
+
+@router.get("/run/share-stream")
+async def stream_ui_test_shared_run_detail(
+        id: int,
+        include_payload: bool = True,
+        include_artifacts: bool = True,
+        include_step_payload: bool = True,
+        include_step_artifacts: bool = True,
+        request: Request = None,
+):
+    async def event_generator():
+        event_id = 0
+        last_payload = ""
+        last_keepalive_at = 0.0
+        done_sent = False
+        while True:
+            if await request.is_disconnected():
+                break
+            async with async_session() as stream_session:
+                await ensure_ui_test_schema(stream_session)
+                data = await _query_ui_test_run_detail_payload(
+                    session=stream_session,
+                    request=request,
+                    id=id,
+                    include_payload=include_payload,
+                    include_artifacts=include_artifacts,
+                    include_step_payload=include_step_payload,
+                    include_step_artifacts=include_step_artifacts,
+                )
+            if not data:
+                event_id += 1
+                yield _serialize_sse_event("error", {"message": "UI测试执行记录不存在", "done": True}, event_id)
+                break
+            done = str(data.get("status") or "").strip().lower() in UI_RUN_TERMINAL_STATUSES
+            payload = {
+                "run": data,
+                "run_id": int(data.get("id") or 0),
+                "done": done,
+            }
+            payload_text = json.dumps(payload, ensure_ascii=False, default=str, sort_keys=True)
+            now = time.monotonic()
+            if payload_text != last_payload:
+                event_id += 1
+                last_payload = payload_text
+                last_keepalive_at = now
+                yield _serialize_sse_event("snapshot", payload, event_id)
+            elif now - last_keepalive_at >= UI_STREAM_KEEPALIVE_INTERVAL:
+                last_keepalive_at = now
+                yield _serialize_sse_comment("shared-run-stream-keepalive")
+            if done and not done_sent:
+                done_sent = True
+                event_id += 1
+                yield _serialize_sse_event("done", {"run_id": int(data.get("id") or 0), "done": True}, event_id)
+                break
+            await asyncio.sleep(UI_STREAM_POLL_INTERVAL)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=UI_STREAM_HEADERS)
+
+
+@router.get("/run/debug-stream")
+async def stream_ui_test_debug_runs(
+        project_id: int,
+        case_ref_id: int,
+        focus_run_id: int = 0,
+        include_payload: bool = True,
+        include_artifacts: bool = True,
+        include_step_payload: bool = False,
+        include_step_artifacts: bool = True,
+        request: Request = None,
+        user_info=Depends(Permission()),
+):
+    async def event_generator():
+        event_id = 0
+        last_payload = ""
+        last_keepalive_at = 0.0
+        while True:
+            if await request.is_disconnected():
+                break
+            async with async_session() as stream_session:
+                await ensure_ui_test_schema(stream_session)
+                payload = await _build_ui_debug_stream_payload(
+                    session=stream_session,
+                    request=request,
+                    user_info=user_info,
+                    project_id=int(project_id or 0),
+                    case_ref_id=int(case_ref_id or 0),
+                    focus_run_id=int(focus_run_id or 0),
+                    include_payload=include_payload,
+                    include_artifacts=include_artifacts,
+                    include_step_payload=include_step_payload,
+                    include_step_artifacts=include_step_artifacts,
+                )
+            payload_text = json.dumps(payload, ensure_ascii=False, default=str, sort_keys=True)
+            now = time.monotonic()
+            if payload_text != last_payload:
+                event_id += 1
+                last_payload = payload_text
+                last_keepalive_at = now
+                yield _serialize_sse_event("snapshot", payload, event_id)
+            elif now - last_keepalive_at >= UI_STREAM_KEEPALIVE_INTERVAL:
+                last_keepalive_at = now
+                yield _serialize_sse_comment("debug-stream-keepalive")
+            await asyncio.sleep(UI_STREAM_POLL_INTERVAL)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=UI_STREAM_HEADERS)
 
 
 @router.get("/run/step-detail")
