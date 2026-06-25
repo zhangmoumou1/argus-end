@@ -22,9 +22,17 @@ const ARTIFACT_UPLOAD_CONCURRENCY = Math.max(1, Number(process.env.UI_RUNNER_ART
 const DEFAULT_BROWSER = process.env.UI_RUNNER_BROWSER || 'chromium';
 const DEFAULT_HEADLESS = String(process.env.UI_RUNNER_HEADLESS || 'true').toLowerCase() !== 'false';
 
+function normalizeServerBase(server) {
+  const value = String(server || '').trim().replace(/\/+$/, '');
+  if (!value) {
+    return 'http://127.0.0.1:7777/argus';
+  }
+  return /\/argus$/i.test(value) ? value : `${value}/argus`;
+}
+
 const browserMap = { chromium, firefox, webkit };
 let bootstrapConfig = {};
-let runtimeServer = EXPLICIT_SERVER || 'http://127.0.0.1:7777';
+let runtimeServer = normalizeServerBase(EXPLICIT_SERVER || 'http://127.0.0.1:7777');
 let runtimeToken = EXPLICIT_TOKEN;
 let runtimeProjectId = EXPLICIT_PROJECT_ID;
 let runtimePlanId = EXPLICIT_PLAN_ID;
@@ -201,7 +209,7 @@ async function refreshBootstrapConfig() {
   bootstrapConfig = nextBootstrap;
 
   if (!EXPLICIT_SERVER) {
-    runtimeServer = String(nextBootstrap.server || runtimeServer || 'http://127.0.0.1:7777').trim() || 'http://127.0.0.1:7777';
+    runtimeServer = normalizeServerBase(nextBootstrap.server || runtimeServer || 'http://127.0.0.1:7777');
   }
   if (!EXPLICIT_TOKEN) {
     runtimeToken = String(nextBootstrap.token || runtimeToken || '').trim();

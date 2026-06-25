@@ -35,6 +35,7 @@ UI_SCHEMA_READY = False
 UI_RUNNER_BOOTSTRAP_FILE = Path(__file__).resolve().parents[2] / "ui_runner" / ".runner-bootstrap.json"
 UI_RUN_ACTIVE_STATUSES = {"queued", "claimed", "running", "uploading"}
 UI_RUN_TERMINAL_STATUSES = {"success", "failed", "cancelled", "skipped", "partial_success"}
+UI_PRIORITY_MARKER_SQL = "source_snapshot LIKE '%priority_%'"
 
 
 def _node_text(node):
@@ -67,7 +68,41 @@ def _is_ui_case_content_node(value):
     ))
 
 
+def _node_icons(node):
+    if not isinstance(node, dict):
+        return []
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    raw_icons = (
+        data.get("icon")
+        or data.get("icons")
+        or data.get("marker")
+        or data.get("markers")
+        or node.get("icon")
+        or node.get("icons")
+        or []
+    )
+    if isinstance(raw_icons, (str, int, float)):
+        raw_icons = [raw_icons]
+    if not isinstance(raw_icons, list):
+        return []
+
+    icons = []
+    for item in raw_icons:
+        if isinstance(item, dict):
+            item = item.get("value") or item.get("name") or item.get("type") or item.get("icon")
+        text_value = str(item or "").strip()
+        if text_value:
+            icons.append(text_value)
+    return icons
+
+
+def _has_priority_marker(node):
+    return any(re.fullmatch(r"priority_\d+", icon) for icon in _node_icons(node))
+
+
 def _looks_like_ui_case_node(node):
+    if not _has_priority_marker(node):
+        return False
     children = _node_children(node)
     if not children:
         return False
@@ -134,9 +169,11 @@ def _parse_json_text(value):
 def _normalize_runner_server(request: Request):
     internal_server = str(getattr(Config, "UI_RUNNER_INTERNAL_SERVER", "") or "").strip().rstrip("/")
     if internal_server:
-        return internal_server
+        return internal_server if internal_server.endswith("/argus") else f"{internal_server}/argus"
     origin = str(getattr(request, "base_url", "") or "").strip().rstrip("/")
-    return origin or "http://127.0.0.1:7777"
+    if not origin:
+        origin = "http://127.0.0.1:7777"
+    return origin if origin.endswith("/argus") else f"{origin}/argus"
 
 
 def _build_runner_bootstrap_payload(request: Request, user_info: dict, project_id: int, run_ids, plan_id: int = 0,
@@ -172,6 +209,15 @@ def _write_runner_bootstrap_file(payload: dict):
 async def _ensure_table_index(session, table_name: str, index_name: str, columns: str):
     try:
         await session.execute(text(f"ALTER TABLE {table_name} ADD INDEX {index_name} ({columns})"))
+    except Exception:
+        pass
+
+
+async def _ensure_table_column(session, table_name: str, column_name: str, alter_sql: str):
+    try:
+        result = await session.execute(text(f"SHOW COLUMNS FROM {table_name} LIKE :column_name"), {"column_name": column_name})
+        if result.first() is None:
+            await session.execute(text(alter_sql))
     except Exception:
         pass
 
@@ -228,17 +274,15 @@ def _find_ui_nodes(root):
         if _looks_like_ui_case_node(node):
             append_result(node, path_parts, merged_config)
             return
-        matched = False
         for child in _node_children(node):
             if _is_ui_case_content_node(_node_text(child)):
                 continue
             if _looks_like_ui_case_node(child):
                 append_result(child, next_path, merged_config)
-                matched = True
-        if matched:
-            return
         for child in _node_children(node):
             if _is_ui_case_content_node(_node_text(child)):
+                continue
+            if _looks_like_ui_case_node(child):
                 continue
             collect_cases_under_ui_root(child, next_path, merged_config)
 
@@ -344,6 +388,7 @@ def _compile_ui_case(node_wrapper, project_id, file_id, file_title):
             "message": "缺少“测试步骤”节点",
             "dsl": None,
             "step_count": 0,
+            "assert_count": 0,
         }
 
     step_errors = []
@@ -361,6 +406,7 @@ def _compile_ui_case(node_wrapper, project_id, file_id, file_title):
             "message": "测试步骤为空",
             "dsl": None,
             "step_count": 0,
+            "assert_count": 0,
         }
 
     if step_errors:
@@ -376,6 +422,7 @@ def _compile_ui_case(node_wrapper, project_id, file_id, file_title):
                 "steps": steps,
             },
             "step_count": len(steps),
+            "assert_count": 0,
         }
 
     config_map = dict(node_wrapper.get("shared_config") or {})
@@ -416,6 +463,7 @@ def _compile_ui_case(node_wrapper, project_id, file_id, file_title):
         "message": "校验通过",
         "dsl": dsl,
         "step_count": len(steps),
+        "assert_count": len(assertions),
     }
 
 
@@ -442,6 +490,7 @@ async def ensure_ui_test_schema(session):
         "node_path TEXT NULL,"
         "status VARCHAR(32) NOT NULL DEFAULT 'empty_ui_node',"
         "step_count INT NOT NULL DEFAULT 0,"
+        "assert_count INT NOT NULL DEFAULT 0,"
         "dsl_json LONGTEXT NULL,"
         "validation_result LONGTEXT NULL,"
         "source_snapshot LONGTEXT NULL,"
@@ -576,6 +625,12 @@ async def ensure_ui_test_schema(session):
         "idx_ui_case_project_status_file",
         "project_id, status, deleted_at, file_id",
     )
+    await _ensure_table_column(
+        session,
+        "argus_ui_test_case_ref",
+        "assert_count",
+        "ALTER TABLE argus_ui_test_case_ref ADD COLUMN assert_count INT NOT NULL DEFAULT 0 AFTER step_count",
+    )
     await _ensure_table_index(
         session,
         "argus_ui_test_plan_case",
@@ -669,6 +724,7 @@ async def _scan_project_cases(session, project_id, operator_user_id):
                 "node_path": node_path,
                 "status": compiled["status"],
                 "step_count": int(compiled["step_count"] or 0),
+                "assert_count": int(compiled.get("assert_count") or 0),
                 "dsl_json": json.dumps(compiled.get("dsl"), ensure_ascii=False) if compiled.get("dsl") else "",
                 "validation_result": json.dumps({"message": compiled["message"]}, ensure_ascii=False),
                 "source_snapshot": json.dumps(node_wrapper["node"], ensure_ascii=False),
@@ -699,7 +755,7 @@ async def _scan_project_cases(session, project_id, operator_user_id):
                 "deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at, "
                 "project_id=:project_id, file_id=:file_id, file_title=:file_title, node_uid=:node_uid, "
                 "node_title=:node_title, node_path=:node_path, status=:status, step_count=:step_count, "
-                "dsl_json=:dsl_json, validation_result=:validation_result, source_snapshot=:source_snapshot, "
+                "assert_count=:assert_count, dsl_json=:dsl_json, validation_result=:validation_result, source_snapshot=:source_snapshot, "
                 "last_scanned_at=:last_scanned_at "
                 "WHERE id=:id"
             ),
@@ -709,9 +765,9 @@ async def _scan_project_cases(session, project_id, operator_user_id):
         await session.execute(
             text(
                 "INSERT INTO argus_ui_test_case_ref "
-                "(deleted_at, create_user, update_user, created_at, updated_at, project_id, file_id, file_title, node_uid, node_title, node_path, status, step_count, dsl_json, validation_result, source_snapshot, last_scanned_at) "
+                "(deleted_at, create_user, update_user, created_at, updated_at, project_id, file_id, file_title, node_uid, node_title, node_path, status, step_count, assert_count, dsl_json, validation_result, source_snapshot, last_scanned_at) "
                 "VALUES "
-                "(:deleted_at, :create_user, :update_user, :created_at, :updated_at, :project_id, :file_id, :file_title, :node_uid, :node_title, :node_path, :status, :step_count, :dsl_json, :validation_result, :source_snapshot, :last_scanned_at)"
+                "(:deleted_at, :create_user, :update_user, :created_at, :updated_at, :project_id, :file_id, :file_title, :node_uid, :node_title, :node_path, :status, :step_count, :assert_count, :dsl_json, :validation_result, :source_snapshot, :last_scanned_at)"
             ),
             insert_rows,
         )
@@ -744,6 +800,39 @@ async def _scan_project_cases(session, project_id, operator_user_id):
         )
     await session.commit()
     return {"file_count": len(files), "ui_case_count": len(update_rows) + len(insert_rows)}
+
+
+async def _sync_ui_case_refs_by_project(session, project_id, operator_user_id=0):
+    normalized_project_id = int(project_id or 0)
+    if normalized_project_id <= 0:
+        return None
+    return await _scan_project_cases(session, normalized_project_id, int(operator_user_id or 0))
+
+
+async def _sync_ui_case_refs_by_file(session, file_id, operator_user_id=0):
+    row = await session.execute(
+        text("SELECT project_id FROM argus_functional_case_file WHERE deleted_at=0 AND id=:id"),
+        {"id": int(file_id or 0)},
+    )
+    data = row.mappings().first()
+    if not data:
+        return None
+    return await _sync_ui_case_refs_by_project(session, int(data["project_id"] or 0), operator_user_id)
+
+
+async def _sync_ui_case_refs_by_case_ids(session, case_ref_ids, operator_user_id=0):
+    normalized_ids = [int(item or 0) for item in case_ref_ids if int(item or 0) > 0]
+    if not normalized_ids:
+        return
+    rows = await session.execute(
+        text(
+            "SELECT DISTINCT project_id FROM argus_ui_test_case_ref "
+            "WHERE deleted_at=0 AND id IN :ids"
+        ).bindparams(bindparam("ids", expanding=True)),
+        {"ids": normalized_ids},
+    )
+    for row in rows.mappings().all():
+        await _sync_ui_case_refs_by_project(session, int(row["project_id"] or 0), operator_user_id)
 
 
 def _normalize_bool(value, default=False):
@@ -897,13 +986,14 @@ async def _enqueue_ui_plan_run(plan_id, user_id=0, trigger_mode="scheduler"):
         plan = plan_row.mappings().first()
         if not plan:
             return
+        await _sync_ui_case_refs_by_project(session, int(plan["project_id"] or 0), user_id)
         case_rows = await session.execute(
             text(
                 "SELECT p.project_id, p.name, p.browser, p.headless, pc.case_ref_id, r.file_title, r.node_title, r.node_path, r.dsl_json "
                 "FROM argus_ui_test_plan p "
                 "LEFT JOIN argus_ui_test_plan_case pc ON p.id=pc.plan_id "
                 "LEFT JOIN argus_ui_test_case_ref r ON pc.case_ref_id=r.id "
-                "WHERE p.deleted_at=0 AND pc.deleted_at=0 AND pc.enabled=1 AND r.deleted_at=0 AND r.status='valid' "
+                f"WHERE p.deleted_at=0 AND pc.deleted_at=0 AND pc.enabled=1 AND r.deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND r.status='valid' "
                 "AND p.id=:plan_id ORDER BY pc.sort_index ASC, pc.id ASC"
             ),
             {"plan_id": int(plan_id)},
@@ -1108,7 +1198,14 @@ def _guess_artifact_preview_type(path_value: str):
     return "file"
 
 
-def _build_ui_artifact_proxy_url(object_key: str, bucket_name: str = ""):
+def _normalize_ui_artifact_server(request: Request):
+    origin = str(getattr(request, "base_url", "") or "").strip().rstrip("/")
+    if not origin:
+        origin = "http://127.0.0.1:7777"
+    return origin if origin.endswith("/argus") else f"{origin}/argus"
+
+
+def _build_ui_artifact_proxy_url(object_key: str, bucket_name: str = "", request: Request = None):
     normalized_key = str(object_key or "").replace("\\", "/").strip().strip("/")
     if not normalized_key:
         return ""
@@ -1117,7 +1214,10 @@ def _build_ui_artifact_proxy_url(object_key: str, bucket_name: str = ""):
     }
     if str(bucket_name or "").strip():
         query["bucket_name"] = str(bucket_name or "").strip()
-    return f"/argus/ui-test/run/share-artifact/view?{urlencode(query)}"
+    path = f"/ui-test/run/share-artifact/view?{urlencode(query)}"
+    if request is None:
+        return f"/argus{path}"
+    return f"{_normalize_ui_artifact_server(request)}{path}"
 
 
 async def _build_artifact_descriptor(client, bucket_name: str, object_key: str, label: str = "", proxy_url: str = ""):
@@ -1171,33 +1271,13 @@ async def _upload_artifact_with_retry(client, object_key: str, content: bytes, b
     raise RuntimeError(f"对象存储上传失败，已重试{normalized_attempts}次：{last_error}") from last_error
 
 
-@router.post("/case/scan")
-async def scan_ui_test_cases(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
-    payload = await request.json()
-    project_id = int(payload.get("project_id") or 0)
-    if project_id <= 0:
-        return ArgusResponse.failed("project_id不能为空")
-    result = await _scan_project_cases(session, project_id, int(user_info["id"]))
-    return ArgusResponse.success(result)
-
-
 @router.get("/case/list")
 async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "", auto_scan: bool = False,
                              page: int = 1, size: int = 20, paged: bool = False,
                              session=Depends(get_session), user_info=Depends(Permission())):
     await ensure_ui_test_schema(session)
     page, size, offset = _clamp_pagination(page, size, 200)
-    existing_row = await session.execute(
-        text(
-            "SELECT COUNT(1) AS total FROM argus_ui_test_case_ref "
-            "WHERE deleted_at=0 AND project_id=:project_id"
-        ),
-        {"project_id": int(project_id or 0)},
-    )
-    existing_total = int((existing_row.mappings().first() or {}).get("total") or 0)
-    should_scan = bool(auto_scan) or existing_total == 0
-    if should_scan:
-        await _scan_project_cases(session, int(project_id), int(user_info["id"]))
+    await _sync_ui_case_refs_by_project(session, int(project_id), int(user_info["id"]))
     normalized_status = str(status or "").strip()
     status_expr = (
         "CASE "
@@ -1215,7 +1295,7 @@ async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "
         "SUM(CASE WHEN r.status='empty_ui_node' THEN 1 ELSE 0 END) AS empty_ui_case_count, "
         "MAX(r.last_scanned_at) AS last_scanned_at "
         "FROM argus_functional_case_file f "
-        "LEFT JOIN argus_ui_test_case_ref r ON f.id=r.file_id AND r.deleted_at=0 "
+        f"LEFT JOIN argus_ui_test_case_ref r ON f.id=r.file_id AND r.deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} "
         "WHERE f.deleted_at=0 AND f.project_id=:project_id "
         "AND (:keyword='' OR f.title LIKE :like_keyword OR CAST(f.id AS CHAR) LIKE :like_keyword) "
         "GROUP BY f.id, f.title "
@@ -1252,7 +1332,7 @@ async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "
         "SELECT COUNT(1) AS total FROM ("
         "SELECT f.id "
         "FROM argus_functional_case_file f "
-        "LEFT JOIN argus_ui_test_case_ref r ON f.id=r.file_id AND r.deleted_at=0 "
+        f"LEFT JOIN argus_ui_test_case_ref r ON f.id=r.file_id AND r.deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} "
         "WHERE f.deleted_at=0 AND f.project_id=:project_id "
         "AND (:keyword='' OR f.title LIKE :like_keyword OR CAST(f.id AS CHAR) LIKE :like_keyword) "
         "GROUP BY f.id, f.title "
@@ -1271,12 +1351,13 @@ async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "
 async def list_ui_test_case_nodes(file_id: int, include_dsl: bool = False,
                                   session=Depends(get_session), _=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await _sync_ui_case_refs_by_file(session, file_id)
     dsl_column = ", dsl_json" if include_dsl else ""
     rows = await session.execute(
         text(
-            "SELECT id, file_id, file_title, node_uid, node_title, node_path, status, step_count, validation_result, last_scanned_at "
+            "SELECT id, file_id, file_title, node_uid, node_title, node_path, status, step_count, assert_count, validation_result, source_snapshot, last_scanned_at "
             f"{dsl_column} "
-            "FROM argus_ui_test_case_ref WHERE deleted_at=0 AND file_id=:file_id ORDER BY id ASC"
+            f"FROM argus_ui_test_case_ref WHERE deleted_at=0 AND file_id=:file_id AND {UI_PRIORITY_MARKER_SQL} ORDER BY id ASC"
         ),
         {"file_id": file_id},
     )
@@ -1284,7 +1365,11 @@ async def list_ui_test_case_nodes(file_id: int, include_dsl: bool = False,
     for row in rows.mappings().all():
         item = dict(row)
         item["step_count"] = int(item.get("step_count") or 0)
+        item["assert_count"] = int(item.get("assert_count") or 0)
         item["validation_result"] = _parse_json_text(item.get("validation_result")) or {}
+        if not _has_priority_marker(_parse_json_text(item.get("source_snapshot")) or {}):
+            continue
+        item.pop("source_snapshot", None)
         item["dsl_json"] = (_parse_json_text(item.get("dsl_json")) or {}) if include_dsl else {}
         data.append(item)
     return ArgusResponse.success(data)
@@ -1293,11 +1378,12 @@ async def list_ui_test_case_nodes(file_id: int, include_dsl: bool = False,
 @router.get("/case/detail")
 async def get_ui_test_case_detail(id: int, session=Depends(get_session), _=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await _sync_ui_case_refs_by_case_ids(session, [id])
     row = await session.execute(
         text(
             "SELECT id, project_id, file_id, file_title, node_uid, node_title, node_path, status, step_count, "
-            "dsl_json, validation_result, source_snapshot, last_scanned_at "
-            "FROM argus_ui_test_case_ref WHERE deleted_at=0 AND id=:id"
+            "assert_count, dsl_json, validation_result, source_snapshot, last_scanned_at "
+            f"FROM argus_ui_test_case_ref WHERE deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND id=:id"
         ),
         {"id": id},
     )
@@ -1318,22 +1404,22 @@ async def validate_ui_test_case(request: Request, session=Depends(get_session), 
     case_ref_id = int(payload.get("id") or 0)
     if case_ref_id <= 0:
         return ArgusResponse.failed("id不能为空")
+    await _sync_ui_case_refs_by_case_ids(session, [case_ref_id], int(user_info["id"]))
     row = await session.execute(
         text(
             "SELECT id, project_id, file_id, node_uid, node_path "
-            "FROM argus_ui_test_case_ref WHERE deleted_at=0 AND id=:id"
+            f"FROM argus_ui_test_case_ref WHERE deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND id=:id"
         ),
         {"id": case_ref_id},
     )
     record = row.mappings().first()
     if not record:
         return ArgusResponse.failed("UI测试用例不存在")
-    await _scan_project_cases(session, int(record["project_id"]), int(user_info["id"]))
     refreshed = await session.execute(
         text(
-            "SELECT id, status, step_count, validation_result, dsl_json, last_scanned_at "
+            "SELECT id, status, step_count, assert_count, validation_result, dsl_json, last_scanned_at "
             "FROM argus_ui_test_case_ref "
-            "WHERE deleted_at=0 AND project_id=:project_id AND file_id=:file_id AND node_uid=:node_uid"
+            f"WHERE deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND project_id=:project_id AND file_id=:file_id AND node_uid=:node_uid"
         ),
         {
             "project_id": int(record["project_id"] or 0),
@@ -1357,8 +1443,9 @@ async def preview_ui_test_case_dsl(request: Request, session=Depends(get_session
     case_ref_id = int(payload.get("id") or 0)
     if case_ref_id <= 0:
         return ArgusResponse.failed("id不能为空")
+    await _sync_ui_case_refs_by_case_ids(session, [case_ref_id])
     row = await session.execute(
-        text("SELECT id, status, dsl_json, validation_result FROM argus_ui_test_case_ref WHERE deleted_at=0 AND id=:id"),
+        text(f"SELECT id, status, dsl_json, validation_result FROM argus_ui_test_case_ref WHERE deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND id=:id"),
         {"id": case_ref_id},
     )
     record = row.mappings().first()
@@ -1370,6 +1457,141 @@ async def preview_ui_test_case_dsl(request: Request, session=Depends(get_session
         "dsl": _parse_json_text(record.get("dsl_json")) or {},
         "validation_result": _parse_json_text(record.get("validation_result")) or {},
     })
+
+
+async def _resolve_ui_trial_context(session, payload):
+    env_id = int(payload.get("env_id") or 0)
+    address_id = int(payload.get("address_id") or 0)
+    if env_id <= 0:
+        return None, "env_id不能为空"
+
+    env_row = await session.execute(
+        text("SELECT id, name FROM argus_environment WHERE deleted_at=0 AND id=:id"),
+        {"id": env_id},
+    )
+    env_data = env_row.mappings().first()
+    if not env_data:
+        return None, "所选环境不存在"
+
+    context = {
+        "env_id": env_id,
+        "env_name": str(env_data.get("name") or "").strip(),
+        "address_id": address_id,
+        "address_name": "",
+        "page_url": "",
+        "base_url": "",
+    }
+    if address_id > 0:
+        gateway_row = await session.execute(
+            text("SELECT id, env, name, gateway, page_url FROM argus_gateway WHERE deleted_at=0 AND id=:id"),
+            {"id": address_id},
+        )
+        gateway_data = gateway_row.mappings().first()
+        if not gateway_data:
+            return None, "所选地址前缀不存在"
+        if int(gateway_data.get("env") or 0) != env_id:
+            return None, "地址前缀与所选环境不匹配"
+        context.update({
+            "address_name": str(gateway_data.get("name") or "").strip(),
+            "page_url": str(gateway_data.get("page_url") or "").strip(),
+            "base_url": _compose_plan_base_url(gateway_data.get("gateway"), gateway_data.get("page_url")),
+        })
+    return context, ""
+
+
+async def _load_valid_ui_case_refs(session, case_ref_ids):
+    rows = await session.execute(
+        text(
+            "SELECT id, project_id, file_title, node_title, node_path, status, dsl_json, source_snapshot "
+            f"FROM argus_ui_test_case_ref WHERE deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND id IN :ids"
+        ).bindparams(bindparam("ids", expanding=True)),
+        {"ids": case_ref_ids},
+    )
+    case_refs = rows.mappings().all()
+    case_ref_map = {
+        int(item["id"]): item
+        for item in case_refs
+        if _has_priority_marker(_parse_json_text(item.get("source_snapshot")) or {})
+    }
+    missing_ids = [case_id for case_id in case_ref_ids if case_id not in case_ref_map]
+    if missing_ids:
+        return [], f"UI测试用例不存在: {', '.join(map(str, missing_ids))}"
+
+    invalid_refs = [item for item in case_refs if str(item["status"]) != "valid"]
+    if invalid_refs:
+        invalid_names = [str(item.get("node_title") or item.get("node_path") or item["id"]) for item in invalid_refs]
+        return [], f"存在不可试运行的UI测试用例: {', '.join(invalid_names)}"
+    return [case_ref_map[case_id] for case_id in case_ref_ids], ""
+
+
+async def _create_ui_trial_run(session, payload, user_id, case_ref, context):
+    now_dt = datetime.now()
+    case_ref_id = int(case_ref["id"] or 0)
+    insert_result = await session.execute(
+        text(
+            "INSERT INTO argus_ui_test_run "
+            "(created_at, updated_at, deleted_at, create_user, update_user, project_id, plan_id, case_ref_id, run_name, status, trigger_mode, browser, headless, artifact_bucket, artifact_prefix, screenshot_dir, video_path, trace_path, report_path, result_json_path, runner_payload, started_at) "
+            "VALUES "
+            "(:created_at, :updated_at, 0, :create_user, :update_user, :project_id, 0, :case_ref_id, :run_name, :status, :trigger_mode, :browser, :headless, :artifact_bucket, :artifact_prefix, :screenshot_dir, :video_path, :trace_path, :report_path, :result_json_path, :runner_payload, :started_at)"
+        ),
+        {
+            "created_at": now_dt,
+            "updated_at": now_dt,
+            "create_user": user_id,
+            "update_user": user_id,
+            "project_id": int(case_ref["project_id"] or 0),
+            "case_ref_id": case_ref_id,
+            "run_name": f"Trial Run #{case_ref_id}",
+            "status": "queued",
+            "trigger_mode": "trial",
+            "browser": str(payload.get("browser") or "chromium"),
+            "headless": 1 if _normalize_bool(payload.get("headless"), True) else 0,
+            "artifact_bucket": UI_BUCKET_NAME,
+            "artifact_prefix": "",
+            "screenshot_dir": "",
+            "video_path": "",
+            "trace_path": "",
+            "report_path": "",
+            "result_json_path": "",
+            "runner_payload": json.dumps({
+                "source": "ui_test_trial_run",
+                "debug": True,
+                "debug_user_id": user_id,
+                "env_id": context["env_id"],
+                "env_name": context["env_name"],
+                "address_id": context["address_id"],
+                "address_name": context["address_name"],
+                "page_url": context["page_url"],
+                "base_url": context["base_url"],
+                "file_title": case_ref["file_title"],
+                "node_title": case_ref["node_title"],
+                "node_path": case_ref["node_path"],
+                "dsl": _parse_json_text(case_ref.get("dsl_json")) or {},
+                "bucket": UI_BUCKET_NAME,
+                "prefix": UI_OBJECT_PREFIX,
+            }, ensure_ascii=False),
+            "started_at": now_dt,
+        },
+    )
+    run_id = int(insert_result.lastrowid or 0)
+    artifact_prefix = f"{UI_OBJECT_PREFIX}/{int(case_ref['project_id'] or 0)}/0/{run_id}"
+    await session.execute(
+        text(
+            "UPDATE argus_ui_test_run SET artifact_prefix=:artifact_prefix, screenshot_dir=:screenshot_dir, "
+            "video_path=:video_path, trace_path=:trace_path, report_path=:report_path, result_json_path=:result_json_path "
+            "WHERE id=:id"
+        ),
+        {
+            "id": run_id,
+            "artifact_prefix": artifact_prefix,
+            "screenshot_dir": f"{artifact_prefix}/screenshots/",
+            "video_path": f"{artifact_prefix}/videos/run.mp4",
+            "trace_path": f"{artifact_prefix}/traces/trace.zip",
+            "report_path": f"{artifact_prefix}/reports/report.html",
+            "result_json_path": f"{artifact_prefix}/logs/result.json",
+        },
+    )
+    return run_id
 
 
 @router.post("/case/trial-run")
@@ -1384,17 +1606,20 @@ async def trial_run_ui_test_case(request: Request, session=Depends(get_session),
         return ArgusResponse.failed("id不能为空")
     if env_id <= 0:
         return ArgusResponse.failed("env_id不能为空")
+    await _sync_ui_case_refs_by_case_ids(session, [case_ref_id], int(user_info["id"]))
 
     row = await session.execute(
         text(
-            "SELECT id, project_id, file_title, node_title, node_path, status, dsl_json "
-            "FROM argus_ui_test_case_ref WHERE deleted_at=0 AND id=:id"
+            "SELECT id, project_id, file_title, node_title, node_path, status, dsl_json, source_snapshot "
+            f"FROM argus_ui_test_case_ref WHERE deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND id=:id"
         ),
         {"id": case_ref_id},
     )
     case_ref = row.mappings().first()
     if not case_ref:
         return ArgusResponse.failed("UI测试用例不存在")
+    if not _has_priority_marker(_parse_json_text(case_ref.get("source_snapshot")) or {}):
+        return ArgusResponse.failed("该节点未标记优先级，不能作为UI自动化用例执行")
     if str(case_ref["status"]) != "valid":
         return ArgusResponse.failed("该UI测试用例当前不可试运行")
 
@@ -1495,14 +1720,53 @@ async def trial_run_ui_test_case(request: Request, session=Depends(get_session),
     return ArgusResponse.success({"run_id": run_id, "trigger_mode": "trial", "runner_bootstrap": bootstrap})
 
 
+@router.post("/case/trial-run-batch")
+async def trial_run_ui_test_cases(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    await ensure_ui_test_gateway_schema(session)
+    payload = await request.json()
+    raw_ids = payload.get("ids") or payload.get("case_ref_ids") or []
+    if isinstance(raw_ids, (str, int)):
+        raw_ids = [raw_ids]
+
+    case_ref_ids = []
+    for item in raw_ids:
+        case_id = int(item or 0)
+        if case_id > 0 and case_id not in case_ref_ids:
+            case_ref_ids.append(case_id)
+    if not case_ref_ids:
+        return ArgusResponse.failed("ids不能为空")
+
+    await _sync_ui_case_refs_by_case_ids(session, case_ref_ids, int(user_info["id"]))
+    context, error_message = await _resolve_ui_trial_context(session, payload)
+    if error_message:
+        return ArgusResponse.failed(error_message)
+    case_refs, error_message = await _load_valid_ui_case_refs(session, case_ref_ids)
+    if error_message:
+        return ArgusResponse.failed(error_message)
+
+    user_id = int(user_info["id"])
+    run_ids = []
+    for case_ref in case_refs:
+        run_ids.append(await _create_ui_trial_run(session, payload, user_id, case_ref, context))
+    await session.commit()
+
+    project_id = int(case_refs[0]["project_id"] or 0)
+    ai_model = await GConfigDao.get_active_ai_model_config()
+    bootstrap = _build_runner_bootstrap_payload(request, user_info, project_id, run_ids, 0, ai_model)
+    _write_runner_bootstrap_file(bootstrap)
+    return ArgusResponse.success({"run_ids": run_ids, "trigger_mode": "trial", "runner_bootstrap": bootstrap})
+
+
 @router.get("/plan/candidates")
 async def list_ui_plan_candidates(project_id: int, session=Depends(get_session), _=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await _sync_ui_case_refs_by_project(session, project_id)
     rows = await session.execute(
         text(
-            "SELECT file_id, file_title, id, node_title, node_path, step_count "
+            "SELECT file_id, file_title, id, node_title, node_path, step_count, assert_count "
             "FROM argus_ui_test_case_ref "
-            "WHERE deleted_at=0 AND project_id=:project_id AND status='valid' "
+            f"WHERE deleted_at=0 AND project_id=:project_id AND {UI_PRIORITY_MARKER_SQL} AND status='valid' "
             "ORDER BY file_title ASC, id ASC"
         ),
         {"project_id": project_id},
@@ -1522,6 +1786,7 @@ async def list_ui_plan_candidates(project_id: int, session=Depends(get_session),
             "node_title": row["node_title"],
             "node_path": row["node_path"],
             "step_count": int(row["step_count"] or 0),
+            "assert_count": int(row["assert_count"] or 0),
         })
     return ArgusResponse.success(list(grouped.values()))
 
@@ -1642,10 +1907,11 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
     selected_case_ref_ids = [int(item) for item in (payload.get("selected_case_ref_ids") or []) if int(item or 0) > 0]
     if not selected_case_ref_ids:
         return ArgusResponse.failed("请至少选择一个UI自动化用例")
+    await _sync_ui_case_refs_by_project(session, project_id, int(user_info["id"]))
     valid_rows = await session.execute(
         text(
             "SELECT id FROM argus_ui_test_case_ref "
-            "WHERE deleted_at=0 AND project_id=:project_id AND status='valid' AND id IN :ids"
+            f"WHERE deleted_at=0 AND project_id=:project_id AND {UI_PRIORITY_MARKER_SQL} AND status='valid' AND id IN :ids"
         ).bindparams(bindparam("ids", expanding=True)),
         {"project_id": project_id, "ids": list(set(selected_case_ref_ids))},
     )
@@ -1841,12 +2107,13 @@ async def run_ui_test_plan(request: Request, session=Depends(get_session), user_
     plan = plan_row.mappings().first()
     if not plan:
         return ArgusResponse.failed("UI测试计划不存在")
+    await _sync_ui_case_refs_by_project(session, int(plan["project_id"] or 0), int(user_info["id"]))
     case_rows = await session.execute(
         text(
             "SELECT pc.case_ref_id, r.file_title, r.node_title, r.node_path, r.dsl_json "
             "FROM argus_ui_test_plan_case pc "
             "LEFT JOIN argus_ui_test_case_ref r ON pc.case_ref_id=r.id "
-            "WHERE pc.deleted_at=0 AND pc.plan_id=:plan_id AND pc.enabled=1 AND r.deleted_at=0 AND r.status='valid' "
+            f"WHERE pc.deleted_at=0 AND pc.plan_id=:plan_id AND pc.enabled=1 AND r.deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND r.status='valid' "
             "ORDER BY pc.sort_index ASC, pc.id ASC"
         ),
         {"plan_id": plan_id},
@@ -2019,6 +2286,7 @@ async def get_ui_test_run_detail(
         include_artifacts: bool = True,
         include_step_payload: bool = True,
         include_step_artifacts: bool = True,
+        request: Request = None,
         session=Depends(get_session),
         _=Depends(Permission()),
 ):
@@ -2088,6 +2356,7 @@ async def get_ui_test_run_detail(
                 proxy_url=_build_ui_artifact_proxy_url(
                     str(item.get("screenshot_path") or ""),
                     str(data.get("artifact_bucket") or UI_BUCKET_NAME or ""),
+                    request=request,
                 ),
             )
         else:
@@ -2103,21 +2372,33 @@ async def get_ui_test_run_detail(
                 artifact_bucket,
                 str(data.get("report_path") or ""),
                 "执行报告",
-                proxy_url=_build_ui_artifact_proxy_url(str(data.get("report_path") or ""), artifact_bucket),
+                proxy_url=_build_ui_artifact_proxy_url(
+                    str(data.get("report_path") or ""),
+                    artifact_bucket,
+                    request=request,
+                ),
             ),
             await _build_artifact_descriptor(
                 client,
                 artifact_bucket,
                 str(data.get("video_path") or ""),
                 "录屏",
-                proxy_url=_build_ui_artifact_proxy_url(str(data.get("video_path") or ""), artifact_bucket),
+                proxy_url=_build_ui_artifact_proxy_url(
+                    str(data.get("video_path") or ""),
+                    artifact_bucket,
+                    request=request,
+                ),
             ),
             await _build_artifact_descriptor(
                 client,
                 artifact_bucket,
                 str(data.get("result_json_path") or ""),
                 "结果JSON",
-                proxy_url=_build_ui_artifact_proxy_url(str(data.get("result_json_path") or ""), artifact_bucket),
+                proxy_url=_build_ui_artifact_proxy_url(
+                    str(data.get("result_json_path") or ""),
+                    artifact_bucket,
+                    request=request,
+                ),
             ),
         ] if item]
     else:
@@ -2132,6 +2413,7 @@ async def get_ui_test_shared_run_detail(
     include_artifacts: bool = True,
     include_step_payload: bool = True,
     include_step_artifacts: bool = True,
+    request: Request = None,
     session=Depends(get_session),
 ):
     """公开分享接口，无需鉴权"""
@@ -2201,6 +2483,7 @@ async def get_ui_test_shared_run_detail(
                 proxy_url=_build_ui_artifact_proxy_url(
                     str(item.get("screenshot_path") or ""),
                     str(data.get("artifact_bucket") or UI_BUCKET_NAME or ""),
+                    request=request,
                 ),
             )
         else:
@@ -2216,21 +2499,33 @@ async def get_ui_test_shared_run_detail(
                 artifact_bucket,
                 str(data.get("report_path") or ""),
                 "执行报告",
-                proxy_url=_build_ui_artifact_proxy_url(str(data.get("report_path") or ""), artifact_bucket),
+                proxy_url=_build_ui_artifact_proxy_url(
+                    str(data.get("report_path") or ""),
+                    artifact_bucket,
+                    request=request,
+                ),
             ),
             await _build_artifact_descriptor(
                 client,
                 artifact_bucket,
                 str(data.get("video_path") or ""),
                 "录屏",
-                proxy_url=_build_ui_artifact_proxy_url(str(data.get("video_path") or ""), artifact_bucket),
+                proxy_url=_build_ui_artifact_proxy_url(
+                    str(data.get("video_path") or ""),
+                    artifact_bucket,
+                    request=request,
+                ),
             ),
             await _build_artifact_descriptor(
                 client,
                 artifact_bucket,
                 str(data.get("result_json_path") or ""),
                 "结果JSON",
-                proxy_url=_build_ui_artifact_proxy_url(str(data.get("result_json_path") or ""), artifact_bucket),
+                proxy_url=_build_ui_artifact_proxy_url(
+                    str(data.get("result_json_path") or ""),
+                    artifact_bucket,
+                    request=request,
+                ),
             ),
         ] if item]
     else:
@@ -2239,7 +2534,7 @@ async def get_ui_test_shared_run_detail(
 
 
 @router.get("/run/step-detail")
-async def get_ui_test_run_step_detail(id: int, session=Depends(get_session)):
+async def get_ui_test_run_step_detail(id: int, request: Request, session=Depends(get_session)):
     """步骤详情对分享报告页开放，避免公开链接中的截图预览再次触发鉴权。"""
     await ensure_ui_test_schema(session)
     row = await session.execute(
@@ -2274,6 +2569,7 @@ async def get_ui_test_run_step_detail(id: int, session=Depends(get_session)):
             proxy_url=_build_ui_artifact_proxy_url(
                 str(data.get("screenshot_path") or ""),
                 str(run.get("artifact_bucket") or UI_BUCKET_NAME or ""),
+                request=request,
             ),
         )
     else:
