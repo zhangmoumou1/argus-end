@@ -651,6 +651,20 @@ async def ensure_ui_test_schema(session):
         "idx_ui_plan_case_enabled_order",
         "plan_id, enabled, deleted_at, sort_index, id",
     )
+    await session.execute(text(
+        "CREATE TABLE IF NOT EXISTS argus_ui_test_plan_follow_user_rel ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+        "deleted_at BIGINT NOT NULL DEFAULT 0,"
+        "create_user INT NOT NULL DEFAULT 0,"
+        "update_user INT NOT NULL DEFAULT 0,"
+        "user_id INT NOT NULL DEFAULT 0,"
+        "plan_id BIGINT NOT NULL DEFAULT 0,"
+        "UNIQUE KEY uniq_ui_test_plan_follow_user (user_id, plan_id, deleted_at),"
+        "KEY idx_ui_test_plan_follow_user (user_id, deleted_at, plan_id)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='UI测试计划关注用户关系表'"
+    ))
     # add notification columns if not exist
     existing_cols = set()
     try:
@@ -1383,6 +1397,7 @@ async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "
     result = []
     for row in rows.mappings().all():
         item = dict(row)
+        item["follow"] = bool(item.get("follow"))
         item["ui_case_count"] = int(item.get("ui_case_count") or 0)
         item["valid_ui_case_count"] = int(item.get("valid_ui_case_count") or 0)
         item["invalid_ui_case_count"] = int(item.get("invalid_ui_case_count") or 0)
@@ -1902,20 +1917,23 @@ async def list_ui_plan_candidates(project_id: int, session=Depends(get_session),
 
 
 @router.get("/plan/list")
-async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str = "",
+async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str = "", follow: bool = None,
                              page: int = 1, size: int = 20, paged: bool = False,
-                             session=Depends(get_session), _=Depends(Permission())):
+                             session=Depends(get_session), user_info=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_functional_case_item_schema(session)
     page, size, offset = _clamp_pagination(page, size, 200)
     sql = (
         "SELECT p.id, p.project_id, p.name, p.description, p.env_name, p.base_url, p.browser, p.headless, "
         "p.ordered, p.cron, p.retry_times, p.status, p.created_at, "
+        "CASE WHEN MAX(CASE WHEN f.user_id IS NOT NULL AND f.deleted_at=0 THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END AS follow, "
         "COUNT(pc.id) AS case_count "
         "FROM argus_ui_test_plan p "
         "LEFT JOIN argus_ui_test_plan_case pc ON p.id=pc.plan_id AND pc.deleted_at=0 "
+        "LEFT JOIN argus_ui_test_plan_follow_user_rel f ON p.id=f.plan_id AND f.user_id=:user_id "
         "WHERE p.deleted_at=0 "
     )
-    params = {}
+    params = {"user_id": int(user_info["id"])}
     if int(project_id or 0) > 0:
         sql += "AND p.project_id=:project_id "
         params["project_id"] = int(project_id)
@@ -1927,7 +1945,12 @@ async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str
     if normalized_keyword:
         sql += "AND (p.name LIKE :like_keyword OR p.description LIKE :like_keyword OR p.env_name LIKE :like_keyword) "
         params["like_keyword"] = f"%{normalized_keyword}%"
-    sql += "GROUP BY p.id ORDER BY p.updated_at DESC, p.id DESC"
+    sql += "GROUP BY p.id "
+    if follow is True:
+        sql += "HAVING follow=1 "
+    elif follow is False:
+        sql += "HAVING follow=0 "
+    sql += "ORDER BY p.updated_at DESC, p.id DESC"
     if paged:
         sql += " LIMIT :limit OFFSET :offset"
         params["limit"] = size
@@ -1949,8 +1972,14 @@ async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str
         pass
     if not paged:
         return ArgusResponse.success(items)
-    count_sql = "SELECT COUNT(1) AS total FROM argus_ui_test_plan p WHERE p.deleted_at=0 "
-    count_params = {}
+    count_sql = (
+        "SELECT COUNT(1) AS total FROM ("
+        "SELECT p.id, CASE WHEN MAX(CASE WHEN f.user_id IS NOT NULL AND f.deleted_at=0 THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END AS follow "
+        "FROM argus_ui_test_plan p "
+        "LEFT JOIN argus_ui_test_plan_follow_user_rel f ON p.id=f.plan_id AND f.user_id=:user_id "
+        "WHERE p.deleted_at=0 "
+    )
+    count_params = {"user_id": int(user_info["id"])}
     if int(project_id or 0) > 0:
         count_sql += "AND p.project_id=:project_id "
         count_params["project_id"] = int(project_id)
@@ -1960,6 +1989,12 @@ async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str
     if normalized_keyword:
         count_sql += "AND (p.name LIKE :like_keyword OR p.description LIKE :like_keyword OR p.env_name LIKE :like_keyword) "
         count_params["like_keyword"] = f"%{normalized_keyword}%"
+    count_sql += "GROUP BY p.id "
+    if follow is True:
+        count_sql += "HAVING follow=1 "
+    elif follow is False:
+        count_sql += "HAVING follow=0 "
+    count_sql += ") t"
     count_row = await session.execute(text(count_sql), count_params)
     total = int((count_row.mappings().first() or {}).get("total") or 0)
     return ArgusResponse.success(_paged_payload(items, total, page, size))
@@ -3136,6 +3171,75 @@ async def delete_ui_test_plan(id: int, session=Depends(get_session), user_info=D
     except Exception:
         pass
     return ArgusResponse.success()
+
+
+@router.get("/plan/follow")
+async def follow_ui_test_plan(id: int, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    plan_row = await session.execute(
+        text("SELECT id FROM argus_ui_test_plan WHERE deleted_at=0 AND id=:id"),
+        {"id": int(id or 0)},
+    )
+    if not plan_row.first():
+        return ArgusResponse.failed("UI测试计划不存在")
+    follow_row = await session.execute(
+        text(
+            "SELECT id FROM argus_ui_test_plan_follow_user_rel "
+            "WHERE deleted_at=0 AND plan_id=:plan_id AND user_id=:user_id"
+        ),
+        {"plan_id": int(id or 0), "user_id": int(user_info["id"])},
+    )
+    if follow_row.first():
+        return ArgusResponse.failed("已关注过此UI测试计划")
+    now_dt = datetime.now()
+    await session.execute(
+        text(
+            "INSERT INTO argus_ui_test_plan_follow_user_rel "
+            "(created_at, updated_at, deleted_at, create_user, update_user, user_id, plan_id) "
+            "VALUES (:created_at, :updated_at, 0, :create_user, :update_user, :user_id, :plan_id)"
+        ),
+        {
+            "created_at": now_dt,
+            "updated_at": now_dt,
+            "create_user": int(user_info["id"]),
+            "update_user": int(user_info["id"]),
+            "user_id": int(user_info["id"]),
+            "plan_id": int(id or 0),
+        },
+    )
+    await session.commit()
+    return ArgusResponse.success(msg="关注成功")
+
+
+@router.get("/plan/unfollow")
+async def unfollow_ui_test_plan(id: int, session=Depends(get_session), user_info=Depends(Permission())):
+    await ensure_ui_test_schema(session)
+    follow_row = await session.execute(
+        text(
+            "SELECT id FROM argus_ui_test_plan_follow_user_rel "
+            "WHERE deleted_at=0 AND plan_id=:plan_id AND user_id=:user_id"
+        ),
+        {"plan_id": int(id or 0), "user_id": int(user_info["id"])},
+    )
+    row = follow_row.mappings().first()
+    if not row:
+        return ArgusResponse.failed("已取关过此UI测试计划")
+    now_dt = datetime.now()
+    await session.execute(
+        text(
+            "UPDATE argus_ui_test_plan_follow_user_rel "
+            "SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
+            "WHERE id=:id"
+        ),
+        {
+            "id": int(row["id"] or 0),
+            "deleted_at": int(time.time() * 1000),
+            "update_user": int(user_info["id"]),
+            "updated_at": now_dt,
+        },
+    )
+    await session.commit()
+    return ArgusResponse.success(msg="取关成功")
 
 
 @router.post("/runner/claim")

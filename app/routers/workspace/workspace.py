@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends
@@ -105,6 +106,150 @@ async def _get_ui_case_distribution(session, user_id: int):
         user_id,
         case_type=FUNCTIONAL_CASE_TYPE_UI,
     )
+
+
+def _extract_workspace_ui_run_counts(result_payload, run_status=""):
+    if isinstance(result_payload, dict):
+        payload = result_payload
+    elif isinstance(result_payload, str) and result_payload.strip():
+        try:
+            payload = json.loads(result_payload)
+        except Exception:
+            payload = {}
+    else:
+        payload = {}
+
+    success_count = failed_count = skipped_count = error_count = 0
+    total_count = 0
+    report_status = ""
+
+    if isinstance(payload, dict):
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+        base = summary or stats or payload
+        success_count = int(base.get("success_count") or base.get("success_case_count") or base.get("passed") or 0)
+        failed_count = int(base.get("failed_count") or base.get("failed_case_count") or base.get("failed") or 0)
+        skipped_count = int(base.get("skipped_count") or base.get("skipped_case_count") or base.get("skipped") or 0)
+        error_count = int(base.get("error_count") or base.get("error") or 0)
+        total_count = int(base.get("total_count") or base.get("total") or base.get("case_count") or 0)
+        report_status = str(base.get("report_status") or payload.get("report_status") or "").strip().lower()
+
+        if not any((success_count, failed_count, skipped_count, error_count)) and isinstance(payload.get("case_results"), list):
+            for case_item in payload.get("case_results") or []:
+                case_status = str((case_item or {}).get("status") or "").strip().lower()
+                if case_status == "success":
+                    success_count += 1
+                elif case_status == "failed":
+                    failed_count += 1
+                elif case_status == "skipped":
+                    skipped_count += 1
+                elif case_status:
+                    error_count += 1
+
+    if total_count <= 0:
+        total_count = success_count + failed_count + skipped_count + error_count
+
+    normalized_run_status = str(run_status or "").strip().lower()
+    if not report_status:
+        if normalized_run_status in {"queued", "claimed", "running", "uploading", "cancelled"}:
+            report_status = normalized_run_status
+        elif failed_count > 0 or error_count > 0:
+            report_status = "failed"
+        elif success_count > 0 and failed_count == 0 and error_count == 0:
+            report_status = "success"
+        elif skipped_count > 0 and total_count == skipped_count:
+            report_status = "skipped"
+
+    return {
+        "success_count": int(success_count or 0),
+        "failed_count": int(failed_count or 0),
+        "skipped_count": int(skipped_count or 0),
+        "error_count": int(error_count or 0),
+        "total_count": int(total_count or 0),
+        "report_status": report_status,
+    }
+
+
+async def _query_ui_follow_test_plan(session, user_id: int):
+    rows = await session.execute(
+        text(
+            "SELECT p.id, p.project_id, p.name, p.description, p.env_name, p.base_url, p.browser, p.status "
+            "FROM argus_ui_test_plan_follow_user_rel f "
+            "INNER JOIN argus_ui_test_plan p ON f.plan_id=p.id "
+            "WHERE f.deleted_at=0 AND p.deleted_at=0 AND f.user_id=:user_id "
+            "ORDER BY p.updated_at DESC, p.id DESC"
+        ),
+        {"user_id": int(user_id)},
+    )
+    items = []
+    for row in rows.mappings().all():
+        plan = dict(row)
+        report_rows = await session.execute(
+            text(
+                "SELECT id, run_name AS plan_name, status, started_at AS start_at, result_payload "
+                "FROM argus_ui_test_run "
+                "WHERE deleted_at=0 AND trigger_mode<>'trial' AND plan_id=:plan_id "
+                "ORDER BY id DESC LIMIT 7"
+            ),
+            {"plan_id": int(plan["id"] or 0)},
+        )
+        reports = []
+        for report in report_rows.mappings().all():
+            counts = _extract_workspace_ui_run_counts(report.get("result_payload"), report.get("status"))
+            reports.append({
+                "id": int(report["id"] or 0),
+                "start_at": report.get("start_at"),
+                "success_count": int(counts.get("success_count") or 0),
+                "failed_count": int(counts.get("failed_count") or 0),
+                "error_count": int(counts.get("error_count") or 0),
+                "status": report.get("status"),
+            })
+        items.append({
+            "plan_type": "ui",
+            "plan": plan,
+            "report": reports,
+        })
+    return items
+
+
+async def _query_performance_follow_test_plan(session, user_id: int):
+    rows = await session.execute(
+        text(
+            "SELECT p.id, p.project_id, p.name, p.description, p.env, p.source_type, p.load_mode, p.enabled "
+            "FROM argus_performance_plan_follow_user_rel f "
+            "INNER JOIN argus_performance_plan p ON f.plan_id=p.id "
+            "WHERE f.deleted_at=0 AND p.deleted_at=0 AND f.user_id=:user_id "
+            "ORDER BY p.updated_at DESC, p.id DESC"
+        ),
+        {"user_id": int(user_id)},
+    )
+    items = []
+    for row in rows.mappings().all():
+        plan = dict(row)
+        report_rows = await session.execute(
+            text(
+                "SELECT id, created_at AS start_at, success_count, failed_count "
+                "FROM argus_performance_report "
+                "WHERE deleted_at=0 AND plan_id=:plan_id "
+                "ORDER BY id DESC LIMIT 7"
+            ),
+            {"plan_id": int(plan["id"] or 0)},
+        )
+        reports = []
+        for report in report_rows.mappings().all():
+            reports.append({
+                "id": int(report["id"] or 0),
+                "start_at": report.get("start_at"),
+                "success_count": int(report.get("success_count") or 0),
+                "failed_count": int(report.get("failed_count") or 0),
+                "error_count": 0,
+            })
+        items.append({
+            "plan_type": "performance",
+            "plan": plan,
+            "report": reports,
+        })
+    return items
 
 
 @router.get("/", description="获取工作台用户统计数据")
@@ -279,5 +424,10 @@ async def query_user_statistics(user_info=Depends(Permission())):
 @router.get("/testplan", description="获取用户关注的测试计划执行数据")
 async def query_follow_testplan(user_info=Depends(Permission())):
     user_id = user_info['id']
-    ans = await ArgusTestPlanDao.query_user_follow_test_plan(user_id)
-    return ArgusResponse.success(ans)
+    api_items = await ArgusTestPlanDao.query_user_follow_test_plan(user_id)
+    async with async_session() as session:
+        ui_items = await _query_ui_follow_test_plan(session, user_id)
+        performance_items = await _query_performance_follow_test_plan(session, user_id)
+    for item in api_items:
+        item["plan_type"] = "api"
+    return ArgusResponse.success(api_items + ui_items + performance_items)

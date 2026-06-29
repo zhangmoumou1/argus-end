@@ -131,6 +131,20 @@ async def ensure_performance_schema(session):
             "deleted_at BIGINT NOT NULL DEFAULT 0"
             ")"
         ))
+        await session.execute(text(
+            "CREATE TABLE IF NOT EXISTS argus_performance_plan_follow_user_rel ("
+            "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+            "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+            "deleted_at BIGINT NOT NULL DEFAULT 0,"
+            "create_user INT NOT NULL DEFAULT 0,"
+            "update_user INT NOT NULL DEFAULT 0,"
+            "user_id INT NOT NULL DEFAULT 0,"
+            "plan_id BIGINT NOT NULL DEFAULT 0,"
+            "UNIQUE KEY uniq_performance_plan_follow_user (user_id, plan_id, deleted_at),"
+            "KEY idx_performance_plan_follow_user (user_id, deleted_at, plan_id)"
+            ")"
+        ))
         report_rows = await session.execute(text("SHOW COLUMNS FROM argus_performance_report"))
         report_columns = {row[0]: str(row[1]).lower() for row in report_rows.fetchall()}
         if report_columns.get("summary_json") == "text":
@@ -177,6 +191,14 @@ def stringify_json(value, fallback="{}"):
         return json.dumps(value, ensure_ascii=False)
     except Exception:
         return fallback
+
+
+def _normalize_bool_query(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def parse_csv_file(file_path: Path, encoding="utf-8", delimiter=","):
@@ -1870,27 +1892,55 @@ async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
 
 @router.get("/plan/list")
 async def list_performance_plan(page: int, size: int, project_id: int = None, name: str = "", env: int = None,
-                                create_user: int = None, _=Depends(Permission())):
+                                create_user: int = None, follow: bool = None, user_info=Depends(Permission())):
     async with async_session() as session:
         await ensure_performance_schema(session)
-        sql = select(ArgusPerformancePlan).where(ArgusPerformancePlan.deleted_at == 0).order_by(
-            desc(ArgusPerformancePlan.updated_at)
+        follow = _normalize_bool_query(follow)
+        follow_expr = (
+            "CASE WHEN f.user_id IS NULL OR f.deleted_at <> 0 THEN 0 ELSE 1 END AS follow"
         )
+        base_sql = (
+            "SELECT p.*, "
+            f"{follow_expr} "
+            "FROM argus_performance_plan p "
+            "LEFT JOIN argus_performance_plan_follow_user_rel f ON p.id=f.plan_id AND f.user_id=:user_id "
+            "WHERE p.deleted_at=0 "
+        )
+        params = {"user_id": int(user_info["id"])}
         if project_id:
-            sql = sql.where(ArgusPerformancePlan.project_id == project_id)
+            base_sql += "AND p.project_id=:project_id "
+            params["project_id"] = project_id
         if name:
-            sql = sql.where(ArgusPerformancePlan.name.like(f"%{name}%"))
+            base_sql += "AND p.name LIKE :name "
+            params["name"] = f"%{name}%"
         if env:
-            sql = sql.where(ArgusPerformancePlan.env == env)
+            base_sql += "AND p.env=:env "
+            params["env"] = env
         if create_user:
-            sql = sql.where(ArgusPerformancePlan.create_user == create_user)
-        data = await session.execute(sql)
-        total = data.raw.rowcount
+            base_sql += "AND p.create_user=:create_user "
+            params["create_user"] = create_user
+        if follow is True:
+            base_sql += "AND f.user_id IS NOT NULL AND f.deleted_at=0 "
+        elif follow is False:
+            base_sql += "AND (f.user_id IS NULL OR f.deleted_at<>0) "
+        count_row = await session.execute(
+            text(f"SELECT COUNT(1) AS total FROM ({base_sql}) t"),
+            params,
+        )
+        total = int((count_row.mappings().first() or {}).get("total") or 0)
         if total == 0:
             return ArgusResponse.success_with_size([], 0)
-        page_sql = sql.offset((page - 1) * size).limit(size)
-        page_data = await session.execute(page_sql)
-        return ArgusResponse.success_with_size(page_data.scalars().all(), total=total)
+        page_sql = f"{base_sql} ORDER BY p.updated_at DESC LIMIT :offset, :size"
+        page_data = await session.execute(
+            text(page_sql),
+            {**params, "offset": max(page - 1, 0) * size, "size": size},
+        )
+        items = []
+        for row in page_data.mappings().all():
+            item = dict(row)
+            item["follow"] = bool(item.get("follow"))
+            items.append(item)
+        return ArgusResponse.success_with_size(items, total=total)
 
 
 @router.post("/plan/insert")
@@ -2011,6 +2061,79 @@ async def execute_performance_plan(id: int, user_info=Depends(Permission())):
         {"report_id": report_id, "platform_task_id": platform_task.id},
         msg="性能计划已入队，请稍后查看执行记录",
     )
+
+
+@router.get("/plan/follow")
+async def follow_performance_plan(id: int, user_info=Depends(Permission())):
+    async with async_session() as session:
+        async with session.begin():
+            await ensure_performance_schema(session)
+            row = await session.execute(
+                select(ArgusPerformancePlan).where(
+                    ArgusPerformancePlan.id == id,
+                    ArgusPerformancePlan.deleted_at == 0,
+                )
+            )
+            plan = row.scalars().first()
+            if plan is None:
+                return ArgusResponse.failed("性能计划不存在")
+            exists = await session.execute(
+                text(
+                    "SELECT id FROM argus_performance_plan_follow_user_rel "
+                    "WHERE deleted_at=0 AND plan_id=:plan_id AND user_id=:user_id"
+                ),
+                {"plan_id": int(id or 0), "user_id": int(user_info["id"])},
+            )
+            if exists.first():
+                return ArgusResponse.failed("已关注过此性能计划")
+            now_dt = datetime.now()
+            await session.execute(
+                text(
+                    "INSERT INTO argus_performance_plan_follow_user_rel "
+                    "(created_at, updated_at, deleted_at, create_user, update_user, user_id, plan_id) "
+                    "VALUES (:created_at, :updated_at, 0, :create_user, :update_user, :user_id, :plan_id)"
+                ),
+                {
+                    "created_at": now_dt,
+                    "updated_at": now_dt,
+                    "create_user": int(user_info["id"]),
+                    "update_user": int(user_info["id"]),
+                    "user_id": int(user_info["id"]),
+                    "plan_id": int(id or 0),
+                },
+            )
+    return ArgusResponse.success(msg="关注成功")
+
+
+@router.get("/plan/unfollow")
+async def unfollow_performance_plan(id: int, user_info=Depends(Permission())):
+    async with async_session() as session:
+        async with session.begin():
+            await ensure_performance_schema(session)
+            row = await session.execute(
+                text(
+                    "SELECT id FROM argus_performance_plan_follow_user_rel "
+                    "WHERE deleted_at=0 AND plan_id=:plan_id AND user_id=:user_id"
+                ),
+                {"plan_id": int(id or 0), "user_id": int(user_info["id"])},
+            )
+            data = row.mappings().first()
+            if not data:
+                return ArgusResponse.failed("已取关过此性能计划")
+            await session.execute(
+                text(
+                    "UPDATE argus_performance_plan_follow_user_rel "
+                    "SET deleted_at=:deleted_at, update_user=:update_user, updated_at=:updated_at "
+                    "WHERE id=:id"
+                ),
+                {
+                    "id": int(data["id"] or 0),
+                    "deleted_at": int(time.time() * 1000),
+                    "update_user": int(user_info["id"]),
+                    "updated_at": datetime.now(),
+                },
+            )
+    return ArgusResponse.success(msg="取关成功")
 
 
 @router.get("/report/list")
