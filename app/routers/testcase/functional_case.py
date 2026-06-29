@@ -39,6 +39,9 @@ router = APIRouter(prefix="/functional-case")
 logger = Log("functional_case_ai")
 
 FUNCTIONAL_CASE_SCHEMA_READY = False
+FUNCTIONAL_CASE_TYPE_FUNCTIONAL = "functional"
+FUNCTIONAL_CASE_TYPE_UI = "ui"
+FUNCTIONAL_CASE_UI_ROOT_NAME = "UI自动化用例"
 AI_TEXT_LIMIT = 12000
 AI_INSTRUCTION_LIMIT = 6000
 AI_IMAGE_LIMIT = 3
@@ -239,6 +242,7 @@ async def ensure_functional_case_schema(session):
                 "case_path TEXT NULL,"
                 "case_priority VARCHAR(32) NULL,"
                 "case_pass INT NOT NULL DEFAULT 0,"
+                "case_type VARCHAR(32) NOT NULL DEFAULT 'functional',"
                 "KEY idx_fc_item_file_deleted (file_id, deleted_at),"
                 "KEY idx_fc_item_file_uid_deleted (file_id, case_uid, deleted_at),"
                 "KEY idx_fc_item_project_created (project_id, deleted_at, created_at),"
@@ -266,6 +270,39 @@ async def ensure_functional_case_schema(session):
                     "ADD COLUMN case_pass INT NOT NULL DEFAULT 0 COMMENT '是否通过(1通过,0不通过)'"
                 )
             )
+        item_case_type_column = await session.execute(
+            text("SHOW COLUMNS FROM argus_functional_case_item LIKE 'case_type'")
+        )
+        if item_case_type_column.first() is None:
+            await session.execute(
+                text(
+                    "ALTER TABLE argus_functional_case_item "
+                    "ADD COLUMN case_type VARCHAR(32) NOT NULL DEFAULT 'functional' COMMENT '用例类型(functional/ui)'"
+                )
+            )
+        item_case_type_index = await session.execute(
+            text("SHOW INDEX FROM argus_functional_case_item WHERE Key_name='idx_fc_item_type_created'")
+        )
+        if item_case_type_index.first() is None:
+            await session.execute(
+                text(
+                    "ALTER TABLE argus_functional_case_item "
+                    "ADD KEY idx_fc_item_type_created (case_type, deleted_at, created_at)"
+                )
+            )
+        await session.execute(
+            text(
+                "UPDATE argus_functional_case_item "
+                "SET case_type=:ui_type "
+                "WHERE deleted_at=0 AND case_type<>:ui_type "
+                "AND (COALESCE(case_path, '') LIKE :ui_marker OR case_name=:ui_root)"
+            ),
+            {
+                "ui_type": FUNCTIONAL_CASE_TYPE_UI,
+                "ui_marker": f"%{FUNCTIONAL_CASE_UI_ROOT_NAME}%",
+                "ui_root": FUNCTIONAL_CASE_UI_ROOT_NAME,
+            },
+        )
 
         await session.commit()
     except OperationalError as exc:
@@ -309,6 +346,10 @@ def _resolve_case_uid(node_data, case_path, case_name, case_priority):
     return f"legacy_{hashlib.md5(raw.encode('utf-8')).hexdigest()}"
 
 
+def _resolve_case_type(path_nodes):
+    return FUNCTIONAL_CASE_TYPE_UI if FUNCTIONAL_CASE_UI_ROOT_NAME in (path_nodes or []) else FUNCTIONAL_CASE_TYPE_FUNCTIONAL
+
+
 def extract_case_items(data):
     root = get_root_node(data)
     if not isinstance(root, dict):
@@ -336,6 +377,7 @@ def extract_case_items(data):
                 "case_path": case_path,
                 "case_priority": priority,
                 "case_pass": 1 if is_pass else 0,
+                "case_type": _resolve_case_type(next_path),
             })
 
         children = node.get("children") if isinstance(node, dict) else []
@@ -376,11 +418,12 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int, c
             "case_path": item.get("case_path"),
             "case_priority": item.get("case_priority"),
             "case_pass": int(item.get("case_pass") or 0),
+            "case_type": item.get("case_type") or FUNCTIONAL_CASE_TYPE_FUNCTIONAL,
         }
 
     existing_result = await session.execute(
         text(
-            "SELECT id, case_uid, case_name, case_path, case_priority, case_pass "
+            "SELECT id, case_uid, case_name, case_path, case_priority, case_pass, case_type "
             "FROM argus_functional_case_item WHERE file_id=:file_id AND deleted_at=0"
         ),
         {"file_id": model.id},
@@ -428,6 +471,7 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int, c
                 "case_path": item["case_path"],
                 "case_priority": item["case_priority"],
                 "case_pass": item["case_pass"],
+                "case_type": item["case_type"],
                 "create_user": operator_user_id,
                 "update_user": operator_user_id,
                 "created_at": now_dt,
@@ -439,6 +483,7 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int, c
             or str(old.get("case_path") or "") != str(item["case_path"] or "")
             or str(old.get("case_priority") or "") != str(item["case_priority"] or "")
             or int(old.get("case_pass") or 0) != int(item["case_pass"] or 0)
+            or str(old.get("case_type") or FUNCTIONAL_CASE_TYPE_FUNCTIONAL) != str(item["case_type"] or FUNCTIONAL_CASE_TYPE_FUNCTIONAL)
         ):
             update_rows.append({
                 "id": int(old.get("id")),
@@ -449,6 +494,7 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int, c
                 "case_path": item["case_path"],
                 "case_priority": item["case_priority"],
                 "case_pass": item["case_pass"],
+                "case_type": item["case_type"],
                 "update_user": operator_user_id,
                 "updated_at": now_dt,
             })
@@ -457,8 +503,8 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int, c
         await session.execute(
             text(
                 "INSERT INTO argus_functional_case_item "
-                "(project_id, directory_id, file_id, case_uid, file_title, case_name, case_path, case_priority, case_pass, deleted_at, create_user, update_user, created_at, updated_at) "
-                "VALUES (:project_id, :directory_id, :file_id, :case_uid, :file_title, :case_name, :case_path, :case_priority, :case_pass, 0, :create_user, :update_user, :created_at, :updated_at)"
+                "(project_id, directory_id, file_id, case_uid, file_title, case_name, case_path, case_priority, case_pass, case_type, deleted_at, create_user, update_user, created_at, updated_at) "
+                "VALUES (:project_id, :directory_id, :file_id, :case_uid, :file_title, :case_name, :case_path, :case_priority, :case_pass, :case_type, 0, :create_user, :update_user, :created_at, :updated_at)"
             ),
             insert_rows,
         )
@@ -467,7 +513,7 @@ async def rebuild_functional_case_items(session, model, operator_user_id: int, c
             text(
                 "UPDATE argus_functional_case_item SET "
                 "project_id=:project_id, directory_id=:directory_id, file_title=:file_title, "
-                "case_name=:case_name, case_path=:case_path, case_priority=:case_priority, case_pass=:case_pass, "
+                "case_name=:case_name, case_path=:case_path, case_priority=:case_priority, case_pass=:case_pass, case_type=:case_type, "
                 "update_user=:update_user, updated_at=:updated_at "
                 "WHERE id=:id"
             ),

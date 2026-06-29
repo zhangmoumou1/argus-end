@@ -68,6 +68,10 @@ def _build_overview_change(current_overview: dict, previous_overview: dict):
             current_overview.get("functional_case_total"),
             previous_overview.get("functional_case_total"),
         ),
+        "ui_case_total": _calc_change(
+            current_overview.get("ui_case_total"),
+            previous_overview.get("ui_case_total"),
+        ),
         "api_coverage_rate": _calc_change(
             current_overview.get("api_coverage_rate"),
             previous_overview.get("api_coverage_rate"),

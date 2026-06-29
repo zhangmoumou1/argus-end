@@ -37,6 +37,12 @@ UI_RUNNER_BOOTSTRAP_FILE = Path(__file__).resolve().parents[2] / "ui_runner" / "
 UI_RUN_ACTIVE_STATUSES = {"queued", "claimed", "running", "uploading"}
 UI_RUN_TERMINAL_STATUSES = {"success", "failed", "cancelled", "skipped", "partial_success"}
 UI_PRIORITY_MARKER_SQL = "source_snapshot LIKE '%priority_%'"
+FUNCTIONAL_CASE_TYPE_UI = "ui"
+UI_FUNCTIONAL_CASE_ITEM_SCHEMA_READY = False
+UI_CASE_PATH_JOIN_SQL = (
+    "CONVERT(i.case_path USING utf8mb4) COLLATE utf8mb4_general_ci="
+    "CONVERT(r.node_path USING utf8mb4) COLLATE utf8mb4_general_ci"
+)
 UI_STREAM_POLL_INTERVAL = 1.0
 UI_STREAM_KEEPALIVE_INTERVAL = 15.0
 UI_STREAM_HEADERS = {
@@ -666,6 +672,54 @@ async def ensure_ui_test_schema(session):
     UI_SCHEMA_READY = True
 
 
+async def ensure_ui_functional_case_item_schema(session):
+    global UI_FUNCTIONAL_CASE_ITEM_SCHEMA_READY
+    if UI_FUNCTIONAL_CASE_ITEM_SCHEMA_READY:
+        return
+    if not Config.RUNTIME_SCHEMA_MIGRATION_ENABLED:
+        UI_FUNCTIONAL_CASE_ITEM_SCHEMA_READY = True
+        return
+    try:
+        column_result = await session.execute(
+            text("SHOW COLUMNS FROM argus_functional_case_item LIKE 'case_type'")
+        )
+        if column_result.first() is None:
+            await session.execute(
+                text(
+                    "ALTER TABLE argus_functional_case_item "
+                    "ADD COLUMN case_type VARCHAR(32) NOT NULL DEFAULT 'functional' COMMENT '用例类型(functional/ui)'"
+                )
+            )
+        index_result = await session.execute(
+            text("SHOW INDEX FROM argus_functional_case_item WHERE Key_name='idx_fc_item_type_created'")
+        )
+        if index_result.first() is None:
+            await session.execute(
+                text(
+                    "ALTER TABLE argus_functional_case_item "
+                    "ADD KEY idx_fc_item_type_created (case_type, deleted_at, created_at)"
+                )
+            )
+        await session.execute(
+            text(
+                "UPDATE argus_functional_case_item "
+                "SET case_type=:ui_type "
+                "WHERE deleted_at=0 AND case_type<>:ui_type "
+                "AND (COALESCE(case_path, '') LIKE :ui_root_like OR case_name=:ui_root_name)"
+            ),
+            {
+                "ui_type": FUNCTIONAL_CASE_TYPE_UI,
+                "ui_root_like": f"%{UI_CASE_NODE_NAME}%",
+                "ui_root_name": UI_CASE_NODE_NAME,
+            },
+        )
+        await session.commit()
+        UI_FUNCTIONAL_CASE_ITEM_SCHEMA_READY = True
+    except Exception:
+        await session.rollback()
+        raise
+
+
 async def ensure_ui_test_gateway_schema(session):
     if not Config.RUNTIME_SCHEMA_MIGRATION_ENABLED:
         return
@@ -987,6 +1041,7 @@ def _parse_cron_trigger(cron):
 
 async def _enqueue_ui_plan_run(plan_id, user_id=0, trigger_mode="scheduler"):
     async with async_session() as session:
+        await ensure_ui_functional_case_item_schema(session)
         plan_row = await session.execute(
             text("SELECT * FROM argus_ui_test_plan WHERE deleted_at=0 AND id=:id AND status='enabled'"),
             {"id": int(plan_id)},
@@ -1001,10 +1056,11 @@ async def _enqueue_ui_plan_run(plan_id, user_id=0, trigger_mode="scheduler"):
                 "FROM argus_ui_test_plan p "
                 "LEFT JOIN argus_ui_test_plan_case pc ON p.id=pc.plan_id "
                 "LEFT JOIN argus_ui_test_case_ref r ON pc.case_ref_id=r.id "
-                f"WHERE p.deleted_at=0 AND pc.deleted_at=0 AND pc.enabled=1 AND r.deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND r.status='valid' "
+                f"INNER JOIN argus_functional_case_item i ON i.file_id=r.file_id AND {UI_CASE_PATH_JOIN_SQL} "
+                f"WHERE p.deleted_at=0 AND pc.deleted_at=0 AND pc.enabled=1 AND r.deleted_at=0 AND i.deleted_at=0 AND i.case_type=:ui_case_type AND {UI_PRIORITY_MARKER_SQL} AND r.status='valid' "
                 "AND p.id=:plan_id ORDER BY pc.sort_index ASC, pc.id ASC"
             ),
-            {"plan_id": int(plan_id)},
+            {"plan_id": int(plan_id), "ui_case_type": FUNCTIONAL_CASE_TYPE_UI},
         )
         cases = case_rows.mappings().all()
         run_id = await _create_ui_plan_run(session, dict(plan), cases, create_user_id=user_id, trigger_mode=trigger_mode)
@@ -1284,28 +1340,35 @@ async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "
                              page: int = 1, size: int = 20, paged: bool = False,
                              session=Depends(get_session), user_info=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_functional_case_item_schema(session)
     page, size, offset = _clamp_pagination(page, size, 200)
     await _sync_ui_case_refs_by_project(session, int(project_id), int(user_info["id"]))
     normalized_status = str(status or "").strip()
     status_expr = (
         "CASE "
-        "WHEN COUNT(r.id)=0 THEN 'no_ui_node' "
+        "WHEN COUNT(i.id)=0 THEN 'no_ui_node' "
         "WHEN SUM(CASE WHEN r.status='valid' THEN 1 ELSE 0 END)>0 THEN 'valid' "
         "WHEN SUM(CASE WHEN r.status='invalid_ui_node' THEN 1 ELSE 0 END)>0 THEN 'invalid_ui_node' "
         "ELSE 'empty_ui_node' END"
     )
-    params = {"project_id": project_id, "keyword": keyword or "", "like_keyword": f"%{keyword or ''}%"}
+    params = {
+        "project_id": project_id,
+        "keyword": keyword or "",
+        "like_keyword": f"%{keyword or ''}%",
+        "ui_case_type": FUNCTIONAL_CASE_TYPE_UI,
+    }
     sql = (
-        "SELECT f.id AS file_id, f.title AS file_title, "
-        "COUNT(r.id) AS ui_case_count, "
+        "SELECT MIN(r.id) AS id, f.id AS file_id, f.title AS file_title, "
+        "COUNT(DISTINCT i.id) AS ui_case_count, "
         "SUM(CASE WHEN r.status='valid' THEN 1 ELSE 0 END) AS valid_ui_case_count, "
         "SUM(CASE WHEN r.status='invalid_ui_node' THEN 1 ELSE 0 END) AS invalid_ui_case_count, "
         "SUM(CASE WHEN r.status='empty_ui_node' THEN 1 ELSE 0 END) AS empty_ui_case_count, "
         "MAX(r.last_scanned_at) AS last_scanned_at "
         "FROM argus_functional_case_file f "
-        f"LEFT JOIN argus_ui_test_case_ref r ON f.id=r.file_id AND r.deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} "
+        "INNER JOIN argus_functional_case_item i ON i.file_id=f.id AND i.deleted_at=0 AND i.case_type=:ui_case_type "
+        f"LEFT JOIN argus_ui_test_case_ref r ON r.file_id=i.file_id AND {UI_CASE_PATH_JOIN_SQL} AND r.deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} "
         "WHERE f.deleted_at=0 AND f.project_id=:project_id "
-        "AND (:keyword='' OR f.title LIKE :like_keyword OR CAST(f.id AS CHAR) LIKE :like_keyword) "
+        "AND (:keyword='' OR f.title LIKE :like_keyword OR i.case_name LIKE :like_keyword OR i.case_path LIKE :like_keyword OR CAST(f.id AS CHAR) LIKE :like_keyword) "
         "GROUP BY f.id, f.title "
     )
     if normalized_status:
@@ -1340,12 +1403,18 @@ async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "
         "SELECT COUNT(1) AS total FROM ("
         "SELECT f.id "
         "FROM argus_functional_case_file f "
-        f"LEFT JOIN argus_ui_test_case_ref r ON f.id=r.file_id AND r.deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} "
+        "INNER JOIN argus_functional_case_item i ON i.file_id=f.id AND i.deleted_at=0 AND i.case_type=:ui_case_type "
+        f"LEFT JOIN argus_ui_test_case_ref r ON r.file_id=i.file_id AND {UI_CASE_PATH_JOIN_SQL} AND r.deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} "
         "WHERE f.deleted_at=0 AND f.project_id=:project_id "
-        "AND (:keyword='' OR f.title LIKE :like_keyword OR CAST(f.id AS CHAR) LIKE :like_keyword) "
+        "AND (:keyword='' OR f.title LIKE :like_keyword OR i.case_name LIKE :like_keyword OR i.case_path LIKE :like_keyword OR CAST(f.id AS CHAR) LIKE :like_keyword) "
         "GROUP BY f.id, f.title "
     )
-    count_params = {"project_id": project_id, "keyword": keyword or "", "like_keyword": f"%{keyword or ''}%"}
+    count_params = {
+        "project_id": project_id,
+        "keyword": keyword or "",
+        "like_keyword": f"%{keyword or ''}%",
+        "ui_case_type": FUNCTIONAL_CASE_TYPE_UI,
+    }
     if normalized_status:
         count_sql += f"HAVING {status_expr}=:status "
         count_params["status"] = normalized_status
@@ -1359,19 +1428,26 @@ async def list_ui_test_cases(project_id: int, keyword: str = "", status: str = "
 async def list_ui_test_case_nodes(file_id: int, include_dsl: bool = False,
                                   session=Depends(get_session), _=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_functional_case_item_schema(session)
     await _sync_ui_case_refs_by_file(session, file_id)
     dsl_column = ", dsl_json" if include_dsl else ""
     rows = await session.execute(
         text(
-            "SELECT id, file_id, file_title, node_uid, node_title, node_path, status, step_count, assert_count, validation_result, source_snapshot, last_scanned_at "
+            "SELECT r.id, r.file_id, r.file_title, r.node_uid, r.node_title, r.node_path, r.status, "
+            "r.step_count, r.assert_count, r.validation_result, r.source_snapshot, r.last_scanned_at, "
+            "i.id AS functional_case_item_id, i.case_uid, i.case_type "
             f"{dsl_column} "
-            f"FROM argus_ui_test_case_ref WHERE deleted_at=0 AND file_id=:file_id AND {UI_PRIORITY_MARKER_SQL} ORDER BY id ASC"
+            "FROM argus_functional_case_item i "
+            f"INNER JOIN argus_ui_test_case_ref r ON r.file_id=i.file_id AND {UI_CASE_PATH_JOIN_SQL} AND r.deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} "
+            "WHERE i.deleted_at=0 AND i.case_type=:ui_case_type AND i.file_id=:file_id "
+            "ORDER BY i.id ASC, r.id ASC"
         ),
-        {"file_id": file_id},
+        {"file_id": file_id, "ui_case_type": FUNCTIONAL_CASE_TYPE_UI},
     )
     data = []
     for row in rows.mappings().all():
         item = dict(row)
+        item["case_ref_id"] = int(item.get("id") or 0)
         item["step_count"] = int(item.get("step_count") or 0)
         item["assert_count"] = int(item.get("assert_count") or 0)
         item["validation_result"] = _parse_json_text(item.get("validation_result")) or {}
@@ -1386,14 +1462,18 @@ async def list_ui_test_case_nodes(file_id: int, include_dsl: bool = False,
 @router.get("/case/detail")
 async def get_ui_test_case_detail(id: int, session=Depends(get_session), _=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_functional_case_item_schema(session)
     await _sync_ui_case_refs_by_case_ids(session, [id])
     row = await session.execute(
         text(
-            "SELECT id, project_id, file_id, file_title, node_uid, node_title, node_path, status, step_count, "
-            "assert_count, dsl_json, validation_result, source_snapshot, last_scanned_at "
-            f"FROM argus_ui_test_case_ref WHERE deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND id=:id"
+            "SELECT r.id, r.project_id, r.file_id, r.file_title, r.node_uid, r.node_title, r.node_path, r.status, "
+            "r.step_count, r.assert_count, r.dsl_json, r.validation_result, r.source_snapshot, r.last_scanned_at, "
+            "i.id AS functional_case_item_id, i.case_uid, i.case_type "
+            "FROM argus_ui_test_case_ref r "
+            f"INNER JOIN argus_functional_case_item i ON i.file_id=r.file_id AND {UI_CASE_PATH_JOIN_SQL} "
+            f"WHERE r.deleted_at=0 AND i.deleted_at=0 AND i.case_type=:ui_case_type AND {UI_PRIORITY_MARKER_SQL} AND r.id=:id"
         ),
-        {"id": id},
+        {"id": id, "ui_case_type": FUNCTIONAL_CASE_TYPE_UI},
     )
     item = row.mappings().first()
     if not item:
@@ -1408,6 +1488,7 @@ async def get_ui_test_case_detail(id: int, session=Depends(get_session), _=Depen
 @router.post("/case/validate")
 async def validate_ui_test_case(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_functional_case_item_schema(session)
     payload = await request.json()
     case_ref_id = int(payload.get("id") or 0)
     if case_ref_id <= 0:
@@ -1415,10 +1496,12 @@ async def validate_ui_test_case(request: Request, session=Depends(get_session), 
     await _sync_ui_case_refs_by_case_ids(session, [case_ref_id], int(user_info["id"]))
     row = await session.execute(
         text(
-            "SELECT id, project_id, file_id, node_uid, node_path "
-            f"FROM argus_ui_test_case_ref WHERE deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND id=:id"
+            "SELECT r.id, r.project_id, r.file_id, r.node_uid, r.node_path "
+            "FROM argus_ui_test_case_ref r "
+            f"INNER JOIN argus_functional_case_item i ON i.file_id=r.file_id AND {UI_CASE_PATH_JOIN_SQL} "
+            f"WHERE r.deleted_at=0 AND i.deleted_at=0 AND i.case_type=:ui_case_type AND {UI_PRIORITY_MARKER_SQL} AND r.id=:id"
         ),
-        {"id": case_ref_id},
+        {"id": case_ref_id, "ui_case_type": FUNCTIONAL_CASE_TYPE_UI},
     )
     record = row.mappings().first()
     if not record:
@@ -1447,14 +1530,20 @@ async def validate_ui_test_case(request: Request, session=Depends(get_session), 
 @router.post("/case/preview-dsl")
 async def preview_ui_test_case_dsl(request: Request, session=Depends(get_session), _=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_functional_case_item_schema(session)
     payload = await request.json()
     case_ref_id = int(payload.get("id") or 0)
     if case_ref_id <= 0:
         return ArgusResponse.failed("id不能为空")
     await _sync_ui_case_refs_by_case_ids(session, [case_ref_id])
     row = await session.execute(
-        text(f"SELECT id, status, dsl_json, validation_result FROM argus_ui_test_case_ref WHERE deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND id=:id"),
-        {"id": case_ref_id},
+        text(
+            "SELECT r.id, r.status, r.dsl_json, r.validation_result, i.id AS functional_case_item_id "
+            "FROM argus_ui_test_case_ref r "
+            f"INNER JOIN argus_functional_case_item i ON i.file_id=r.file_id AND {UI_CASE_PATH_JOIN_SQL} "
+            f"WHERE r.deleted_at=0 AND i.deleted_at=0 AND i.case_type=:ui_case_type AND {UI_PRIORITY_MARKER_SQL} AND r.id=:id"
+        ),
+        {"id": case_ref_id, "ui_case_type": FUNCTIONAL_CASE_TYPE_UI},
     )
     record = row.mappings().first()
     if not record:
@@ -1510,10 +1599,12 @@ async def _resolve_ui_trial_context(session, payload):
 async def _load_valid_ui_case_refs(session, case_ref_ids):
     rows = await session.execute(
         text(
-            "SELECT id, project_id, file_title, node_title, node_path, status, dsl_json, source_snapshot "
-            f"FROM argus_ui_test_case_ref WHERE deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND id IN :ids"
+            "SELECT r.id, r.project_id, r.file_title, r.node_title, r.node_path, r.status, r.dsl_json, r.source_snapshot "
+            "FROM argus_ui_test_case_ref r "
+            f"INNER JOIN argus_functional_case_item i ON i.file_id=r.file_id AND {UI_CASE_PATH_JOIN_SQL} "
+            f"WHERE r.deleted_at=0 AND i.deleted_at=0 AND i.case_type=:ui_case_type AND {UI_PRIORITY_MARKER_SQL} AND r.id IN :ids"
         ).bindparams(bindparam("ids", expanding=True)),
-        {"ids": case_ref_ids},
+        {"ids": case_ref_ids, "ui_case_type": FUNCTIONAL_CASE_TYPE_UI},
     )
     case_refs = rows.mappings().all()
     case_ref_map = {
@@ -1605,6 +1696,7 @@ async def _create_ui_trial_run(session, payload, user_id, case_ref, context):
 @router.post("/case/trial-run")
 async def trial_run_ui_test_case(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_functional_case_item_schema(session)
     await ensure_ui_test_gateway_schema(session)
     payload = await request.json()
     case_ref_id = int(payload.get("id") or 0)
@@ -1618,10 +1710,12 @@ async def trial_run_ui_test_case(request: Request, session=Depends(get_session),
 
     row = await session.execute(
         text(
-            "SELECT id, project_id, file_title, node_title, node_path, status, dsl_json, source_snapshot "
-            f"FROM argus_ui_test_case_ref WHERE deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND id=:id"
+            "SELECT r.id, r.project_id, r.file_title, r.node_title, r.node_path, r.status, r.dsl_json, r.source_snapshot "
+            "FROM argus_ui_test_case_ref r "
+            f"INNER JOIN argus_functional_case_item i ON i.file_id=r.file_id AND {UI_CASE_PATH_JOIN_SQL} "
+            f"WHERE r.deleted_at=0 AND i.deleted_at=0 AND i.case_type=:ui_case_type AND {UI_PRIORITY_MARKER_SQL} AND r.id=:id"
         ),
-        {"id": case_ref_id},
+        {"id": case_ref_id, "ui_case_type": FUNCTIONAL_CASE_TYPE_UI},
     )
     case_ref = row.mappings().first()
     if not case_ref:
@@ -1731,6 +1825,7 @@ async def trial_run_ui_test_case(request: Request, session=Depends(get_session),
 @router.post("/case/trial-run-batch")
 async def trial_run_ui_test_cases(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_functional_case_item_schema(session)
     await ensure_ui_test_gateway_schema(session)
     payload = await request.json()
     raw_ids = payload.get("ids") or payload.get("case_ref_ids") or []
@@ -1769,15 +1864,18 @@ async def trial_run_ui_test_cases(request: Request, session=Depends(get_session)
 @router.get("/plan/candidates")
 async def list_ui_plan_candidates(project_id: int, session=Depends(get_session), _=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_functional_case_item_schema(session)
     await _sync_ui_case_refs_by_project(session, project_id)
     rows = await session.execute(
         text(
-            "SELECT file_id, file_title, id, node_title, node_path, step_count, assert_count "
-            "FROM argus_ui_test_case_ref "
-            f"WHERE deleted_at=0 AND project_id=:project_id AND {UI_PRIORITY_MARKER_SQL} AND status='valid' "
-            "ORDER BY file_title ASC, id ASC"
+            "SELECT r.file_id, r.file_title, r.id, r.node_title, r.node_path, r.step_count, r.assert_count, "
+            "i.id AS functional_case_item_id, i.case_uid, i.case_type "
+            "FROM argus_functional_case_item i "
+            f"INNER JOIN argus_ui_test_case_ref r ON r.file_id=i.file_id AND {UI_CASE_PATH_JOIN_SQL} AND r.deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} "
+            "WHERE i.deleted_at=0 AND i.case_type=:ui_case_type AND r.project_id=:project_id AND r.status='valid' "
+            "ORDER BY r.file_title ASC, i.id ASC, r.id ASC"
         ),
-        {"project_id": project_id},
+        {"project_id": project_id, "ui_case_type": FUNCTIONAL_CASE_TYPE_UI},
     )
     grouped = {}
     for row in rows.mappings().all():
@@ -1791,6 +1889,10 @@ async def list_ui_plan_candidates(project_id: int, session=Depends(get_session),
         grouped[file_id]["ui_case_count"] += 1
         grouped[file_id]["nodes"].append({
             "id": int(row["id"]),
+            "case_ref_id": int(row["id"]),
+            "functional_case_item_id": int(row.get("functional_case_item_id") or 0),
+            "case_uid": row.get("case_uid"),
+            "case_type": row.get("case_type") or FUNCTIONAL_CASE_TYPE_UI,
             "node_title": row["node_title"],
             "node_path": row["node_path"],
             "step_count": int(row["step_count"] or 0),
@@ -1903,6 +2005,7 @@ async def get_ui_test_plan_detail(id: int, session=Depends(get_session), _=Depen
 @router.post("/plan/save")
 async def save_ui_test_plan(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_functional_case_item_schema(session)
     await ensure_ui_test_gateway_schema(session)
     payload = await request.json()
     plan_id = int(payload.get("id") or 0)
@@ -1918,10 +2021,11 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
     await _sync_ui_case_refs_by_project(session, project_id, int(user_info["id"]))
     valid_rows = await session.execute(
         text(
-            "SELECT id FROM argus_ui_test_case_ref "
-            f"WHERE deleted_at=0 AND project_id=:project_id AND {UI_PRIORITY_MARKER_SQL} AND status='valid' AND id IN :ids"
+            "SELECT r.id FROM argus_ui_test_case_ref r "
+            f"INNER JOIN argus_functional_case_item i ON i.file_id=r.file_id AND {UI_CASE_PATH_JOIN_SQL} "
+            f"WHERE r.deleted_at=0 AND i.deleted_at=0 AND i.case_type=:ui_case_type AND r.project_id=:project_id AND {UI_PRIORITY_MARKER_SQL} AND r.status='valid' AND r.id IN :ids"
         ).bindparams(bindparam("ids", expanding=True)),
-        {"project_id": project_id, "ids": list(set(selected_case_ref_ids))},
+        {"project_id": project_id, "ids": list(set(selected_case_ref_ids)), "ui_case_type": FUNCTIONAL_CASE_TYPE_UI},
     )
     valid_ids = {int(row["id"]) for row in valid_rows.mappings().all()}
     if len(valid_ids) != len(set(selected_case_ref_ids)):
@@ -2104,6 +2208,7 @@ async def save_ui_test_plan(request: Request, session=Depends(get_session), user
 @router.post("/plan/run")
 async def run_ui_test_plan(request: Request, session=Depends(get_session), user_info=Depends(Permission())):
     await ensure_ui_test_schema(session)
+    await ensure_ui_functional_case_item_schema(session)
     payload = await request.json()
     plan_id = int(payload.get("id") or 0)
     if plan_id <= 0:
@@ -2121,10 +2226,11 @@ async def run_ui_test_plan(request: Request, session=Depends(get_session), user_
             "SELECT pc.case_ref_id, r.file_title, r.node_title, r.node_path, r.dsl_json "
             "FROM argus_ui_test_plan_case pc "
             "LEFT JOIN argus_ui_test_case_ref r ON pc.case_ref_id=r.id "
-            f"WHERE pc.deleted_at=0 AND pc.plan_id=:plan_id AND pc.enabled=1 AND r.deleted_at=0 AND {UI_PRIORITY_MARKER_SQL} AND r.status='valid' "
+            f"INNER JOIN argus_functional_case_item i ON i.file_id=r.file_id AND {UI_CASE_PATH_JOIN_SQL} "
+            f"WHERE pc.deleted_at=0 AND pc.plan_id=:plan_id AND pc.enabled=1 AND r.deleted_at=0 AND i.deleted_at=0 AND i.case_type=:ui_case_type AND {UI_PRIORITY_MARKER_SQL} AND r.status='valid' "
             "ORDER BY pc.sort_index ASC, pc.id ASC"
         ),
-        {"plan_id": plan_id},
+        {"plan_id": plan_id, "ui_case_type": FUNCTIONAL_CASE_TYPE_UI},
     )
     cases = case_rows.mappings().all()
     if not cases:

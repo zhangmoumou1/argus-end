@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.crud.project.ProjectDao import ProjectDao
 from app.models.interface_manage import ArgusApiService
@@ -15,18 +15,55 @@ from app.models.test_case import TestCase
 from app.routers import Permission
 
 router = APIRouter(prefix="/workspace")
+UI_FUNCTIONAL_ROOT_NAME = "UI自动化用例"
+FUNCTIONAL_CASE_TYPE_FUNCTIONAL = "functional"
+FUNCTIONAL_CASE_TYPE_UI = "ui"
 
 
-async def _get_top3_distribution(session, model, join_field, user_id: int):
+async def _ensure_functional_case_type_column(session):
+    column_result = await session.execute(
+        text("SHOW COLUMNS FROM argus_functional_case_item LIKE 'case_type'")
+    )
+    if column_result.first() is None:
+        await session.execute(
+            text(
+                "ALTER TABLE argus_functional_case_item "
+                "ADD COLUMN case_type VARCHAR(32) NOT NULL DEFAULT 'functional' COMMENT '用例类型(functional/ui)'"
+            )
+        )
+    await session.execute(
+        text(
+            "UPDATE argus_functional_case_item "
+            "SET case_type=:ui_type "
+            "WHERE deleted_at=0 AND case_type<>:ui_type "
+            "AND (COALESCE(case_path, '') LIKE :ui_marker OR case_name=:ui_root)"
+        ),
+        {
+            "ui_type": FUNCTIONAL_CASE_TYPE_UI,
+            "ui_marker": f"%{UI_FUNCTIONAL_ROOT_NAME}%",
+            "ui_root": UI_FUNCTIONAL_ROOT_NAME,
+        },
+    )
+    await session.commit()
+
+
+def _case_type_filter(model, case_type):
+    return model.case_type == case_type
+
+
+async def _get_top3_distribution(session, model, join_field, user_id: int, case_type: str = None):
+    conditions = [
+        model.create_user == user_id,
+        model.deleted_at == 0,
+        join_field > 0,
+    ]
+    if case_type:
+        conditions.append(_case_type_filter(model, case_type))
     query = await session.execute(
         select(
             Project.name.label("label"),
             func.count(model.id).label("count"),
-        ).where(
-            model.create_user == user_id,
-            model.deleted_at == 0,
-            join_field > 0,
-        ).join(
+        ).where(*conditions).join(
             Project,
             Project.id == join_field,
         ).group_by(Project.id, Project.name).order_by(func.count(model.id).desc()).limit(3)
@@ -60,6 +97,16 @@ async def _get_api_case_distribution(session, user_id: int):
     ]
 
 
+async def _get_ui_case_distribution(session, user_id: int):
+    return await _get_top3_distribution(
+        session,
+        ArgusFunctionalCaseItem,
+        ArgusFunctionalCaseItem.project_id,
+        user_id,
+        case_type=FUNCTIONAL_CASE_TYPE_UI,
+    )
+
+
 @router.get("/", description="获取工作台用户统计数据")
 async def query_user_statistics(user_info=Depends(Permission())):
     user_id = user_info['id']
@@ -73,6 +120,7 @@ async def query_user_statistics(user_info=Depends(Permission())):
     old_case_count, user_rank = rank.get(str(user_id), [0, 0])
 
     async with async_session() as session:
+        await _ensure_functional_case_type_column(session)
         api_case_count = (await session.execute(
             select(func.count(TestCase.id)).where(
                 TestCase.create_user == user_id,
@@ -84,6 +132,15 @@ async def query_user_statistics(user_info=Depends(Permission())):
             select(func.count(ArgusFunctionalCaseItem.id)).where(
                 ArgusFunctionalCaseItem.create_user == user_id,
                 ArgusFunctionalCaseItem.deleted_at == 0,
+                _case_type_filter(ArgusFunctionalCaseItem, FUNCTIONAL_CASE_TYPE_FUNCTIONAL),
+            )
+        )).scalar() or 0
+
+        ui_case_count = (await session.execute(
+            select(func.count(ArgusFunctionalCaseItem.id)).where(
+                ArgusFunctionalCaseItem.create_user == user_id,
+                ArgusFunctionalCaseItem.deleted_at == 0,
+                _case_type_filter(ArgusFunctionalCaseItem, FUNCTIONAL_CASE_TYPE_UI),
             )
         )).scalar() or 0
 
@@ -100,6 +157,17 @@ async def query_user_statistics(user_info=Depends(Permission())):
             select(func.count(ArgusFunctionalCaseItem.id)).where(
                 ArgusFunctionalCaseItem.create_user == user_id,
                 ArgusFunctionalCaseItem.deleted_at == 0,
+                _case_type_filter(ArgusFunctionalCaseItem, FUNCTIONAL_CASE_TYPE_FUNCTIONAL),
+                ArgusFunctionalCaseItem.created_at >= week_start,
+                ArgusFunctionalCaseItem.created_at <= now,
+            )
+        )).scalar() or 0
+
+        weekly_new_ui_case = (await session.execute(
+            select(func.count(ArgusFunctionalCaseItem.id)).where(
+                ArgusFunctionalCaseItem.create_user == user_id,
+                ArgusFunctionalCaseItem.deleted_at == 0,
+                _case_type_filter(ArgusFunctionalCaseItem, FUNCTIONAL_CASE_TYPE_UI),
                 ArgusFunctionalCaseItem.created_at >= week_start,
                 ArgusFunctionalCaseItem.created_at <= now,
             )
@@ -107,8 +175,13 @@ async def query_user_statistics(user_info=Depends(Permission())):
 
         api_case_distribution = await _get_api_case_distribution(session, user_id)
         functional_case_distribution = await _get_top3_distribution(
-            session, ArgusFunctionalCaseItem, ArgusFunctionalCaseItem.project_id, user_id
+            session,
+            ArgusFunctionalCaseItem,
+            ArgusFunctionalCaseItem.project_id,
+            user_id,
+            case_type=FUNCTIONAL_CASE_TYPE_FUNCTIONAL,
         )
+        ui_case_distribution = await _get_ui_case_distribution(session, user_id)
 
         api_daily_rows = (await session.execute(
             select(
@@ -129,6 +202,20 @@ async def query_user_statistics(user_info=Depends(Permission())):
             ).where(
                 ArgusFunctionalCaseItem.create_user == user_id,
                 ArgusFunctionalCaseItem.deleted_at == 0,
+                _case_type_filter(ArgusFunctionalCaseItem, FUNCTIONAL_CASE_TYPE_FUNCTIONAL),
+                ArgusFunctionalCaseItem.created_at >= month_start,
+                ArgusFunctionalCaseItem.created_at <= now,
+            ).group_by(func.date_format(ArgusFunctionalCaseItem.created_at, "%Y-%m-%d"))
+        )).all()
+
+        ui_daily_rows = (await session.execute(
+            select(
+                func.date_format(ArgusFunctionalCaseItem.created_at, "%Y-%m-%d").label("date"),
+                func.count(ArgusFunctionalCaseItem.id).label("count"),
+            ).where(
+                ArgusFunctionalCaseItem.create_user == user_id,
+                ArgusFunctionalCaseItem.deleted_at == 0,
+                _case_type_filter(ArgusFunctionalCaseItem, FUNCTIONAL_CASE_TYPE_UI),
                 ArgusFunctionalCaseItem.created_at >= month_start,
                 ArgusFunctionalCaseItem.created_at <= now,
             ).group_by(func.date_format(ArgusFunctionalCaseItem.created_at, "%Y-%m-%d"))
@@ -136,6 +223,7 @@ async def query_user_statistics(user_info=Depends(Permission())):
 
     api_daily_map = {str(item.date): int(item.count or 0) for item in api_daily_rows}
     functional_daily_map = {str(item.date): int(item.count or 0) for item in functional_daily_rows}
+    ui_daily_map = {str(item.date): int(item.count or 0) for item in ui_daily_rows}
 
     month_case = []
     weekly_case = []
@@ -144,15 +232,18 @@ async def query_user_statistics(user_info=Depends(Permission())):
         day_key = cursor.strftime("%Y-%m-%d")
         api_value = api_daily_map.get(day_key, 0)
         functional_value = functional_daily_map.get(day_key, 0)
+        ui_value = ui_daily_map.get(day_key, 0)
 
         day_item = {
             "date": day_key,
             "api_case_count": api_value,
             "functional_case_count": functional_value,
+            "ui_case_count": ui_value,
             # backward compatibility for old frontend parser keys
             "api_count": api_value,
             "functional_count": functional_value,
-            "count": api_value + functional_value,
+            "ui_count": ui_value,
+            "count": api_value + functional_value + ui_value,
         }
 
         month_case.append(day_item)
@@ -162,7 +253,7 @@ async def query_user_statistics(user_info=Depends(Permission())):
 
         cursor += timedelta(days=1)
 
-    case_count = int(api_case_count) + int(functional_case_count)
+    case_count = int(api_case_count) + int(functional_case_count) + int(ui_case_count)
     if not case_count and old_case_count:
         case_count = int(old_case_count)
 
@@ -171,10 +262,13 @@ async def query_user_statistics(user_info=Depends(Permission())):
         case_count=case_count,
         api_case_count=int(api_case_count),
         functional_case_count=int(functional_case_count),
+        ui_case_count=int(ui_case_count),
         weekly_new_api_case=int(weekly_new_api_case),
         weekly_new_functional_case=int(weekly_new_functional_case),
+        weekly_new_ui_case=int(weekly_new_ui_case),
         api_case_distribution=api_case_distribution,
         functional_case_distribution=functional_case_distribution,
+        ui_case_distribution=ui_case_distribution,
         month_case=month_case,
         weekly_case=weekly_case,
         user_rank=user_rank,

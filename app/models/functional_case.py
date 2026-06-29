@@ -62,9 +62,10 @@ class ArgusFunctionalCaseItem(ArgusBase):
     case_path = Column(TEXT, nullable=True, comment="功能用例节点路径")
     case_priority = Column(String(32), nullable=True, comment="优先级")
     case_pass = Column(INT, nullable=False, default=0, comment="是否通过(1通过,0不通过)")
+    case_type = Column(String(32), nullable=False, default="functional", comment="用例类型(functional/ui)")
 
     def __init__(self, project_id, directory_id, file_id, case_uid, file_title, case_name, user, case_path=None,
-                 case_priority=None, case_pass=0):
+                 case_priority=None, case_pass=0, case_type="functional"):
         super().__init__(user)
         self.project_id = project_id
         self.directory_id = directory_id
@@ -75,6 +76,7 @@ class ArgusFunctionalCaseItem(ArgusBase):
         self.case_path = case_path
         self.case_priority = case_priority
         self.case_pass = case_pass
+        self.case_type = case_type
 
 
 class ArgusFunctionalCaseSkillDoc(ArgusBase):
