@@ -53,7 +53,19 @@ MAX_REPORT_REQUEST_RECORDS = 10
 MAX_REPORT_RESPONSE_SAMPLE_LENGTH = 1500
 MAX_REPORT_REQUEST_BODY_LENGTH = 600
 MAX_REPORT_ASSERTION_RESULTS = 5
-PERFORMANCE_RUN_SEMAPHORE = asyncio.Semaphore(int(getattr(Config, "PERFORMANCE_MAX_CONCURRENT_RUNS", 1) or 1))
+PERFORMANCE_RUN_SEMAPHORE = None
+PERFORMANCE_RUN_SEMAPHORE_LOOP = None
+
+
+def get_performance_run_semaphore():
+    global PERFORMANCE_RUN_SEMAPHORE, PERFORMANCE_RUN_SEMAPHORE_LOOP
+    current_loop = asyncio.get_running_loop()
+    if PERFORMANCE_RUN_SEMAPHORE is None or PERFORMANCE_RUN_SEMAPHORE_LOOP is not current_loop:
+        PERFORMANCE_RUN_SEMAPHORE = asyncio.Semaphore(
+            int(getattr(Config, "PERFORMANCE_MAX_CONCURRENT_RUNS", 1) or 1)
+        )
+        PERFORMANCE_RUN_SEMAPHORE_LOOP = current_loop
+    return PERFORMANCE_RUN_SEMAPHORE
 
 
 def resolve_grafana_url():
@@ -2032,11 +2044,12 @@ async def _run_plan_task_impl(plan_id: int, executor: int, report_id: int = None
 
 
 async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
-    await PERFORMANCE_RUN_SEMAPHORE.acquire()
+    semaphore = get_performance_run_semaphore()
+    await semaphore.acquire()
     try:
         return await _run_plan_task_impl(plan_id, executor, report_id=report_id)
     finally:
-        PERFORMANCE_RUN_SEMAPHORE.release()
+        semaphore.release()
 
 
 @router.get("/plan/list")
