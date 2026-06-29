@@ -21,10 +21,12 @@ from app.middleware.oss import OssClient, get_default_bucket_name, normalize_oss
 from app.middleware.Jwt import UserToken
 from app.models import async_session
 from app.routers import Permission, get_session
+from app.utils.logger import Log
 from app.utils.scheduler import Scheduler
 from config import Config
 
 router = APIRouter(prefix="/ui-test")
+ui_test_log = Log("UITestRouter")
 
 UI_CASE_NODE_NAME = "UI自动化用例"
 UI_CASE_STEP_NODE_NAME = "测试步骤"
@@ -3251,6 +3253,10 @@ async def claim_ui_test_run(request: Request, session=Depends(get_session), user
     run_id = int(payload.get("run_id") or 0)
     any_project = _normalize_bool(payload.get("any_project"), False)
     if project_id <= 0 and run_id <= 0 and not any_project:
+        ui_test_log.warning(
+            f"runner claim end invalid payload project_id={project_id}, plan_id={plan_id}, "
+            f"run_id={run_id}, any_project={int(any_project)}"
+        )
         return ArgusResponse.failed("project_id或run_id不能为空")
 
     sql = (
@@ -3298,6 +3304,12 @@ async def claim_ui_test_run(request: Request, session=Depends(get_session), user
     claimed = dict(task)
     claimed["status"] = "claimed"
     claimed["runner_payload"] = _parse_json_text(claimed.get("runner_payload")) or {}
+    ui_test_log.info(
+        f"runner claim claimed task_id={int(claimed['id'] or 0)}, "
+        f"project_id={int(claimed.get('project_id') or 0)}, plan_id={int(claimed.get('plan_id') or 0)}, "
+        f"run_id={run_id}, any_project={int(any_project)}, "
+        f"trigger_mode={str(claimed.get('trigger_mode') or '')}, user_id={int(user_info['id'])}"
+    )
     return ArgusResponse.success(claimed)
 
 

@@ -96,6 +96,8 @@ class BaseConfig(BaseSettings):
     REQUEST_LOG_BODY_MAX_BYTES: int = 204800
     REQUEST_LOG_SKIP_PATHS: List[str] = Field(default_factory=lambda: [
         "/functional-case/skill-task/status",
+        "/runner/claim",
+        "/ui-test/runner/claim",
         "/runner/run/status",
         "/ui-test/runner/run/status",
         "/favicon.ico",

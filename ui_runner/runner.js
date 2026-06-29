@@ -17,6 +17,7 @@ const EXPLICIT_PLAN_ID = Number(process.env.UI_RUNNER_PLAN_ID || 0);
 const EXPLICIT_RUN_ID = Number(process.env.UI_RUNNER_RUN_ID || 0);
 const EXPLICIT_ANY_PROJECT = process.env.UI_RUNNER_ANY_PROJECT;
 const POLL_INTERVAL_MS = Number(process.env.UI_RUNNER_POLL_INTERVAL_MS || 5000);
+const EMPTY_POLL_MAX_INTERVAL_MS = Number(process.env.UI_RUNNER_EMPTY_POLL_MAX_INTERVAL_MS || 30000);
 const ARTIFACT_UPLOAD_ATTEMPTS = Math.max(1, Number(process.env.UI_RUNNER_ARTIFACT_UPLOAD_ATTEMPTS || 1));
 const ARTIFACT_UPLOAD_CONCURRENCY = Math.max(1, Number(process.env.UI_RUNNER_ARTIFACT_UPLOAD_CONCURRENCY || 3));
 const DEFAULT_BROWSER = process.env.UI_RUNNER_BROWSER || 'chromium';
@@ -40,6 +41,14 @@ let preferredRunId = EXPLICIT_RUN_ID;
 let preferredRunIds = EXPLICIT_RUN_ID ? [EXPLICIT_RUN_ID] : [];
 let runtimeAnyProject = parseBool(EXPLICIT_ANY_PROJECT, !EXPLICIT_PROJECT_ID && !EXPLICIT_RUN_ID);
 let midsceneModelReady = false;
+let emptyPollCount = 0;
+
+function getIdlePollIntervalMs() {
+  const base = Math.max(1000, Number(POLL_INTERVAL_MS || 5000));
+  const maxInterval = Math.max(base, Number(EMPTY_POLL_MAX_INTERVAL_MS || 30000));
+  const factor = Math.min(emptyPollCount, 3);
+  return Math.min(base * (2 ** factor), maxInterval);
+}
 
 function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
@@ -2004,13 +2013,19 @@ async function main() {
       }
       const task = await claimTask();
       if (!task) {
-        console.log('[ui-runner] 当前没有可领取的 UI 任务');
-        await sleep(POLL_INTERVAL_MS);
+        emptyPollCount += 1;
+        const waitMs = getIdlePollIntervalMs();
+        if (emptyPollCount === 1 || emptyPollCount % 6 === 0) {
+          console.log(`[ui-runner] 当前没有可领取的 UI 任务，${Math.round(waitMs / 1000)}s 后重试`);
+        }
+        await sleep(waitMs);
         continue;
       }
+      emptyPollCount = 0;
       console.log(`[ui-runner] claimed run=${task.id} plan=${task.plan_id}`);
       await executeRun(task);
     } catch (error) {
+      emptyPollCount = 0;
       console.error(`[ui-runner] loop failed: ${String(error?.message || error)}`);
       await sleep(POLL_INTERVAL_MS);
     }
