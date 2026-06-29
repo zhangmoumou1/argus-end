@@ -64,6 +64,7 @@ class PlatformTaskWorker:
         queue_names = [str(f"{Config.RABBITMQ_QUEUE_PREFIX}.{task_type}") for task_type in self._supported_task_types]
         for queue_name in queue_names:
             await self.ensure_queue_consumer(queue_name)
+        await self._kickoff_queued_db_tasks()
 
     async def ensure_queue_consumer(self, queue_name):
         normalized_queue = str(queue_name or "").strip()
@@ -73,6 +74,37 @@ class PlatformTaskWorker:
             return
         self._consumer_tasks[normalized_queue] = asyncio.create_task(self._consume_queue(normalized_queue))
         logger.success(f"platform task consumer attached.        ✔ queue={normalized_queue}")
+
+    async def kickoff_task_if_stuck(self, task_id, delay_seconds=5):
+        try:
+            await asyncio.sleep(max(float(delay_seconds or 0), 0))
+            task = await PlatformTaskService.get_task(task_id)
+            if task is None:
+                return
+            if str(task.status or "").strip().lower() != PlatformTaskStatus.QUEUED.value:
+                return
+            logger.warning(
+                f"platform task still queued after {delay_seconds}s, fallback execute locally. "
+                f"task_id={int(task_id or 0)}, queue={str(getattr(task, 'queue_name', '') or '')}"
+            )
+            await self._handle_message(json.dumps({"task_id": int(task_id or 0)}))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"fallback execute queued platform task failed, task_id={int(task_id or 0)}, error={exc}")
+
+    async def _kickoff_queued_db_tasks(self):
+        async with async_session() as session:
+            rows = await session.execute(
+                select(ArgusPlatformTask.id).where(
+                    ArgusPlatformTask.deleted_at == 0,
+                    ArgusPlatformTask.status == PlatformTaskStatus.QUEUED.value,
+                    ArgusPlatformTask.task_type.in_(self._supported_task_types),
+                ).order_by(ArgusPlatformTask.priority.desc(), ArgusPlatformTask.id.asc()).limit(10)
+            )
+            task_ids = [int(item[0] or 0) for item in rows.all() if int(item[0] or 0) > 0]
+        for task_id in task_ids:
+            asyncio.create_task(self.kickoff_task_if_stuck(task_id, delay_seconds=0))
 
     async def _consume_queue(self, queue_name):
         loop = asyncio.get_running_loop()
@@ -220,10 +252,14 @@ class PlatformTaskWorker:
         if task_type == PlatformTaskType.PERFORMANCE_TEST_RUN.value:
             from app.routers.performance import run_plan_task
 
+            plan_id = int(payload.get("plan_id") or task.plan_id or 0)
+            executor_id = int(payload.get("executor") or task.user or 0)
+            report_id = int(payload.get("report_id") or task.biz_id or 0)
+
             await run_plan_task(
-                int(payload.get("plan_id") or task.plan_id or 0),
-                int(payload.get("executor") or task.user or 0),
-                report_id=int(payload.get("report_id") or task.biz_id or 0),
+                plan_id,
+                executor_id,
+                report_id=report_id,
             )
             await PlatformTaskService.mark_success(task.id, result_status=PlatformResultStatus.TEST_SUCCESS.value)
             return

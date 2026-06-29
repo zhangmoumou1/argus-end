@@ -273,11 +273,7 @@ class ArgusTestcaseDirectoryDao(Mapper):
             return
         for c in current:
             temp = ans_map.get(c)
-            if case_node is None:
-                child = list()
-            else:
-                child, cs = await case_node(temp.id)
-                case_map.update(cs)
+            child = list()
             children.append(dict(
                 title=temp.name,
                 key=temp.id,

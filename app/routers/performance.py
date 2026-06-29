@@ -13,9 +13,10 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
-from sqlalchemy import desc, select, text
+from sqlalchemy import desc, func, select, text
 
 from app.core.executor import Executor
 from app.core.platform_task import PlatformTaskService
@@ -35,6 +36,7 @@ from app.models.performance import (
 )
 from app.models.test_case import TestCase
 from app.models.out_parameters import ArgusTestCaseOutParameters
+from app.models.testcase_asserts import TestCaseAsserts
 from app.routers import Permission
 from app.schema.performance import ArgusPerformanceParameterValidateForm, ArgusPerformancePlanForm
 from app.utils.logger import Log
@@ -51,6 +53,7 @@ MAX_REPORT_REQUEST_RECORDS = 10
 MAX_REPORT_RESPONSE_SAMPLE_LENGTH = 1500
 MAX_REPORT_REQUEST_BODY_LENGTH = 600
 MAX_REPORT_ASSERTION_RESULTS = 5
+PERFORMANCE_RUN_SEMAPHORE = asyncio.Semaphore(int(getattr(Config, "PERFORMANCE_MAX_CONCURRENT_RUNS", 1) or 1))
 
 
 def resolve_grafana_url():
@@ -585,6 +588,96 @@ async def load_parameter_variables(session, parameter_config, state):
             state[state_key] = (index + 1) % len(rows)
         for col in columns:
             file_variables[col] = row_data.get(col)
+
+    return manual_variables, file_variables
+
+
+async def preload_parameter_sources(session, parameter_config):
+    parameter_config = parameter_config or {}
+    manual_variables = {}
+    for item in parameter_config.get("manual_variables") or []:
+        if not isinstance(item, dict) or not item.get("enabled", True):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        manual_variables[name] = item.get("value", "")
+
+    file_sources = []
+    for item in parameter_config.get("file_variables") or []:
+        if not isinstance(item, dict) or not item.get("enabled", True):
+            continue
+        file_id = item.get("file_id")
+        bucket_file_path = parse_bucket_parameter_file_id(file_id) or str(item.get("bucket_file_path") or "").strip()
+        if not file_id and not bucket_file_path:
+            continue
+        if bucket_file_path:
+            columns, rows = await load_public_bucket_csv(
+                bucket_file_path,
+                encoding=str(item.get("encoding") or "utf-8"),
+                delimiter=str(item.get("delimiter") or ","),
+            )
+            state_file_key = build_bucket_parameter_file_id(bucket_file_path)
+        else:
+            row = await session.execute(
+                select(ArgusPerformanceParameterFile).where(
+                    ArgusPerformanceParameterFile.id == int(file_id),
+                    ArgusPerformanceParameterFile.deleted_at == 0,
+                )
+            )
+            file_record = row.scalars().first()
+            if file_record is None:
+                continue
+            file_path = Path(file_record.file_path)
+            if not file_path.exists():
+                continue
+            columns, rows = parse_csv_file(file_path, file_record.encoding or "utf-8", file_record.delimiter or ",")
+            state_file_key = str(file_id)
+        if not rows:
+            continue
+        file_sources.append({
+            "columns": columns,
+            "rows": rows,
+            "read_mode": str(item.get("read_mode") or "CIRCULAR").upper(),
+            "state_key": f"file_{state_file_key}_index",
+        })
+
+    return {
+        "manual_variables": manual_variables,
+        "file_sources": file_sources,
+    }
+
+
+async def resolve_parameter_variables(parameter_sources, state, state_lock=None):
+    parameter_sources = parameter_sources or {}
+    manual_variables = dict(parameter_sources.get("manual_variables") or {})
+    file_variables = {}
+    file_sources = parameter_sources.get("file_sources") or []
+    if not file_sources:
+        return manual_variables, file_variables
+
+    if state_lock is None:
+        state_lock = asyncio.Lock()
+
+    async with state_lock:
+        for source in file_sources:
+            rows = source.get("rows") or []
+            columns = source.get("columns") or []
+            if not rows:
+                continue
+            read_mode = str(source.get("read_mode") or "CIRCULAR").upper()
+            state_key = str(source.get("state_key") or "")
+            index = int(state.get(state_key, 0))
+            if read_mode == "RANDOM":
+                row_data = random.choice(rows)
+            elif read_mode == "SEQUENTIAL":
+                row_data = rows[min(index, len(rows) - 1)]
+                state[state_key] = min(index + 1, len(rows) - 1)
+            else:
+                row_data = rows[index % len(rows)]
+                state[state_key] = (index + 1) % len(rows)
+            for col in columns:
+                file_variables[col] = row_data.get(col)
 
     return manual_variables, file_variables
 
@@ -1127,11 +1220,40 @@ async def build_case_chain_preview(case_ids):
             )
         )
         cases = {item.id: item for item in rows.scalars().all()}
+        assert_rows = await session.execute(
+            select(TestCaseAsserts).where(
+                TestCaseAsserts.case_id.in_(case_ids),
+                TestCaseAsserts.deleted_at == 0,
+            ).order_by(TestCaseAsserts.case_id.asc(), TestCaseAsserts.id.asc())
+        )
+        assert_map = defaultdict(list)
+        for item in assert_rows.scalars().all():
+            assert_type = str(item.assert_type or "")
+            assert_map[int(item.case_id or 0)].append({
+                "name": item.name,
+                "type": assert_type,
+                "operator": "=" if assert_type == "equal" else "contains" if assert_type == "contain" else assert_type,
+                "path": item.actually,
+                "expected": item.expected,
+            })
         preview = []
         for index, case_id in enumerate(case_ids, 1):
             case = cases.get(case_id)
             if case is None:
                 continue
+            raw_url = str(case.url or "")
+            parsed_url = urlsplit(raw_url)
+            request_url = urlunsplit((parsed_url.scheme, parsed_url.netloc, parsed_url.path, "", parsed_url.fragment)) or raw_url
+            request_query = {}
+            for key, value in parse_qsl(parsed_url.query, keep_blank_values=True):
+                if key in request_query:
+                    current = request_query[key]
+                    if isinstance(current, list):
+                        current.append(value)
+                    else:
+                        request_query[key] = [current, value]
+                else:
+                    request_query[key] = value
             out_params = await session.execute(
                 select(ArgusTestCaseOutParameters).where(
                     ArgusTestCaseOutParameters.case_id == case_id,
@@ -1151,9 +1273,11 @@ async def build_case_chain_preview(case_ids):
                 "case_id": case.id,
                 "name": case.name,
                 "method": case.request_method,
-                "url": case.url,
+                "url": request_url,
                 "headers": safe_json_loads(case.request_headers, {}),
+                "query": request_query,
                 "body": safe_json_loads(case.body, case.body or ""),
+                "assertions": assert_map.get(int(case.id or 0), []),
                 "extractors": extractors,
                 "enabled": True,
             })
@@ -1213,7 +1337,7 @@ async def finalize_report(report_id, summary):
             if report is None:
                 raise Exception("性能报告不存在")
             report.status = 3
-            report.finished_at = datetime.now()
+            report.updated_at = datetime.now()
             report.cost = summary.get("cost")
             report.total_requests = summary.get("total_requests", 0)
             report.success_count = summary.get("success_count", 0)
@@ -1257,7 +1381,7 @@ async def mark_report_terminal(report_id, status=3):
             if report is None:
                 return
             report.status = status
-            report.finished_at = datetime.now()
+            report.updated_at = datetime.now()
 
 
 async def execute_one_request(plan, variables=None, global_headers=None):
@@ -1388,7 +1512,7 @@ async def execute_plan_once(plan, executor, variables=None, global_headers=None)
     return await execute_one_request(plan, variables=variables, global_headers=global_headers)
 
 
-async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
+async def _run_plan_task_impl(plan_id: int, executor: int, report_id: int = None):
     async with async_session() as session:
         row = await session.execute(
             select(ArgusPerformancePlan).where(
@@ -1406,6 +1530,7 @@ async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
         parameter_config = normalize_parameter_config(safe_json_loads(getattr(plan, "parameter_config", None), {}))
         assertions_config = safe_json_loads(getattr(plan, "assertions_config", None), [])
         chain_preview = await build_case_chain_preview(parse_case_ids(getattr(plan, "case_list", "")))
+        parameter_sources = await preload_parameter_sources(session, parameter_config)
 
     await update_report_status(report_id, 1)
     await append_run_log(report_id, executor, "INFO", "启动压测任务", {
@@ -1438,6 +1563,7 @@ async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
     assertion_failures = []
     step_stats = defaultdict(lambda: {"name": "", "url": "", "method": "", "count": 0, "failed": 0, "costs": []})
     lock = asyncio.Lock()
+    parameter_state_lock = asyncio.Lock()
     execution_state = {}
     final_summary = None
     runtime_error_log_count = 0
@@ -1448,8 +1574,11 @@ async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
 
     if setup_config.get("enabled") and setup_config.get("scope") == "per_run":
         try:
-            async with async_session() as inner_session:
-                manual_variables, file_variables = await load_parameter_variables(inner_session, parameter_config, execution_state)
+            manual_variables, file_variables = await resolve_parameter_variables(
+                parameter_sources,
+                execution_state,
+                parameter_state_lock,
+            )
             setup_seed_variables = {}
             setup_seed_variables.update(manual_variables)
             setup_seed_variables.update(file_variables)
@@ -1485,8 +1614,11 @@ async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
             await asyncio.sleep((ramp_up_seconds / concurrency) * index)
         if setup_config.get("enabled") and setup_config.get("scope") == "per_worker":
             try:
-                async with async_session() as inner_session:
-                    manual_variables, file_variables = await load_parameter_variables(inner_session, parameter_config, execution_state)
+                manual_variables, file_variables = await resolve_parameter_variables(
+                    parameter_sources,
+                    execution_state,
+                    parameter_state_lock,
+                )
                 setup_seed_variables = {}
                 setup_seed_variables.update(manual_variables)
                 setup_seed_variables.update(file_variables)
@@ -1551,8 +1683,12 @@ async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
             request_start = time.perf_counter()
             bucket = int(max(request_start - start, 0))
             try:
-                async with async_session() as inner_session:
-                    manual_variables, file_variables = await load_parameter_variables(inner_session, parameter_config, execution_state)
+                failure_log_detail = None
+                manual_variables, file_variables = await resolve_parameter_variables(
+                    parameter_sources,
+                    execution_state,
+                    parameter_state_lock,
+                )
                 variables = {}
                 variables.update(manual_variables)
                 variables.update(file_variables)
@@ -1615,12 +1751,12 @@ async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
                         error_records.append(current_error)
                         if request_failure_log_count < 20:
                             request_failure_log_count += 1
-                            await append_run_log(report_id, executor, "ERROR", "请求执行失败", {
+                            failure_log_detail = {
                                 "message": message,
                                 "status_code": status_code,
                                 "url": result.get("request_url") or getattr(plan, "request_url", ""),
                                 "assertion_results": assertion_results,
-                            })
+                            }
                     latencies.append(latency_ms)
                     timeline[bucket]["latencies"].append(latency_ms)
                     step_metrics = result.get("step_metrics") or []
@@ -1643,8 +1779,11 @@ async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
                         stat["count"] += 1
                         stat["failed"] += 0 if success else 1
                         stat["costs"].append(float(latency_ms))
+                if failure_log_detail:
+                    await append_run_log(report_id, executor, "ERROR", "请求执行失败", failure_log_detail)
             except Exception as exc:
                 latency_ms = round((time.perf_counter() - request_start) * 1000, 2)
+                runtime_log_detail = None
                 async with lock:
                     counters["total"] += 1
                     counters["failed"] += 1
@@ -1664,7 +1803,7 @@ async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
                     error_records.append(current_error)
                     if runtime_error_log_count < 5:
                         runtime_error_log_count += 1
-                        await append_run_log(report_id, executor, "ERROR", "压测执行异常", {
+                        runtime_log_detail = {
                             "message": message,
                             "worker": index,
                             "bucket_second": bucket,
@@ -1672,7 +1811,9 @@ async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
                             "total_requests": counters["total"],
                             "failed_count": counters["failed"],
                             "request_url": getattr(plan, "request_url", ""),
-                        })
+                        }
+                if runtime_log_detail:
+                    await append_run_log(report_id, executor, "ERROR", "压测执行异常", runtime_log_detail)
             request_cost = time.perf_counter() - request_start
             if per_worker_interval > 0:
                 await asyncio.sleep(max(per_worker_interval - request_cost, 0))
@@ -1890,6 +2031,14 @@ async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
                 log.exception(f"性能报告状态兜底失败, id={report_id}, error={format_exception_message(mark_exc)}")
 
 
+async def run_plan_task(plan_id: int, executor: int, report_id: int = None):
+    await PERFORMANCE_RUN_SEMAPHORE.acquire()
+    try:
+        return await _run_plan_task_impl(plan_id, executor, report_id=report_id)
+    finally:
+        PERFORMANCE_RUN_SEMAPHORE.release()
+
+
 @router.get("/plan/list")
 async def list_performance_plan(page: int, size: int, project_id: int = None, name: str = "", env: int = None,
                                 create_user: int = None, follow: bool = None, user_info=Depends(Permission())):
@@ -2057,6 +2206,12 @@ async def execute_performance_plan(id: int, user_info=Depends(Permission())):
         resource_key=f"performance_plan_{id}",
         payload={"plan_id": id, "report_id": report_id, "executor": user_info["id"]},
     )
+    try:
+        from app.core.platform_worker import platform_task_worker
+
+        asyncio.create_task(platform_task_worker.kickoff_task_if_stuck(int(platform_task.id or 0), delay_seconds=0))
+    except Exception as exc:
+        log.warning(f"性能任务本地调度唤醒失败, task_id={getattr(platform_task, 'id', 0)}, error={format_exception_message(exc)}")
     return ArgusResponse.success(
         {"report_id": report_id, "platform_task_id": platform_task.id},
         msg="性能计划已入队，请稍后查看执行记录",
@@ -2141,27 +2296,64 @@ async def list_performance_report(page: int, size: int, start_time: str, end_tim
                                   status: int = None, plan_id: int = None, _=Depends(Permission())):
     start = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
     end = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
+    list_columns = [
+        ArgusPerformanceReport.id,
+        ArgusPerformanceReport.plan_id,
+        ArgusPerformanceReport.env,
+        ArgusPerformanceReport.plan_name,
+        ArgusPerformanceReport.request_method,
+        ArgusPerformanceReport.request_url,
+        ArgusPerformanceReport.concurrency,
+        ArgusPerformanceReport.duration_seconds,
+        ArgusPerformanceReport.status,
+        ArgusPerformanceReport.executor,
+        ArgusPerformanceReport.total_requests,
+        ArgusPerformanceReport.success_count,
+        ArgusPerformanceReport.failed_count,
+        ArgusPerformanceReport.avg_rt_ms,
+        ArgusPerformanceReport.min_rt_ms,
+        ArgusPerformanceReport.max_rt_ms,
+        ArgusPerformanceReport.p50_rt_ms,
+        ArgusPerformanceReport.p90_rt_ms,
+        ArgusPerformanceReport.p95_rt_ms,
+        ArgusPerformanceReport.p99_rt_ms,
+        ArgusPerformanceReport.avg_rps,
+        ArgusPerformanceReport.error_rate,
+        ArgusPerformanceReport.cost,
+        ArgusPerformanceReport.created_at,
+        ArgusPerformanceReport.updated_at.label("finished_at"),
+        ArgusPerformanceReport.summary_json,
+    ]
     async with async_session() as session:
-        sql = select(ArgusPerformanceReport).where(
+        base_sql = select(*list_columns).where(
             ArgusPerformanceReport.deleted_at == 0,
             ArgusPerformanceReport.created_at.between(start, end),
-        ).order_by(desc(ArgusPerformanceReport.created_at))
+        )
         if executor is not None:
-            sql = sql.where(ArgusPerformanceReport.executor == executor)
+            base_sql = base_sql.where(ArgusPerformanceReport.executor == executor)
         if status is not None:
-            sql = sql.where(ArgusPerformanceReport.status == status)
+            base_sql = base_sql.where(ArgusPerformanceReport.status == status)
         if plan_id is not None:
-            sql = sql.where(ArgusPerformanceReport.plan_id == plan_id)
-        data = await session.execute(sql)
-        total = data.raw.rowcount
+            base_sql = base_sql.where(ArgusPerformanceReport.plan_id == plan_id)
+        count_sql = select(func.count(ArgusPerformanceReport.id)).select_from(ArgusPerformanceReport).where(
+            ArgusPerformanceReport.deleted_at == 0,
+            ArgusPerformanceReport.created_at.between(start, end),
+        )
+        if executor is not None:
+            count_sql = count_sql.where(ArgusPerformanceReport.executor == executor)
+        if status is not None:
+            count_sql = count_sql.where(ArgusPerformanceReport.status == status)
+        if plan_id is not None:
+            count_sql = count_sql.where(ArgusPerformanceReport.plan_id == plan_id)
+        total = int((await session.execute(count_sql)).scalar() or 0)
         if total == 0:
             return ArgusResponse.success_with_size([], 0)
-        page_sql = sql.offset((page - 1) * size).limit(size)
+        page_sql = base_sql.order_by(desc(ArgusPerformanceReport.created_at)).offset((page - 1) * size).limit(size)
         page_data = await session.execute(page_sql)
-        records = page_data.scalars().all()
+        records = [dict(item) for item in page_data.mappings().all()]
         missing_summary_plan_ids = list({
-            item.plan_id for item in records
-            if item.plan_id and not getattr(item, "summary_json", None)
+            int(item.get("plan_id") or 0) for item in records
+            if item.get("plan_id") and not item.get("summary_json")
         })
         plan_map = {}
         if missing_summary_plan_ids:
@@ -2173,12 +2365,12 @@ async def list_performance_report(page: int, size: int, start_time: str, end_tim
             )
             plan_map = {item.id: item for item in plan_rows.scalars().all()}
         for item in records:
-            if getattr(item, "summary_json", None):
+            if item.get("summary_json"):
                 continue
-            plan = plan_map.get(item.plan_id)
+            plan = plan_map.get(int(item.get("plan_id") or 0))
             if plan is None:
                 continue
-            item.summary_json = json.dumps({
+            item["summary_json"] = json.dumps({
                 "source_type": getattr(plan, "source_type", "single"),
                 "load_mode": getattr(plan, "load_mode", "concurrency"),
             }, ensure_ascii=False)

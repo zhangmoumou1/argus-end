@@ -170,6 +170,55 @@ def _extract_workspace_ui_run_counts(result_payload, run_status=""):
     }
 
 
+def _extract_workspace_performance_report_counts(report):
+    summary = safe_json = {}
+    raw_summary = report.get("summary_json") if hasattr(report, "get") else None
+    if isinstance(raw_summary, str) and raw_summary.strip():
+        try:
+            safe_json = json.loads(raw_summary)
+        except Exception:
+            safe_json = {}
+    elif isinstance(raw_summary, dict):
+        safe_json = raw_summary
+    if isinstance(safe_json.get("summary"), dict):
+        summary = safe_json.get("summary") or {}
+    elif isinstance(safe_json, dict):
+        summary = safe_json
+
+    request_success_count = int(report.get("success_count") or 0)
+    request_failed_count = int(report.get("failed_count") or 0)
+    failed_reasons = summary.get("failed_reasons") if isinstance(summary, dict) else []
+    if not isinstance(failed_reasons, list):
+        failed_reasons = [str(failed_reasons)] if failed_reasons else []
+    threshold_failed = any(str(item or "").strip() for item in failed_reasons)
+    status = int(report.get("status") or 0)
+
+    if status in {0, 1}:
+        success_count = failed_count = error_count = 0
+    elif request_failed_count > 0 or threshold_failed:
+        success_count = 0
+        failed_count = 1
+        error_count = 0
+    elif request_success_count > 0:
+        success_count = 1
+        failed_count = 0
+        error_count = 0
+    else:
+        success_count = 0
+        failed_count = 0
+        error_count = 1 if status not in {0, 1, 3} else 0
+
+    return {
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "error_count": error_count,
+        "request_success_count": request_success_count,
+        "request_failed_count": request_failed_count,
+        "failed_reasons": [str(item) for item in failed_reasons if str(item or "").strip()],
+        "status": status,
+    }
+
+
 async def _query_ui_follow_test_plan(session, user_id: int):
     rows = await session.execute(
         text(
@@ -228,7 +277,7 @@ async def _query_performance_follow_test_plan(session, user_id: int):
         plan = dict(row)
         report_rows = await session.execute(
             text(
-                "SELECT id, created_at AS start_at, success_count, failed_count "
+                "SELECT id, created_at AS start_at, status, success_count, failed_count, summary_json "
                 "FROM argus_performance_report "
                 "WHERE deleted_at=0 AND plan_id=:plan_id "
                 "ORDER BY id DESC LIMIT 7"
@@ -237,12 +286,17 @@ async def _query_performance_follow_test_plan(session, user_id: int):
         )
         reports = []
         for report in report_rows.mappings().all():
+            counts = _extract_workspace_performance_report_counts(report)
             reports.append({
                 "id": int(report["id"] or 0),
                 "start_at": report.get("start_at"),
-                "success_count": int(report.get("success_count") or 0),
-                "failed_count": int(report.get("failed_count") or 0),
-                "error_count": 0,
+                "success_count": int(counts.get("success_count") or 0),
+                "failed_count": int(counts.get("failed_count") or 0),
+                "error_count": int(counts.get("error_count") or 0),
+                "request_success_count": int(counts.get("request_success_count") or 0),
+                "request_failed_count": int(counts.get("request_failed_count") or 0),
+                "failed_reasons": counts.get("failed_reasons") or [],
+                "status": counts.get("status"),
             })
         items.append({
             "plan_type": "performance",

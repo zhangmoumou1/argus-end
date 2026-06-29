@@ -2,7 +2,7 @@ import json
 import asyncio
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.core.platform_mq import (
     build_dead_queue_name,
@@ -96,19 +96,21 @@ class PlatformTaskService:
                     queue_name=queue_name,
                 )
                 model.published = True
-                try:
-                    from app.core.platform_worker import platform_task_worker
-
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(platform_task_worker.ensure_queue_consumer(queue_name))
-                except RuntimeError:
-                    pass
-                except Exception as wake_exc:
-                    logger.warning(f"wake platform queue consumer failed, queue={queue_name}, error={wake_exc}")
             except Exception as exc:
                 logger.warning(f"publish platform task failed, task_id={model.id}, error={exc}")
         else:
             model.published = False
+        try:
+            from app.core.platform_worker import platform_task_worker
+
+            loop = asyncio.get_running_loop()
+            if model.published:
+                loop.create_task(platform_task_worker.ensure_queue_consumer(queue_name))
+            loop.create_task(platform_task_worker.kickoff_task_if_stuck(int(model.id or 0), delay_seconds=5))
+        except RuntimeError:
+            pass
+        except Exception as wake_exc:
+            logger.warning(f"wake platform task executor failed, queue={queue_name}, task_id={model.id}, error={wake_exc}")
         await PlatformAuditService.record(
             user_id=user_id,
             module="platform_task",
@@ -130,26 +132,35 @@ class PlatformTaskService:
     @staticmethod
     async def claim_queued_task(task_id, stage="running", stage_text="任务执行中"):
         async with async_session() as session:
-            result = await session.execute(
+            now = datetime.now()
+            claim_stmt = (
+                update(ArgusPlatformTask)
+                .where(
+                    ArgusPlatformTask.id == int(task_id or 0),
+                    ArgusPlatformTask.deleted_at == 0,
+                    ArgusPlatformTask.status == PlatformTaskStatus.QUEUED.value,
+                )
+                .values(
+                    status=PlatformTaskStatus.RUNNING.value,
+                    stage=stage,
+                    stage_text=stage_text,
+                    progress=1,
+                    started_at=now,
+                    updated_at=now,
+                )
+            )
+            result = await session.execute(claim_stmt)
+            if int(getattr(result, "rowcount", 0) or 0) <= 0:
+                await session.rollback()
+                return None
+            await session.commit()
+            task_result = await session.execute(
                 select(ArgusPlatformTask).where(
                     ArgusPlatformTask.id == int(task_id or 0),
                     ArgusPlatformTask.deleted_at == 0,
                 )
             )
-            task = result.scalars().first()
-            if task is None:
-                return None
-            if str(task.status or "") != PlatformTaskStatus.QUEUED.value:
-                return None
-            now = datetime.now()
-            task.status = PlatformTaskStatus.RUNNING.value
-            task.stage = stage
-            task.stage_text = stage_text
-            task.progress = max(int(task.progress or 0), 1)
-            task.started_at = task.started_at or now
-            task.updated_at = now
-            await session.commit()
-            await session.refresh(task)
+            task = task_result.scalars().first()
         await PlatformAuditService.record_task_event(
             "claim",
             task,
