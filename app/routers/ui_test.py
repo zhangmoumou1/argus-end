@@ -1934,7 +1934,7 @@ async def list_ui_plan_candidates(project_id: int, session=Depends(get_session),
 
 @router.get("/plan/list")
 async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str = "", follow: bool = None,
-                             page: int = 1, size: int = 20, paged: bool = False,
+                             create_user: int = 0, page: int = 1, size: int = 20, paged: bool = False,
                              session=Depends(get_session), user_info=Depends(Permission())):
     await ensure_ui_test_schema(session)
     await ensure_ui_functional_case_item_schema(session)
@@ -1944,7 +1944,8 @@ async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str
         "p.ordered, p.cron, p.retry_times, p.status, p.created_at, "
         "u.name AS create_user_name, u.username AS create_user_username, "
         "CASE WHEN MAX(CASE WHEN f.user_id IS NOT NULL AND f.deleted_at=0 THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END AS follow, "
-        "COUNT(pc.id) AS case_count "
+        "COUNT(pc.id) AS case_count, "
+        "COALESCE(SUM(pc.step_count), 0) AS total_steps "
         "FROM argus_ui_test_plan p "
         "LEFT JOIN argus_ui_test_plan_case pc ON p.id=pc.plan_id AND pc.deleted_at=0 "
         "LEFT JOIN argus_user u ON p.create_user=u.id AND u.deleted_at=0 "
@@ -1963,6 +1964,9 @@ async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str
     if normalized_keyword:
         sql += "AND (p.name LIKE :like_keyword OR p.description LIKE :like_keyword OR p.env_name LIKE :like_keyword) "
         params["like_keyword"] = f"%{normalized_keyword}%"
+    if int(create_user or 0) > 0:
+        sql += "AND p.create_user=:create_user "
+        params["create_user"] = int(create_user)
     sql += "GROUP BY p.id "
     if follow is True:
         sql += "HAVING follow=1 "
