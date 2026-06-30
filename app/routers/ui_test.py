@@ -54,6 +54,20 @@ UI_STREAM_HEADERS = {
 }
 
 
+def _normalize_plan_common_fields(item: dict, follow: bool = None):
+    item["follow"] = bool(item.get("follow")) if follow is None else bool(follow)
+    item["scheduler_enabled"] = bool(item.get("enabled", True))
+    job_id = f"ui_test_plan_{item.get('id')}"
+    try:
+        job = Scheduler.scheduler.get_job(job_id)
+    except Exception:
+        job = None
+    item.update(Scheduler.describe_job_state(job))
+    item["plan_status"] = item.get("status")
+    item["plan_enabled"] = bool(item.get("status") == "enabled" or item.get("enabled", True))
+    return item
+
+
 def _node_text(node):
     if not isinstance(node, dict):
         return ""
@@ -1928,10 +1942,12 @@ async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str
     sql = (
         "SELECT p.id, p.project_id, p.name, p.description, p.env_name, p.base_url, p.browser, p.headless, "
         "p.ordered, p.cron, p.retry_times, p.status, p.created_at, "
+        "u.name AS create_user_name, u.username AS create_user_username, "
         "CASE WHEN MAX(CASE WHEN f.user_id IS NOT NULL AND f.deleted_at=0 THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END AS follow, "
         "COUNT(pc.id) AS case_count "
         "FROM argus_ui_test_plan p "
         "LEFT JOIN argus_ui_test_plan_case pc ON p.id=pc.plan_id AND pc.deleted_at=0 "
+        "LEFT JOIN argus_user u ON p.create_user=u.id AND u.deleted_at=0 "
         "LEFT JOIN argus_ui_test_plan_follow_user_rel f ON p.id=f.plan_id AND f.user_id=:user_id "
         "WHERE p.deleted_at=0 "
     )
@@ -1962,14 +1978,9 @@ async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str
     # enrich with scheduler state
     try:
         for item in items:
-            job = Scheduler.scheduler.get_job(f"ui_test_plan_{item['id']}")
-            if job is None:
-                item['state'] = 2
-            elif job.next_run_time is None:
-                item['state'] = 3
-            else:
-                item['state'] = 1
-                item['next_run'] = job.next_run_time.strftime('%Y-%m-%d %H:%M:%S')
+            item["enabled"] = item.get("status") == "enabled"
+            item["plan_status"] = item.get("status")
+            _normalize_plan_common_fields(item)
     except Exception:
         pass
     if not paged:
@@ -2006,7 +2017,12 @@ async def list_ui_test_plans(project_id: int = 0, keyword: str = "", status: str
 async def get_ui_test_plan_detail(id: int, session=Depends(get_session), _=Depends(Permission())):
     await ensure_ui_test_schema(session)
     plan_row = await session.execute(
-        text("SELECT * FROM argus_ui_test_plan WHERE deleted_at=0 AND id=:id"),
+        text(
+            "SELECT p.*, u.name AS create_user_name, u.username AS create_user_username "
+            "FROM argus_ui_test_plan p "
+            "LEFT JOIN argus_user u ON p.create_user=u.id AND u.deleted_at=0 "
+            "WHERE p.deleted_at=0 AND p.id=:id"
+        ),
         {"id": id},
     )
     plan = plan_row.mappings().first()
@@ -2026,14 +2042,9 @@ async def get_ui_test_plan_detail(id: int, session=Depends(get_session), _=Depen
     data["cases"] = [dict(row) for row in case_rows.mappings().all()]
     # enrich with scheduler state
     try:
-        job = Scheduler.scheduler.get_job(f"ui_test_plan_{data['id']}")
-        if job is None:
-            data["state"] = 2
-        elif job.next_run_time is None:
-            data["state"] = 3
-        else:
-            data["state"] = 1
-            data["next_run"] = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+        data["enabled"] = data.get("status") == "enabled"
+        data["plan_status"] = data.get("status")
+        _normalize_plan_common_fields(data)
     except Exception:
         pass
     return ArgusResponse.success(data)

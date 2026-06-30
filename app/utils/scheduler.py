@@ -11,6 +11,24 @@ class Scheduler(object):
     scheduler: AsyncIOScheduler = None
 
     @staticmethod
+    def describe_job_state(job):
+        state = 2
+        next_run = ""
+        if job is None:
+            state = 2
+        elif job.next_run_time is None:
+            state = 3
+        else:
+            state = 1
+            next_run = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+        return {
+            "state": state,
+            "scheduler_state": state,
+            "next_run": next_run,
+            "scheduler_next_run": next_run,
+        }
+
+    @staticmethod
     def parse_cron_trigger(cron: str) -> CronTrigger:
         """
         兼容5位(crontab)和6/7位(quartz)cron表达式
@@ -101,15 +119,7 @@ class Scheduler(object):
             temp = ArgusResponse.model_to_dict(d)
             temp['follow'] = follow is not None
             job = Scheduler.scheduler.get_job(str(temp.get('id')))
-            if job is None:
-                # 说明job初始化失败了
-                temp["state"] = 2
-                ans.append(temp)
-                continue
-            if job.next_run_time is None:
-                # 说明job被暂停了
-                temp["state"] = 3
-            else:
-                temp["next_run"] = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+            temp.update(Scheduler.describe_job_state(job))
+            temp["scheduler_enabled"] = bool(temp.get("enabled", True))
             ans.append(temp)
         return ans
