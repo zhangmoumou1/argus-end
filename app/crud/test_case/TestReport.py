@@ -1,17 +1,33 @@
 from datetime import datetime
+import re
 
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, or_
 
 from app.crud import Mapper
 from app.crud.test_case.TestResult import TestResultDao
 from app.models import async_session
 from app.models.report import ArgusReport
 from app.models.test_plan import ArgusTestPlan
+from app.models.project import Project
+from app.models.environment import Environment
+from app.models.result import ArgusTestResult
+from app.models.test_case import TestCase
 from app.utils.logger import Log
 
 
 class TestReportDao(Mapper):
     log = Log("TestReportDao")
+
+    @staticmethod
+    def _normalize_report_source_keyword(source: str) -> str:
+        text = str(source or "").strip()
+        if not text:
+            return ""
+        markdown_match = re.search(r"\[([^\]]+)\]\(([^)]*)\)", text)
+        if markdown_match:
+            text = markdown_match.group(1).strip()
+        text = re.sub(r"^\[+|\]+$", "", text).strip()
+        return text
 
     @staticmethod
     async def start(executor: int, env: int, mode: int = 0, plan_id: int = None) -> int:
@@ -141,7 +157,8 @@ class TestReportDao(Mapper):
             raise Exception(f"查询报告失败: {e}")
 
     @staticmethod
-    async def list_report(page: int, size: int, start_time: datetime, end_time: datetime, executor: int or str = None):
+    async def list_report(page: int, size: int, start_time: datetime, end_time: datetime, executor: int or str = None,
+                          project_id: int = 0, source: str = ""):
         """
         获取报告列表
         :param size:
@@ -149,28 +166,82 @@ class TestReportDao(Mapper):
         :param end_time:
         :param start_time:
         :param executor: int or str
+        :param project_id: int
+        :param source: str (plan name keyword)
         :return:
         """
         try:
             async with async_session() as session:
-                sql = select(ArgusReport, ArgusTestPlan.name.label("plan_name")).outerjoin(
+                sql = select(
+                    ArgusReport,
+                    ArgusTestPlan.name.label("plan_name"),
+                    ArgusTestPlan.project_id.label("plan_project_id"),
+                    Project.name.label("project_name"),
+                    Environment.name.label("env_name"),
+                ).outerjoin(
                     ArgusTestPlan,
                     ArgusTestPlan.id == ArgusReport.plan_id
+                ).outerjoin(
+                    Project,
+                    Project.id == ArgusTestPlan.project_id
+                ).outerjoin(
+                    Environment,
+                    Environment.id == ArgusReport.env
                 ).where(ArgusReport.start_at.between(start_time, end_time)).order_by(
                     desc(ArgusReport.start_at))
                 if executor is not None:
                     executor = executor if executor != "CPU" else 0
                     sql = sql.where(ArgusReport.executor == executor)
+                if int(project_id or 0) > 0:
+                    sql = sql.where(ArgusTestPlan.project_id == project_id)
+                normalized_source = TestReportDao._normalize_report_source_keyword(source)
+                if normalized_source:
+                    keyword = f"%{normalized_source}%"
+                    # 先查询case_name匹配的报告ID，避免ORM子查询兼容性问题
+                    case_result = await session.execute(
+                        select(ArgusTestResult.report_id).outerjoin(
+                            TestCase,
+                            TestCase.id == ArgusTestResult.case_id,
+                        ).where(
+                            ArgusTestResult.deleted_at == 0,
+                            or_(
+                                ArgusTestResult.case_name.like(keyword),
+                                TestCase.name.like(keyword),
+                            )
+                        ).distinct()
+                    )
+                    case_report_ids = [row[0] for row in case_result]
+                    sql = sql.where(or_(
+                        ArgusTestPlan.name.like(keyword),
+                        ArgusReport.id.in_(case_report_ids),
+                    ))
                 data = await session.execute(sql)
-                total = data.raw.rowcount
+                total = len(data.all())
                 if total == 0:
                     return [], 0
                 sql = sql.offset((page - 1) * size).limit(size)
                 data = await session.execute(sql)
                 result = []
-                for report, plan_name in data.all():
+                for row in data.all():
+                    report = row[0]
+                    plan_name = row[1] if len(row) > 1 else ""
+                    plan_project_id = row[2] if len(row) > 2 else 0
+                    project_name = row[3] if len(row) > 3 else ""
+                    env_name_value = row[4] if len(row) > 4 else ""
                     try:
                         report.plan_name = plan_name or ""
+                    except Exception:
+                        pass
+                    try:
+                        report.project_id = plan_project_id or 0
+                    except Exception:
+                        pass
+                    try:
+                        report.project_name = project_name or ""
+                    except Exception:
+                        pass
+                    try:
+                        report.env_name = env_name_value or ""
                     except Exception:
                         pass
                     result.append(report)

@@ -44,9 +44,9 @@ AI_MODEL_PRESETS = {
         "provider_type": "deepseek",
         "provider_name": "DeepSeek",
         "base_url": "https://api.deepseek.com",
-        "model_options": ["deepseek-v4-pro", "deepseek-v4-flash"],
-        "model": "deepseek-v4-pro",
-        "api_key": "sk-4cf758981a69465caecaf3c1b8ef3d66",
+        "model_options": ["deepseek-chat", "deepseek-reasoner"],
+        "model": "deepseek-chat",
+        "api_key": "",
         "builtin": True,
     },
     "openai": {

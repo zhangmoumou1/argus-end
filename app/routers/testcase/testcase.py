@@ -1286,10 +1286,11 @@ async def query_report(id: int, status: int = Query(default=None), user_info=Dep
 
 @router.get("/report/list")
 async def list_report(page: int, size: int, start_time: str, end_time: str, executor: Author = None,
+                      project_id: int = 0, source: str = "",
                       _=Depends(Permission())):
     start = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
     end = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
-    report_list, total = await TestReportDao.list_report(page, size, start, end, executor)
+    report_list, total = await TestReportDao.list_report(page, size, start, end, executor, project_id, source)
     report_ids = [int(getattr(item, "id", 0) or 0) for item in report_list if int(getattr(item, "id", 0) or 0) > 0]
     pending_report_ids = set()
     if report_ids:
