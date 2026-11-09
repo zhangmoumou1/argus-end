@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from starlette import status
 
 from app.core.msg.mail import Email
+from app.core.menu_permission import MenuPermissionService
 from app.crud.auth.UserDao import UserDao
 from app.exception.request import AuthException
 from app.handler.fatcory import ArgusResponse
@@ -80,7 +81,9 @@ async def query_user_info(token: str):
         user = await UserDao.query_user(user_info['id'])
         if user is None:
             return ArgusResponse.failed("用户不存在")
-        return ArgusResponse.success(user, exclude=("password",))
+        user = ArgusResponse.model_to_dict(user, "password")
+        user["menu_paths"] = (await MenuPermissionService.get(int(user["role"])))["paths"]
+        return ArgusResponse.success(user)
     except Exception as e:
         # raise AuthException(status.HTTP_200_OK, e)
         return ArgusResponse.failed(e)

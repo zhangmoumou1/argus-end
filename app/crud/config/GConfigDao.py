@@ -34,7 +34,7 @@ AI_MODEL_PRESETS = {
     "qwen": {
         "provider_type": "qwen",
         "provider_name": "Qwen",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "base_url": "https://ws-tbek5ladgj51u1g7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         "model_options": ["qwen3.6-plus"],
         "model": "qwen3.6-plus",
         "api_key": "sk-f69eb070ffaa4174af6d85b408833aa4",

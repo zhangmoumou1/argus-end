@@ -1,0 +1,5 @@
+# Install after requirements.txt; Python 3.8 compatible.
+aiokafka==0.11.0
+protobuf==3.19.6
+paramiko==3.5.1
+pytz==2024.2

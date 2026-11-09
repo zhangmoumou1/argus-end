@@ -23,6 +23,8 @@ from app.routers.notification_admin import router as notification_admin_router
 from app.routers.oss import router as oss_router
 from app.routers.performance import router as performance_router
 from app.routers.platform_task import router as platform_task_router
+from app.routers.data_factory import router as data_factory_router
+from app.routers.menu import router as menu_router
 from app.routers.project import project
 from app.routers.request import http
 from app.routers.testcase import router as testcase_router
@@ -129,6 +131,8 @@ argus.include_router(online_router, prefix=API_PREFIX, dependencies=[Depends(req
 argus.include_router(oss_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
 argus.include_router(operation_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
 argus.include_router(platform_task_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
+argus.include_router(data_factory_router, prefix=API_PREFIX)
+argus.include_router(menu_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
 argus.include_router(msg_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
 argus.include_router(workspace_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
 argus.include_router(performance_router, prefix=API_PREFIX, dependencies=[Depends(request_info)])
