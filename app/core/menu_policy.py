@@ -53,6 +53,14 @@ MENU_ITEMS = [
         {"path": "/tool/rabbitmq", "name": "RabbitMQ Tools"},
     ]},
     {"path": "/datafactory", "name": "\u6570\u636e\u5de5\u5382"},
+    {"path": "/ai-test", "name": "AI\u6d4b\u8bd5", "children": [
+        {"path": "/ai-test/workbench", "name": "AI\u6d4b\u8bd5\u5de5\u4f5c\u53f0"},
+        {"path": "/ai-test/projects", "name": "\u9879\u76ee\u4e0e\u7248\u672c"},
+        {"path": "/ai-test/assets", "name": "\u9700\u6c42\u4e0e\u6d4b\u8bd5\u8d44\u4ea7"},
+        {"path": "/ai-test/execution", "name": "\u6d4b\u8bd5\u6267\u884c"},
+        {"path": "/ai-test/reports", "name": "\u62a5\u544a\u4e0e\u7f3a\u9677"},
+        {"path": "/ai-test/capabilities", "name": "Skill\u4e0eMCP"},
+    ]},
 ]
 
 ROLES = [

@@ -132,3 +132,6 @@ Argus 鎯冲仛鐨勬槸鎶婃祴璇曞钩鍙扮湡姝ｆ矇娣�鎴愶細
 
 `娴嬭瘯璧勪骇 + AI 鎻愭晥 + 缁熶竴鍗忎綔`
 
+
+## Python 环境
+后端固定使用 Python 3.11，创建环境：py -3.11 -m venv .venv；激活后执行 .venv\\Scripts\\python.exe -m pip install -r requirements.txt。

@@ -1,4 +1,4 @@
-six==1.17.0
+﻿six==1.17.0
 pyjwt==2.1.0
 mysql-connector-python==8.0.26
 requests==2.32.4
@@ -8,7 +8,7 @@ fastapi==0.124.4
 uvicorn[standard]==0.17.6
 pydantic==2.10.6
 PyYAML==6.0.3
-aiohttp==3.8.1
+aiohttp==3.9.5
 aiomysql==0.2.0
 Jinja2==3.0.3
 APScheduler==3.8.0
@@ -24,8 +24,8 @@ qiniu==7.6.0
 cos-python-sdk-v5==1.9.41
 asyncpg==0.30.0
 pymysql==1.1.1
-cryptography==36.0.2
-mitmproxy==8.0.0
+cryptography==38.0.4
+mitmproxy==9.0.1
 jsonpath==0.82
 py-mock==1.2.1
 starlette_context==0.3.6
@@ -38,3 +38,13 @@ pydantic_settings==2.8.1
 kafka-python==2.3.1
 pika==1.4.0
 boto3==1.37.38
+
+
+
+
+langgraph==0.2.53
+langgraph-checkpoint-redis==0.1.1
+playwright==1.48.0
+locust==2.32.10
+openpyxl==3.1.5
+

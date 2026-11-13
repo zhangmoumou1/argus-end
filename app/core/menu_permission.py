@@ -15,6 +15,11 @@ def snapshot(role, row=None):
         path for path in row.paths if path in catalog_paths()
         and (role == 2 or not path.startswith("/system"))
     ])
+    if role == 2:
+        paths = list(dict.fromkeys(paths + [
+            "/ai-test/workbench", "/ai-test/projects", "/ai-test/assets",
+            "/ai-test/execution", "/ai-test/reports", "/ai-test/capabilities",
+        ]))
     return {
         "role": role,
         "paths": paths,
